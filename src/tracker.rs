@@ -2,7 +2,6 @@ use anyhow::anyhow;
 use fundsp::math::midi_hz;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum NotePitch {
     C,
     Cs,
@@ -18,6 +17,44 @@ pub enum NotePitch {
     B,
 }
 
+impl NotePitch {
+    const fn semitone(self) -> i32 {
+        match self {
+            Self::C => 0,
+            Self::Cs => 1,
+            Self::D => 2,
+            Self::Ds => 3,
+            Self::E => 4,
+            Self::F => 5,
+            Self::Fs => 6,
+            Self::G => 7,
+            Self::Gs => 8,
+            Self::A => 9,
+            Self::As => 10,
+            Self::B => 11,
+        }
+    }
+}
+
+impl std::fmt::Display for NotePitch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::C => "C",
+            Self::Cs => "C#",
+            Self::D => "D",
+            Self::Ds => "D#",
+            Self::E => "E",
+            Self::F => "F",
+            Self::Fs => "F#",
+            Self::G => "G",
+            Self::Gs => "G#",
+            Self::A => "A",
+            Self::As => "A#",
+            Self::B => "B",
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Note {
     pub pitch: NotePitch,
@@ -25,23 +62,34 @@ pub struct Note {
 }
 
 impl Note {
+    /// Transpose chromatically, clamping to C0 through B9.
+    #[must_use]
+    pub fn transpose(self, semitones: i8) -> Self {
+        let index = (i32::from(self.octave) * 12 + self.pitch.semitone() + i32::from(semitones)).clamp(0, 119);
+        let pitch = match index % 12 {
+            0 => NotePitch::C,
+            1 => NotePitch::Cs,
+            2 => NotePitch::D,
+            3 => NotePitch::Ds,
+            4 => NotePitch::E,
+            5 => NotePitch::F,
+            6 => NotePitch::Fs,
+            7 => NotePitch::G,
+            8 => NotePitch::Gs,
+            9 => NotePitch::A,
+            10 => NotePitch::As,
+            _ => NotePitch::B,
+        };
+        Self {
+            pitch,
+            octave: u8::try_from(index / 12).unwrap_or(9),
+        }
+    }
+
     #[must_use]
     pub fn freq(self) -> f64 {
         // freq = 440.0 * 2^((midi_note - 69) / 12)
-        let pitch_class = match self.pitch {
-            NotePitch::C => 0,
-            NotePitch::Cs => 1,
-            NotePitch::D => 2,
-            NotePitch::Ds => 3,
-            NotePitch::E => 4,
-            NotePitch::F => 5,
-            NotePitch::Fs => 6,
-            NotePitch::G => 7,
-            NotePitch::Gs => 8,
-            NotePitch::A => 9,
-            NotePitch::As => 10,
-            NotePitch::B => 11,
-        };
+        let pitch_class = self.pitch.semitone();
 
         let midi_note = (i32::from(self.octave) * 12) + pitch_class + 12;
 

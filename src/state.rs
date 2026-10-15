@@ -93,6 +93,21 @@ impl App {
                 pitch,
                 octave: self.octave.saturating_add(octave_offset).min(9),
             })),
+            Command::DecreaseTempo => self.bpm = (self.bpm - 1.0).clamp(20.0, 300.0),
+            Command::IncreaseTempo => self.bpm = (self.bpm + 1.0).clamp(20.0, 300.0),
+            Command::LowerNote | Command::RaiseNote => {
+                if let Some(note) = self
+                    .pattern
+                    .get_step(self.cursor_track, self.cursor_row)
+                    .and_then(|step| step.note)
+                {
+                    self.insert_note_under_cursor(Some(note.transpose(if command == Command::RaiseNote {
+                        1
+                    } else {
+                        -1
+                    })));
+                }
+            }
             Command::DeleteNote => self.insert_note_under_cursor(None),
             Command::DecreaseOctave => self.octave = self.octave.saturating_sub(1).min(9),
             Command::IncreaseOctave => self.octave = self.octave.saturating_add(1).min(9),
@@ -148,6 +163,73 @@ mod tests {
     use crate::tracker::NotePitch;
 
     #[test]
+    fn tempo_bounds_preserve_editor_and_playback_state() {
+        for playing in [false, true] {
+            let mut app = App::default();
+            if playing {
+                app.handle_command(Command::TogglePlayback);
+            }
+            app.playback_row = 17;
+            app.cursor_row = 5;
+            for _ in 0..400 {
+                app.handle_command(Command::DecreaseTempo);
+            }
+            assert_eq!(app.bpm, 20.0);
+            app.handle_command(Command::IncreaseTempo);
+            assert_eq!(app.bpm, 21.0);
+            for _ in 0..400 {
+                app.handle_command(Command::IncreaseTempo);
+            }
+            assert_eq!(app.bpm, 300.0);
+            app.handle_command(Command::DecreaseTempo);
+            assert_eq!(app.bpm, 299.0);
+            assert_eq!(matches!(app.playback_state, PlaybackState::Playing), playing);
+            assert_eq!(
+                (app.playback_row, app.cursor_row, app.cursor_track, app.octave),
+                (17, 5, 0, 4)
+            );
+        }
+    }
+
+    #[test]
+    fn semitone_commands_cover_every_pitch_octave_and_limit() {
+        use NotePitch::{As, Cs, Ds, Fs, Gs, A, B, C, D, E, F, G};
+        let pitches = [C, Cs, D, Ds, E, F, Fs, G, Gs, A, As, B];
+        let mut app = App {
+            cursor_row: 3,
+            cursor_track: 2,
+            ..App::default()
+        };
+        for command in [Command::LowerNote, Command::RaiseNote] {
+            app.handle_command(command);
+            assert_eq!(app.pattern.get_step(2, 3).unwrap().note, None);
+            for index in 0..120_usize {
+                let note = Note {
+                    pitch: pitches[index % 12],
+                    octave: u8::try_from(index / 12).unwrap(),
+                };
+                app.insert_note_under_cursor(Some(note));
+                app.handle_command(command);
+                let expected = if command == Command::RaiseNote {
+                    (index + 1).min(119)
+                } else {
+                    index.saturating_sub(1)
+                };
+                assert_eq!(
+                    app.pattern.get_step(2, 3).unwrap().note,
+                    Some(Note {
+                        pitch: pitches[expected % 12],
+                        octave: u8::try_from(expected / 12).unwrap()
+                    })
+                );
+                assert_eq!(app.octave, 4);
+                assert_eq!(app.pattern.get_step(0, 0).unwrap().note, None);
+            }
+            app.insert_note_under_cursor(None);
+        }
+    }
+
+    #[test]
     fn help_is_modal_bounded_and_does_not_pause_playback() {
         let mut app = App::default();
         app.handle_command(Command::DismissHelp);
@@ -169,11 +251,12 @@ mod tests {
                     | Command::ScrollHelpDown
             ) {
                 app.handle_command(binding.command);
+                assert_eq!(app.bpm, 120.0, "{:?}", binding.command);
+                assert_eq!((app.cursor_row, app.cursor_track, app.octave), (0, 0, 4));
+                assert_eq!(app.pattern.get_step(0, 0).unwrap().note, note);
+                assert!(matches!(app.playback_state, PlaybackState::Playing));
             }
         }
-        assert_eq!((app.cursor_row, app.cursor_track, app.octave), (0, 0, 4));
-        assert_eq!(app.pattern.get_step(0, 0).unwrap().note, note);
-        assert!(matches!(app.playback_state, PlaybackState::Playing));
         app.advance_playback_row();
         assert_eq!(app.playback_row, 1);
         for _ in 0..100 {

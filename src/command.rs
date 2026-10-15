@@ -15,6 +15,10 @@ pub enum Command {
     MoveCursorRight,
     InsertNote { pitch: NotePitch, octave_offset: u8 },
     DeleteNote,
+    DecreaseTempo,
+    IncreaseTempo,
+    LowerNote,
+    RaiseNote,
     DecreaseOctave,
     IncreaseOctave,
 }

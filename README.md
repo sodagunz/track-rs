@@ -20,6 +20,9 @@ There's still a human on the driver seat, at least for the time being.
 quits. While help is open, editing and playback toggles are blocked, but playback
 keeps running.
 
+`-`/`+` adjusts BPM by 1 (20–300). `f`/`r` lowers/raises the selected note
+one semitone (C0–B9); empty cells stay empty. Note-entry octave is unchanged.
+
 ### Dev
 
 With `devenv`, `direnv`, and `nix` installed:

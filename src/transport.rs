@@ -112,6 +112,66 @@ impl Transport {
 mod tests {
     use super::*;
     #[test]
+    fn tempo_commands_keep_boundary_and_resolve_next_note_duration() {
+        use crate::{
+            command::Command,
+            state::{App, PlaybackState},
+            tracker::NotePitch,
+        };
+        for command in [Command::DecreaseTempo, Command::IncreaseTempo] {
+            let mut app = App::default();
+            let mut transport = Transport::default();
+            let start = Instant::now();
+            app.handle_command(command);
+            assert!(transport
+                .update(
+                    start,
+                    matches!(app.playback_state, PlaybackState::Playing),
+                    64,
+                    app.bpm,
+                    4
+                )
+                .is_none());
+            assert_eq!(transport.deadline(), None);
+            app.bpm = 120.0;
+            app.handle_command(Command::TogglePlayback);
+            assert_eq!(
+                transport.update(start, true, 64, app.bpm, 4).unwrap().duration,
+                Duration::from_millis(125)
+            );
+            let boundary = transport.deadline().unwrap();
+            app.handle_command(command);
+            assert!(transport
+                .update(
+                    boundary.checked_sub(Duration::from_nanos(1)).unwrap(),
+                    true,
+                    64,
+                    app.bpm,
+                    4
+                )
+                .is_none());
+            assert_eq!(transport.deadline(), Some(boundary));
+            let event = transport.update(boundary, true, 64, app.bpm, 4).unwrap();
+            let period = Duration::from_secs_f64(60.0 / app.bpm / 4.0);
+            assert_eq!(event.row, 1);
+            assert_eq!(event.duration, period);
+            assert_eq!(transport.deadline(), Some(boundary + period));
+            app.pattern
+                .set_step(
+                    0,
+                    1,
+                    Some(crate::tracker::Note {
+                        pitch: NotePitch::Cs,
+                        octave: 4,
+                    }),
+                )
+                .unwrap();
+            assert_eq!(collect_row(&app.pattern, event)[0].duration, period);
+            assert!(transport.update(boundary, true, 64, app.bpm, 4).is_none());
+        }
+    }
+
+    #[test]
     fn exact_boundaries_wrap_without_drift() {
         let start = Instant::now();
         let mut t = Transport::default();

@@ -237,10 +237,8 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app_state: &App) {
 }
 
 fn format_step(step: PatternStep) -> String {
-    step.note.map_or_else(
-        || " . ".to_string(),
-        |note| format!("{:?}{:1}", note.pitch, note.octave),
-    )
+    step.note
+        .map_or_else(|| " . ".to_string(), |note| format!("{}{}", note.pitch, note.octave))
 }
 
 #[cfg(test)]
@@ -331,7 +329,9 @@ mod tests {
             octave: 4,
         }));
 
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        app.handle_command(Command::RaiseNote);
+        app.handle_command(Command::IncreaseTempo);
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
         terminal.draw(|frame| render(frame, &app)).unwrap();
 
         let screen: String = terminal
@@ -344,7 +344,7 @@ mod tests {
         assert!(screen.contains("? Help"));
         assert!(screen.contains("track-rs"));
         assert!(screen.contains("Track 1"));
-        assert!(screen.contains("C4"));
-        assert!(screen.contains("BPM: 120.0"));
+        assert!(screen.contains("C#4"));
+        assert!(screen.contains("BPM: 121.0"));
     }
 }

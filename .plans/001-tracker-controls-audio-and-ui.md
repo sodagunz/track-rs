@@ -1,6 +1,6 @@
 # Tracker controls, audio, and UI
 
-Status: In progress — commands, help, and transport implemented; tempo controls, instruments, and grid improvements pending.
+Status: In progress — commands, help, transport, and step 4 tempo controls implemented; instruments and grid improvements pending.
 
 ## Goal
 
@@ -9,7 +9,7 @@ Make the proof of concept easier to play and extend: explicit commands, discover
 ## Current state
 
 - `src/bindings.rs` resolves terminal events through `DEFAULT_BINDINGS` into typed commands handled by `App`.
-- `src/state.rs` holds editor and playback state. BPM defaults to 120, with no tempo controls.
+- `src/state.rs` holds editor and playback state. BPM defaults to 120; `-`/`+` adjusts it by one within 20–300.
 - `src/transport.rs` owns row deadlines and collects note events. The main loop waits for input or the next deadline.
 - `src/audio.rs` still uses one pluck voice. Playback notes last one row; stop cancels voices and effect tails.
 - `src/ui.rs` renders a plain table without row numbers or musical grouping. Playback highlighting can overwrite the cursor highlight.
@@ -83,14 +83,16 @@ Acceptance criteria:
 
 Files: command/binding modules, `src/state.rs`, transport module, `src/ui.rs`.
 
-- [ ] Implement bounded BPM adjustments through commands and default bindings.
-- [ ] Apply tempo changes at the next row boundary while retaining the playback position.
-- [ ] Keep the current BPM visible in the status bar and include controls in help.
+- [x] Implement bounded BPM adjustments through commands and default bindings.
+- [x] Apply tempo changes at the next row boundary while retaining the playback position.
+- [x] Keep the current BPM visible in the status bar and include controls in help.
 
 Acceptance criteria:
 
 - Tempo changes work while stopped and playing, cannot produce invalid intervals, and do not restart playback.
 - At 120 BPM and four rows per beat, rows are scheduled 125 ms apart.
+
+Implementation notes: `-`/`+` has no `=` alias. `f`/`r` lowers/raises the selected note chromatically by one semitone, clamped to C0–B9; empty cells and the entry octave are unchanged. Both adjustments repeat and are blocked by help. Accidentals display as `C#4`. Transport behavior is unchanged and covered by command-to-boundary tests.
 
 ### 5. Add built-in instruments
 
