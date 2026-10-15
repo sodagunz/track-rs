@@ -1,5 +1,6 @@
 use crate::{
     command::Command,
+    history::{Edit, History, Revision},
     tracker::{Note, Pattern},
 };
 
@@ -30,6 +31,7 @@ pub enum PlaybackState {
 
 #[derive(Clone, Debug)]
 pub struct App {
+    pub(crate) history: History,
     pub mode: Mode,
     pub selection_anchor: Option<(usize, usize)>,
     pub pending_count: Option<u16>,
@@ -68,6 +70,7 @@ impl Default for App {
         let default_rows = 64;
         let default_tracks = 4;
         Self {
+            history: History::default(),
             mode: Mode::Normal,
             selection_anchor: None,
             pending_count: None,
@@ -158,16 +161,24 @@ impl App {
                 pitch,
                 octave: self.octave.saturating_add(octave_offset).min(9),
             })),
-            Command::SetInstrument(instrument) => self.pattern.set_instrument(self.cursor_track, instrument),
+            Command::Undo => self.history.undo(&mut self.pattern, &mut self.bpm),
+            Command::Redo => self.history.redo(&mut self.pattern, &mut self.bpm),
+            Command::SetInstrument(instrument) => {
+                let track = self.cursor_track;
+                self.edit(|edit| edit.set_instrument(track, instrument));
+            }
             Command::PreviousInstrument | Command::NextInstrument => {
                 let instrument = self
                     .pattern
                     .instrument(self.cursor_track)
                     .cycle(command == Command::NextInstrument);
-                self.pattern.set_instrument(self.cursor_track, instrument);
+                let track = self.cursor_track;
+                self.edit(|edit| edit.set_instrument(track, instrument));
             }
-            Command::DecreaseTempo => self.bpm = (self.bpm - 1.0).clamp(20.0, 300.0),
-            Command::IncreaseTempo => self.bpm = (self.bpm + 1.0).clamp(20.0, 300.0),
+            Command::DecreaseTempo | Command::IncreaseTempo => {
+                let bpm = (self.bpm + if command == Command::IncreaseTempo { 1.0 } else { -1.0 }).clamp(20.0, 300.0);
+                self.edit(|edit| edit.set_tempo(bpm));
+            }
             Command::LowerNote | Command::RaiseNote => {
                 if let Some(note) = self
                     .pattern
@@ -212,14 +223,21 @@ impl App {
         }
     }
 
-    /// Replace the note at the cursor position.
-    ///
-    /// # Panics
-    /// Panics if the cursor is outside the pattern's tracks or rows.
+    /// Apply one document transaction, including future multi-cell operations.
+    pub fn edit(&mut self, operation: impl FnOnce(&mut Edit<'_>)) {
+        self.history.edit(&mut self.pattern, &mut self.bpm, operation);
+    }
+
+    /// Stable identity for future saved-revision comparisons, even after eviction.
+    #[must_use]
+    pub const fn revision(&self) -> Revision {
+        self.history.revision()
+    }
+
+    /// Replace the note at the cursor; invalid positions are ignored.
     pub fn insert_note_under_cursor(&mut self, note: Option<Note>) {
-        self.pattern
-            .set_step(self.cursor_track, self.cursor_row, note)
-            .expect("Cursor should be whitin bounds");
+        let (track, row) = (self.cursor_track, self.cursor_row);
+        self.edit(|edit| edit.set_cell(track, row, note));
     }
 
     /// Legacy standalone editor helper; the runtime uses `Transport` instead.

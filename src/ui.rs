@@ -513,7 +513,7 @@ mod tests {
                 let expected: String = format!(
                     "[{}] {}: {}",
                     binding.category,
-                    key_label(binding.key),
+                    binding_label(binding),
                     binding.description
                 )
                 .chars()

@@ -32,6 +32,13 @@ entry octave and Delete clears a note. `f`/`r` lowers/raises the selected note
 one semitone (C0–B9); empty cells stay empty. Note-entry octave is unchanged.
 Movement and adjustments can repeat; note entry and mode switches are press-only.
 
+In Normal, `u` undoes an edit and `Ctrl-r` redoes it (press-only, no counts).
+Notes, transposition, track instruments, and BPM are undoable; navigation, modes,
+entry octave, and playback aren't. Undo/redo doesn't restart playback. New edits
+discard redo; unchanged edits don't. History retains up to 256 transactions and
+65,536 changed values across undo and redo, evicting oldest transactions first.
+An edit larger than that budget still applies but clears retained history.
+
 Space toggles playback and `-`/`+` adjusts BPM by 1 (20–300) in every mode.
 
 `[`/`]` cycles the selected track’s instrument: Pluck (default), Sine, Square, Saw,

@@ -1,6 +1,6 @@
 # Modal editing and projects
 
-Status: Phase 1 implemented; phases 2–5 planned. Builds on `feat/pattern-grid` (#9).
+Status: Phases 1–2 implemented; phases 3–5 planned. Builds on `feat/pattern-grid` (#9).
 
 Make writing and reusing a pattern comfortable, then make it safe to keep. Each
 phase gets its own branch/stacked PR. Don't build the mixer or a full Vim clone.
@@ -60,18 +60,34 @@ audible playback pass was performed. Counts saturate at 9999.
 Touches: editor state/commands; extract an edit-history module if it keeps the
 mutation rules in one place.
 
-- [ ] Route document changes through one edit interface: note entry/replacement,
+- [x] Route document changes through one edit interface: note entry/replacement,
   clear, transpose, instrument assignment, and BPM. Record before/after values;
   keep cursor, mode, selection, clipboard, entry octave, and playback out of history.
-- [ ] Normal `u` undoes; `Ctrl-r` redoes. Each dispatched edit is one transaction;
+- [x] Normal `u` undoes; `Ctrl-r` redoes. Each dispatched edit is one transaction;
   later bulk operations are one transaction too. No-op edits create no entries.
-- [ ] New edits after undo discard redo. Bound history with a documented budget;
+- [x] New edits after undo discard redo. Bound history with a documented budget;
   retain enough information for dirty tracking even when old entries are evicted.
-- [ ] Undo/redo during playback affects future row events without restarting the
+- [x] Undo/redo during playback affects future row events without restarting the
   transport. Don't record transport updates or generated audio.
-- [ ] Test every edit's undo/redo, limits, no-ops, divergent history, and playback.
+- [x] Test every edit's undo/redo, limits, no-ops, divergent history, and playback.
 
 Done: all supported document edits can be undone without rewinding playback.
+
+Phase 2 uses value diffs through `App::edit`, including the public note-entry
+helper. A transaction can contain multiple cell/instrument/BPM writes; repeated
+writes coalesce and net no-ops preserve redo. History retains at most 256
+transactions and 65,536 changed values across undo/redo. Oldest transactions are
+evicted whole; an oversized edit applies but clears retained history. Revision
+tokens are monotonic within the history, never reused after divergence/eviction;
+undo/redo restores the original tokens for future saved-revision comparisons.
+Raw pattern setters remain available for document construction, not editor edits.
+
+Phase 2 validation: formatting, strict all-target Clippy, 41 nextest tests,
+0 doctests, warning-free docs, actionlint, cargo-deny, and the null-audio example
+passed. Cargo-deny reports duplicate-version warnings. Key-dispatch and headless
+UI tests cover history modes/modifiers/counts/help; device-free transport tests
+cover future note events and unchanged deadlines. No interactive terminal or
+audible playback pass was performed. No phase 3–5 behavior is implemented.
 
 ## 3. Selection, clipboard, and edit step
 

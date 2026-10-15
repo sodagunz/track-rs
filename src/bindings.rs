@@ -35,6 +35,7 @@ impl Binding {
                 | Command::RaiseNote
                 | Command::DecreaseOctave
                 | Command::IncreaseOctave => &[Mode::Insert],
+                Command::Undo | Command::Redo => &[Mode::Normal],
                 Command::EnterInsert | Command::ToggleVisual | Command::CountDigit(_) => &[Mode::Normal, Mode::Visual],
                 _ => &[Mode::Normal, Mode::Insert, Mode::Visual],
             },
@@ -47,6 +48,11 @@ impl Binding {
 
 /// The single source of truth for default controls and their descriptions.
 pub const DEFAULT_BINDINGS: &[Binding] = &[
+    Binding::new(KeyCode::Char('u'), Command::Undo, "Undo edit", "History"),
+    Binding {
+        modifiers: KeyModifiers::CONTROL,
+        ..Binding::new(KeyCode::Char('r'), Command::Redo, "Redo edit", "History")
+    },
     Binding::new(KeyCode::Char('i'), Command::EnterInsert, "Enter Insert", "Modes"),
     Binding::new(
         KeyCode::Char('v'),
