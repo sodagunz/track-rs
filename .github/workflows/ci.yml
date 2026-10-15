@@ -37,7 +37,13 @@ jobs:
       - name: Install validation tools
         uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
         with:
-          tool: cargo-nextest,cargo-deny,actionlint
+          tool: cargo-nextest,cargo-deny
+      - name: Install actionlint
+        env:
+          GOBIN: ${{ runner.temp }}/actionlint
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          echo "$GOBIN" >> "$GITHUB_PATH"
       - name: Check workflow syntax
         run: actionlint
       - name: Check formatting
