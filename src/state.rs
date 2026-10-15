@@ -14,6 +14,7 @@ pub struct App {
     pub pattern: Pattern,
     pub cursor_row: usize,
     pub cursor_track: usize,
+    /// UI mirror of the transport row; the runtime transport owns advancement.
     pub playback_row: usize,
     pub playback_state: PlaybackState,
     pub octave: u8,
@@ -102,8 +103,8 @@ impl App {
         let max_rows = self.pattern.num_rows;
         let max_tracks = self.pattern.tracks.len();
 
-        self.cursor_row = dr.apply_to(self.cursor_row).clamp(0, max_rows - 1);
-        self.cursor_track = dt.apply_to(self.cursor_track).clamp(0, max_tracks - 1);
+        self.cursor_row = dr.apply_to(self.cursor_row).clamp(0, max_rows.saturating_sub(1));
+        self.cursor_track = dt.apply_to(self.cursor_track).clamp(0, max_tracks.saturating_sub(1));
     }
 
     pub const fn shutdown(&mut self) {
@@ -118,7 +119,7 @@ impl App {
             }
             PlaybackState::Playing => {
                 self.playback_state = PlaybackState::Stopped;
-                // TODO: Kill all sounds
+                // The runtime observes this transition and cancels audio.
             }
         }
     }
@@ -133,8 +134,9 @@ impl App {
             .expect("Cursor should be whitin bounds");
     }
 
+    /// Legacy standalone editor helper; the runtime uses `Transport` instead.
     pub const fn advance_playback_row(&mut self) {
-        if matches!(self.playback_state, PlaybackState::Playing) {
+        if matches!(self.playback_state, PlaybackState::Playing) && self.pattern.num_rows > 0 {
             self.playback_row = (self.playback_row + 1) % self.pattern.num_rows;
         }
     }

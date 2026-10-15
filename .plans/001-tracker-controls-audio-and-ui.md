@@ -1,6 +1,6 @@
 # Tracker controls, audio, and UI
 
-Status: In progress — typed commands, default bindings, and modal keybinding help implemented; transport, tempo, instruments, and grid improvements pending.
+Status: In progress — commands, help, and transport implemented; tempo controls, instruments, and grid improvements pending.
 
 ## Goal
 
@@ -10,8 +10,8 @@ Make the proof of concept easier to play and extend: explicit commands, discover
 
 - `src/bindings.rs` resolves terminal events through `DEFAULT_BINDINGS` into typed commands handled by `App`.
 - `src/state.rs` holds editor and playback state. BPM defaults to 120, with no tempo controls.
-- `src/main.rs` mixes input, rendering, timing, row advancement, and note dispatch. Timing resets to the current instant on each tick, and the calculated sleep is disabled.
-- `src/audio.rs` uses one hardcoded pluck voice, a fixed note duration, and a fixed effects graph for every track.
+- `src/transport.rs` owns row deadlines and collects note events. The main loop waits for input or the next deadline.
+- `src/audio.rs` still uses one pluck voice. Playback notes last one row; stop cancels voices and effect tails.
 - `src/ui.rs` renders a plain table without row numbers or musical grouping. Playback highlighting can overwrite the cursor highlight.
 
 ## Scope and decisions
@@ -61,13 +61,17 @@ Acceptance criteria:
 
 Files: `src/main.rs`, `src/audio.rs`, `src/state.rs`, and a new transport module.
 
-- [ ] Extract a transport that owns playback deadlines and row advancement, with explicit BPM and rows-per-beat settings.
-- [ ] Make start, stop, restart, row wrapping, and tempo-change behavior explicit. Start at row zero immediately and stop active voices when stopping playback.
-- [ ] Advance deadlines from the previous scheduled time to avoid accumulating drift. Define bounded handling for missed deadlines so a delayed UI frame cannot trigger an unbounded burst of stale notes.
-- [ ] Separate row-to-note-event collection from voice construction and output-device setup. Include track instrument and musical duration in note events.
-- [ ] Keep rendering work outside the audio callback. Use the existing sequencer/backend boundary where sufficient; add message passing only where needed for scheduling and cancellation.
-- [ ] Reduce the main loop to input dispatch, transport updates, note-event submission, rendering, and waiting until the next event/deadline. Restore an actual wait to eliminate busy spinning.
-- [ ] Replace fixed note durations and implicit effects choices with named defaults; provide a clear dry signal path for the new sounds.
+- [x] Extract a transport that owns playback deadlines and row advancement, with explicit BPM and rows-per-beat settings.
+- [x] Make start, stop, restart, row wrapping, and tempo-change behavior explicit. Start at row zero immediately and stop active voices when stopping playback.
+- [x] Advance deadlines from the previous scheduled time to avoid accumulating drift. Define bounded handling for missed deadlines so a delayed UI frame cannot trigger an unbounded burst of stale notes.
+- [x] Separate row-to-note-event collection from voice construction and output-device setup. Events include track identity, beats, and resolved duration. Instrument assignment is deferred to step 5: the current track schema has no instruments.
+- [x] Keep rendering work outside the audio callback. Use the existing sequencer/backend boundary where sufficient; add message passing only where needed for scheduling and cancellation.
+- [x] Reduce the main loop to input dispatch, transport updates, note-event submission, rendering, and waiting until the next event/deadline. Restore an actual wait to eliminate busy spinning.
+- [x] Replace fixed note durations and implicit effects choices with named defaults; provide a clear dry signal path for the new sounds.
+
+Implementation notes: `Transport` owns deadlines/rows; `App.playback_row` mirrors it for display (the legacy advancement helper remains for compatibility). Missed rows are skipped in constant time; only the latest due row is emitted. Tempo changes keep the existing next boundary, then use the new interval. Invalid rates/empty patterns stop the clock. Notes last one row; `play(Note)` retains its 200 ms default. The pluck/filter/chorus sound remains the default; `with_dry_output(true)` bypasses chorus.
+
+Stop swaps in a control-thread-prepared FunDSP graph through a scoped channel before the callback's next sample, cancelling voices, pending notes, and FX tails together. Retired graphs return to the control thread for disposal. This avoids `ReplayMode::All` reset replay and sequencer-only resets leaving chorus tails. The standard-library channel isn't a hard realtime allocation-free guarantee, and already-buffered device samples can't be recalled. No instrument schema was added.
 
 Acceptance criteria:
 
@@ -129,6 +133,8 @@ Acceptance criteria:
 - Help blocks editor and playback-toggle commands while allowing quit, close, and scrolling. Existing playback advancement is unchanged and tested while help is open. Help toggles do not repeat; scrolling does.
 - Added TestBackend coverage for every binding through scrolling at 80×30, 32×8, and 24×6, plus tiny/empty viewport safety. `cargo fmt`, `cargo fmt --check`, `cargo test` (11 tests), and `cargo clippy --all-targets` passed; repository lint warnings remain. No interactive terminal/audio pass performed.
 
+- Transport validation: all 18 nextest tests, strict Clippy, formatting, actionlint, doctests, docs, cargo-deny, and the headless example passed. No listening pass yet.
+
 ## Order and validation
 
 Implement in the order above: commands → help → transport/audio structure → tempo → instruments → UI polish. Keep each phase independently reviewable.
@@ -145,5 +151,5 @@ Implement in the order above: commands → help → transport/audio structure �
 - [x] `?` shows the complete current binding list.
 - [ ] Sine, square, saw, kick, snare, and hi-hat are usable.
 - [ ] Tempo is adjustable from the keyboard and visible.
-- [ ] Transport, note scheduling, voice construction, and UI orchestration have clear responsibilities.
+- [x] Transport, note scheduling, voice construction, and UI orchestration have clear responsibilities.
 - [ ] Pattern rows have clear four-row and sixteen-row grouping.
