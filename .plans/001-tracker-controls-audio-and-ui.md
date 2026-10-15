@@ -1,6 +1,6 @@
 # Tracker controls, audio, and UI
 
-Status: In progress — typed commands and default bindings implemented; remaining features pending.
+Status: In progress — typed commands, default bindings, and modal keybinding help implemented; transport, tempo, instruments, and grid improvements pending.
 
 ## Goal
 
@@ -8,7 +8,7 @@ Make the proof of concept easier to play and extend: explicit commands, discover
 
 ## Current state
 
-- `src/bindings.rs` matches keys and directly mutates `App`, including note entry and octave changes.
+- `src/bindings.rs` resolves terminal events through `DEFAULT_BINDINGS` into typed commands handled by `App`.
 - `src/state.rs` holds editor and playback state. BPM defaults to 120, with no tempo controls.
 - `src/main.rs` mixes input, rendering, timing, row advancement, and note dispatch. Timing resets to the current instant on each tick, and the calculated sleep is disabled.
 - `src/audio.rs` uses one hardcoded pluck voice, a fixed note duration, and a fixed effects graph for every track.
@@ -33,7 +33,7 @@ Files: `src/bindings.rs`, `src/state.rs`, a new command module, and module decla
 - [ ] Define a comprehensive `Command` enum covering existing and planned actions: quit, toggle playback, move cursor in four directions, insert note, delete note, change octave, toggle/dismiss help, change tempo, and select/cycle instrument.
 - [x] Give commands typed payloads where needed, such as pitch plus an octave offset for note entry. Resolve the current octave in `App::handle_command`, including clamping the upper-C shortcut safely.
 - [x] Add `App::handle_command(Command)` as the entry point for user actions; retain focused state methods behind it.
-- [ ] Define default bindings with keys/modifiers, command, description, and help category. Resolve key events through this registry instead of duplicating a match table and help text.
+- [x] Define default bindings with keys/modifiers, command, description, and help category. Resolve key events through this registry instead of duplicating a match table and help text.
 - [x] Handle key press/repeat/release deliberately, with repeats allowed for movement and adjustments but not toggles. Normalize Shift on printable character events for future `?` and `+` controls.
 
 Acceptance criteria:
@@ -46,15 +46,15 @@ Acceptance criteria:
 
 Files: `src/state.rs`, `src/ui.rs`, `src/bindings.rs`.
 
-- [ ] Track help visibility and render a centered overlay with bindings grouped by navigation, editing, playback, instruments, and application controls.
-- [ ] Generate its contents from the binding registry, including aliases and a visible close instruction.
-- [ ] Make help modal for editing controls; permit closing, scrolling, and quitting while keeping playback running.
-- [ ] Support small terminals with scrolling or a compact layout and add a persistent `? Help` hint.
+- [x] Track help visibility and render a centered overlay with registry categories for currently supported controls. Instrument controls remain deferred to step 5.
+- [x] Generate its contents from the binding registry, including aliases and a visible close instruction.
+- [x] Make help modal for editing controls; permit closing, scrolling, and quitting while keeping playback running.
+- [x] Support small terminals with scrolling or a compact layout and add a persistent `? Help` hint.
 
 Acceptance criteria:
 
 - `?` opens and closes help; `Esc` closes it without quitting.
-- Every default binding is discoverable, including tempo and instrument controls.
+- Every currently supported default binding is discoverable, including aliases. Tempo and instrument bindings will appear when implemented in steps 4 and 5.
 - Opening help does not interrupt playback or accidentally edit the pattern.
 
 ### 3. Separate transport timing from audio rendering
@@ -125,6 +125,9 @@ Acceptance criteria:
 
 - Implemented commands for all existing actions, a documented default binding registry, terminal event resolution, and state dispatch. Future commands will be added alongside their behavior.
 - Added tests for key resolution, modifiers, repeat/release handling, unique bindings, movement bounds, note insertion/deletion, octave bounds, playback, and quit.
+- Implemented registry-generated modal help: `?` toggles, `Esc` dismisses without quitting, Up/Down scroll a bounded binding index, and a persistent `? Help` hint remains outside the overlay. Categories and all aliases (including `Q`) come from the registry. Compact borderless rendering wraps entries on small screens; physically tiny viewports degrade by clipping without panicking.
+- Help blocks editor and playback-toggle commands while allowing quit, close, and scrolling. Existing playback advancement is unchanged and tested while help is open. Help toggles do not repeat; scrolling does.
+- Added TestBackend coverage for every binding through scrolling at 80×30, 32×8, and 24×6, plus tiny/empty viewport safety. `cargo fmt`, `cargo fmt --check`, `cargo test` (11 tests), and `cargo clippy --all-targets` passed; repository lint warnings remain. No interactive terminal/audio pass performed.
 
 ## Order and validation
 
@@ -139,7 +142,7 @@ Implement in the order above: commands → help → transport/audio structure �
 ## Completion checklist
 
 - [ ] All user actions pass through typed commands.
-- [ ] `?` shows the complete current binding list.
+- [x] `?` shows the complete current binding list.
 - [ ] Sine, square, saw, kick, snare, and hi-hat are usable.
 - [ ] Tempo is adjustable from the keyboard and visible.
 - [ ] Transport, note scheduling, voice construction, and UI orchestration have clear responsibilities.

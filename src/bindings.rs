@@ -30,6 +30,10 @@ impl Binding {
 
 /// The single source of truth for default controls and their descriptions.
 pub const DEFAULT_BINDINGS: &[Binding] = &[
+    Binding::new(KeyCode::Char('?'), Command::ToggleHelp, "Toggle help", "Application"),
+    Binding::new(KeyCode::Esc, Command::DismissHelp, "Close help", "Application"),
+    Binding::new(KeyCode::Up, Command::ScrollHelpUp, "Scroll help up", "Help"),
+    Binding::new(KeyCode::Down, Command::ScrollHelpDown, "Scroll help down", "Help"),
     Binding::new(KeyCode::Char('q'), Command::Quit, "Quit", "Application"),
     Binding::new(KeyCode::Char('Q'), Command::Quit, "Quit", "Application"),
     Binding::new(
@@ -197,6 +201,19 @@ mod tests {
         assert_eq!(resolve(event(KeyCode::Char('k'), KeyEventKind::Release)), None);
         assert_eq!(resolve(event(KeyCode::Char(' '), KeyEventKind::Repeat)), None);
         assert_eq!(resolve(event(KeyCode::Char('q'), KeyEventKind::Repeat)), None);
+        assert_eq!(resolve(event(KeyCode::Char('?'), KeyEventKind::Repeat)), None);
+        assert_eq!(
+            resolve(event(KeyCode::Down, KeyEventKind::Repeat)),
+            Some(Command::ScrollHelpDown)
+        );
+        assert_eq!(
+            resolve(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT)),
+            Some(Command::ToggleHelp)
+        );
+        assert_eq!(
+            resolve(event(KeyCode::Esc, KeyEventKind::Press)),
+            Some(Command::DismissHelp)
+        );
         assert_eq!(
             resolve(event(KeyCode::Char('j'), KeyEventKind::Repeat)),
             Some(Command::MoveCursorDown)

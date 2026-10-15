@@ -7,11 +7,11 @@ use ratatui::{
     prelude::CrosstermBackend,
     style::{Color, Style},
     text::Line,
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table},
+    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, Wrap},
     Frame, Terminal,
 };
 
-use crate::{state::App, tracker::PatternStep};
+use crate::{bindings::DEFAULT_BINDINGS, command::Command, state::App, tracker::PatternStep};
 
 pub struct TUI<W: std::io::Write> {
     pub terminal: Terminal<CrosstermBackend<W>>,
@@ -52,6 +52,107 @@ fn render(f: &mut Frame, state: &App) {
     draw_title_bar(f, chunks[0], state);
     draw_pattern_editor(f, chunks[1], state);
     draw_status_bar(f, chunks[2], state);
+    // Reserve a screen-edge hint even when the normal status layout cannot fit.
+    let area = f.area();
+    if area.height > 0 {
+        f.render_widget(
+            Paragraph::new(format!("{} Help", command_keys(Command::ToggleHelp))),
+            Rect::new(area.x, area.bottom() - 1, area.width, 1),
+        );
+    }
+    if state.help_visible {
+        draw_help(f, state);
+    }
+}
+
+fn key_label(key: crossterm::event::KeyCode) -> String {
+    use crossterm::event::KeyCode;
+    match key {
+        KeyCode::Char(' ') => "Space".into(),
+        KeyCode::Char(c) => c.to_string(),
+        KeyCode::Esc => "Esc".into(),
+        KeyCode::Up => "Up".into(),
+        KeyCode::Down => "Down".into(),
+        KeyCode::Delete => "Delete".into(),
+        other => format!("{other:?}"),
+    }
+}
+
+fn command_keys(command: Command) -> String {
+    DEFAULT_BINDINGS
+        .iter()
+        .filter(|binding| binding.command == command)
+        .map(|binding| key_label(binding.key))
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn help_bindings() -> Vec<&'static crate::bindings::Binding> {
+    let mut bindings: Vec<_> = DEFAULT_BINDINGS.iter().collect();
+    // Stable sorting keeps aliases and controls in registry order within each category.
+    bindings.sort_by_key(|binding| binding.category);
+    bindings
+}
+
+fn draw_help(f: &mut Frame, state: &App) {
+    let screen = f.area();
+    let width = screen.width.min(64);
+    let height = screen.height.min(24);
+    let area = Rect::new(
+        screen.x + (screen.width - width) / 2,
+        screen.y + (screen.height - height) / 2,
+        width,
+        height,
+    );
+    f.render_widget(Clear, area);
+    // On small screens omit borders rather than spending scarce content rows.
+    let bordered = width >= 40 && height >= 8;
+    let block = Block::default()
+        .title("Keybindings")
+        .borders(if bordered { Borders::ALL } else { Borders::NONE });
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    if inner.height == 0 {
+        return;
+    }
+    let close = format!(
+        "{}/{} close",
+        command_keys(Command::ToggleHelp),
+        command_keys(Command::DismissHelp)
+    );
+    f.render_widget(Paragraph::new(close), Rect::new(inner.x, inner.y, inner.width, 1));
+    if inner.height < 2 {
+        return;
+    }
+    let bindings = help_bindings();
+    let start = state.help_scroll.min(bindings.len().saturating_sub(1));
+    let mut lines = Vec::new();
+    for binding in &bindings[start..] {
+        lines.push(Line::from(format!(
+            "[{}] {}: {}",
+            binding.category,
+            key_label(binding.key),
+            binding.description
+        )));
+    }
+    let footer_rows = u16::from(inner.height >= 4);
+    f.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }),
+        Rect::new(inner.x, inner.y + 1, inner.width, inner.height - 1 - footer_rows),
+    );
+    if footer_rows > 0 {
+        let footer = format!(
+            "{}/{} scroll  {}/{}",
+            command_keys(Command::ScrollHelpUp),
+            command_keys(Command::ScrollHelpDown),
+            start + 1,
+            DEFAULT_BINDINGS.len()
+        );
+        f.render_widget(
+            Paragraph::new(footer),
+            Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
+        );
+    }
 }
 
 fn draw_title_bar(f: &mut Frame, area: Rect, _: &App) {
@@ -133,6 +234,80 @@ mod tests {
     use crate::tracker::{Note, NotePitch};
     use ratatui::backend::TestBackend;
 
+    fn screen(terminal: &Terminal<TestBackend>) -> String {
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
+    }
+
+    #[test]
+    fn help_groups_categories_stably_without_losing_aliases() {
+        let bindings = help_bindings();
+        assert_eq!(bindings.len(), DEFAULT_BINDINGS.len());
+        assert!(bindings.windows(2).all(|pair| pair[0].category <= pair[1].category));
+        for binding in DEFAULT_BINDINGS {
+            assert_eq!(bindings.iter().filter(|entry| entry.key == binding.key).count(), 1);
+        }
+        for category in bindings.iter().map(|binding| binding.category) {
+            let displayed: Vec<_> = bindings
+                .iter()
+                .filter(|binding| binding.category == category)
+                .map(|binding| binding.key)
+                .collect();
+            let registered: Vec<_> = DEFAULT_BINDINGS
+                .iter()
+                .filter(|binding| binding.category == category)
+                .map(|binding| binding.key)
+                .collect();
+            assert_eq!(displayed, registered);
+        }
+    }
+
+    #[test]
+    fn help_scrolls_to_every_binding_and_displays_close_controls() {
+        for (width, height) in [(80, 30), (32, 8), (24, 6)] {
+            let mut app = App::default();
+            app.handle_command(Command::ToggleHelp);
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            for binding in help_bindings() {
+                terminal.draw(|frame| render(frame, &app)).unwrap();
+                let text = screen(&terminal);
+                assert!(text.contains("?/Esc close"));
+                // Wrapping may insert padding between words.
+                let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+                let expected: String = format!(
+                    "[{}] {}: {}",
+                    binding.category,
+                    key_label(binding.key),
+                    binding.description
+                )
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+                assert!(
+                    compact.contains(&expected),
+                    "missing {expected} at {width}x{height}: {text}"
+                );
+                app.handle_command(Command::ScrollHelpDown);
+            }
+        }
+    }
+
+    #[test]
+    fn tiny_viewports_render_without_panicking() {
+        for (width, height) in [(0, 0), (1, 1), (2, 2), (10, 3), (20, 5)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            let mut app = App::default();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.handle_command(Command::ToggleHelp);
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+        }
+    }
+
     #[test]
     fn renders_pattern_and_status_without_a_terminal() {
         let mut app = App::default();
@@ -151,6 +326,7 @@ mod tests {
             .iter()
             .map(ratatui::buffer::Cell::symbol)
             .collect();
+        assert!(screen.contains("? Help"));
         assert!(screen.contains("track-rs"));
         assert!(screen.contains("Track 1"));
         assert!(screen.contains("C4"));
