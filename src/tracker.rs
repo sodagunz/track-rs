@@ -1,4 +1,5 @@
 use anyhow::anyhow;
+use fundsp::math::midi_hz;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -25,7 +26,7 @@ pub struct Note {
 
 impl Note {
     #[allow(clippy::cast_precision_loss)]
-    pub fn freq(self) -> f32 {
+    pub fn freq(self) -> f64 {
         // freq = 440.0 * 2^((midi_note - 69) / 12)
         let pitch_class = match self.pitch {
             NotePitch::C => 0,
@@ -44,7 +45,7 @@ impl Note {
 
         let midi_note = (i32::from(self.octave) * 12) + pitch_class + 12;
 
-        440.0 * 2.0_f32.powf((midi_note as f32 - 69.0) / 12.0)
+        midi_hz(midi_note as f64)
     }
 }
 

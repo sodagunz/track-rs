@@ -1,6 +1,10 @@
+use crossterm::{
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    prelude::Backend,
+    prelude::CrosstermBackend,
     style::{Color, Style},
     text::Line,
     widgets::{Block, Borders, Cell, Paragraph, Row, Table},
@@ -9,27 +13,45 @@ use ratatui::{
 
 use crate::{state::App, tracker::PatternStep};
 
-pub fn draw<B: Backend>(terminal: &mut Terminal<B>, app_state: &App) {
-    terminal
-        .draw(|f| {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .margin(1)
-                .constraints(
-                    [
-                        Constraint::Percentage(2),
-                        Constraint::Percentage(90),
-                        Constraint::Percentage(5),
-                    ]
-                    .as_ref(),
-                )
-                .split(f.area());
+pub struct TUI<W: std::io::Write> {
+    pub terminal: Terminal<CrosstermBackend<W>>,
+}
 
-            draw_title_bar(f, chunks[0], app_state);
-            draw_pattern_editor(f, chunks[1], app_state);
-            draw_status_bar(f, chunks[2], app_state);
-        })
-        .unwrap();
+impl<W: std::io::Write> TUI<W> {
+    pub fn new(writer: W) -> anyhow::Result<Self> {
+        enable_raw_mode()?;
+        let mut w = writer;
+        execute!(w, EnterAlternateScreen)?;
+
+        let backend = CrosstermBackend::new(w);
+        let terminal = Terminal::new(backend)?;
+
+        Ok(TUI { terminal })
+    }
+
+    pub fn destroy(&mut self) -> anyhow::Result<()> {
+        disable_raw_mode()?;
+        execute!(self.terminal.backend_mut(), LeaveAlternateScreen)?;
+        self.terminal.show_cursor()?;
+
+        Ok(())
+    }
+
+    pub fn draw(&mut self, state: &App) {
+        self.terminal.draw(|f| render(f, state)).unwrap();
+    }
+}
+
+fn render(f: &mut Frame, state: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([Constraint::Length(2), Constraint::Min(0), Constraint::Length(3)].as_ref())
+        .split(f.area());
+
+    draw_title_bar(f, chunks[0], state);
+    draw_pattern_editor(f, chunks[1], state);
+    draw_status_bar(f, chunks[2], state);
 }
 
 fn draw_title_bar(f: &mut Frame, area: Rect, _: &App) {
@@ -54,7 +76,8 @@ fn draw_pattern_editor(f: &mut Frame, area: Rect, app_state: &App) {
                 .get_step(track_idx, row_idx)
                 .copied()
                 .expect("Should be able to clone a step");
-            let cell_str = format_step(step); //TODO: Trait "drawable" or whatever, impl on patternstep
+            let cell_str = format_step(step); // TODO: Trait "drawable" or whatever, impl on
+                                              // patternstep
 
             // Highlighting
             let mut style = Style::default();
@@ -73,7 +96,7 @@ fn draw_pattern_editor(f: &mut Frame, area: Rect, app_state: &App) {
         rows.push(Row::new(row_cells));
     }
 
-    let track_width = 10; //FIXME: fixed width is not guaranteed
+    let track_width = 10; // FIXME: fixed width is not guaranteed
     let constraints = std::iter::repeat_n(Constraint::Length(track_width), num_tracks).collect::<Vec<_>>();
 
     let table = Table::new(rows, &constraints)
@@ -101,5 +124,36 @@ fn format_step(step: PatternStep) -> String {
     match step.note {
         Some(note) => format!("{:?}{:1}", note.pitch, note.octave),
         None => " . ".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tracker::{Note, NotePitch};
+    use ratatui::backend::TestBackend;
+
+    #[test]
+    fn renders_pattern_and_status_without_a_terminal() {
+        let mut app = App::default();
+        app.insert_note_under_cursor(Some(Note {
+            pitch: NotePitch::C,
+            octave: 4,
+        }));
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+        assert!(screen.contains("track-rs"));
+        assert!(screen.contains("Track 1"));
+        assert!(screen.contains("C4"));
+        assert!(screen.contains("BPM: 120.0"));
     }
 }
