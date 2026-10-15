@@ -23,6 +23,9 @@ keeps running.
 `-`/`+` adjusts BPM by 1 (20–300). `f`/`r` lowers/raises the selected note
 one semitone (C0–B9); empty cells stay empty. Note-entry octave is unchanged.
 
+`[`/`]` cycles the selected track’s instrument: Pluck (default), Sine, Square, Saw,
+Kick, Snare, HiHat. Percussion ignores pitch; new presets play dry.
+
 ### Dev
 
 With `devenv`, `direnv`, and `nix` installed:

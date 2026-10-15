@@ -180,8 +180,9 @@ fn draw_title_bar(f: &mut Frame, area: Rect, _: &App) {
 fn draw_pattern_editor(f: &mut Frame, area: Rect, app_state: &App) {
     let pattern = &app_state.pattern;
     let num_tracks = pattern.tracks.len();
-    let header_cells =
-        (0..num_tracks).map(|i| Cell::from(format!("Track {}", i + 1)).style(Style::default().fg(Color::Green)));
+    let header_cells = (0..num_tracks).map(|i| {
+        Cell::from(format!("{} {}", i + 1, pattern.instrument(i).label())).style(Style::default().fg(Color::Green))
+    });
     let header = Row::new(header_cells).height(1).bottom_margin(1);
 
     let mut rows = vec![];
@@ -255,6 +256,28 @@ mod tests {
             .iter()
             .map(ratatui::buffer::Cell::symbol)
             .collect()
+    }
+
+    #[test]
+    fn instrument_headers_fit_existing_columns_without_moving_highlights() {
+        use crate::tracker::Instrument;
+        for instrument in Instrument::ALL {
+            let mut app = App::default();
+            app.pattern.set_instrument(1, instrument);
+            app.cursor_track = 1;
+            app.playback_row = 1;
+            app.handle_command(Command::TogglePlayback);
+            app.playback_row = 1;
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            let text = screen(&terminal);
+            assert!(text.contains(&format!("2 {}", instrument.label())));
+            assert!(text.contains("1 Pluck"));
+            assert!(format!("2 {}", instrument.label()).len() <= 10);
+            let buffer = terminal.backend().buffer();
+            assert_eq!(buffer[(13, 6)].bg, Color::Green);
+            assert_eq!(buffer[(13, 7)].bg, Color::DarkGray);
+        }
     }
 
     #[test]
@@ -343,7 +366,7 @@ mod tests {
             .collect();
         assert!(screen.contains("? Help"));
         assert!(screen.contains("track-rs"));
-        assert!(screen.contains("Track 1"));
+        assert!(screen.contains("1 Pluck"));
         assert!(screen.contains("C#4"));
         assert!(screen.contains("BPM: 121.0"));
     }

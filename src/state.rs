@@ -93,6 +93,14 @@ impl App {
                 pitch,
                 octave: self.octave.saturating_add(octave_offset).min(9),
             })),
+            Command::SetInstrument(instrument) => self.pattern.set_instrument(self.cursor_track, instrument),
+            Command::PreviousInstrument | Command::NextInstrument => {
+                let instrument = self
+                    .pattern
+                    .instrument(self.cursor_track)
+                    .cycle(command == Command::NextInstrument);
+                self.pattern.set_instrument(self.cursor_track, instrument);
+            }
             Command::DecreaseTempo => self.bpm = (self.bpm - 1.0).clamp(20.0, 300.0),
             Command::IncreaseTempo => self.bpm = (self.bpm + 1.0).clamp(20.0, 300.0),
             Command::LowerNote | Command::RaiseNote => {
@@ -161,6 +169,45 @@ impl App {
 mod tests {
     use super::*;
     use crate::tracker::NotePitch;
+
+    #[test]
+    fn instruments_wrap_isolate_selected_track_and_obey_help() {
+        use crate::tracker::Instrument;
+        let mut app = App {
+            cursor_track: 2,
+            cursor_row: 7,
+            playback_row: 3,
+            playback_state: PlaybackState::Playing,
+            ..App::default()
+        };
+        app.handle_command(Command::PreviousInstrument);
+        assert_eq!(app.pattern.instrument(2), Instrument::HiHat);
+        app.handle_command(Command::NextInstrument);
+        assert_eq!(app.pattern.instrument(2), Instrument::Pluck);
+        for expected in Instrument::ALL.into_iter().cycle().skip(1).take(14) {
+            app.handle_command(Command::NextInstrument);
+            assert_eq!(app.pattern.instrument(2), expected);
+            assert_eq!(app.pattern.instrument(0), Instrument::Pluck);
+            assert_eq!((app.cursor_track, app.cursor_row, app.playback_row), (2, 7, 3));
+            assert!(matches!(app.playback_state, PlaybackState::Playing));
+        }
+        app.handle_command(Command::SetInstrument(Instrument::Snare));
+        app.handle_command(Command::ToggleHelp);
+        for command in [
+            Command::PreviousInstrument,
+            Command::NextInstrument,
+            Command::SetInstrument(Instrument::Sine),
+        ] {
+            app.handle_command(command);
+            assert_eq!(app.pattern.instrument(2), Instrument::Snare);
+        }
+        app.pattern.tracks.push(vec![]);
+        assert_eq!(app.pattern.instrument(4), Instrument::Pluck);
+        app.pattern.set_instrument(4, Instrument::Kick);
+        assert_eq!(app.pattern.instrument(4), Instrument::Kick);
+        app.pattern.set_instrument(usize::MAX, Instrument::Kick);
+        assert_eq!(app.pattern.instrument(usize::MAX), Instrument::Pluck);
+    }
 
     #[test]
     fn tempo_bounds_preserve_editor_and_playback_state() {

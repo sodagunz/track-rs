@@ -1,7 +1,7 @@
 //! Device-free playback clock. Deadlines, not UI redraws, own row advancement.
 use std::time::{Duration, Instant};
 
-use crate::tracker::{Note, Pattern};
+use crate::tracker::{Instrument, Note, Pattern};
 
 pub const DEFAULT_ROWS_PER_BEAT: u32 = 4;
 
@@ -15,6 +15,7 @@ pub struct RowEvent {
 #[derive(Clone, Copy, Debug)]
 pub struct NoteEvent {
     pub track: usize,
+    pub instrument: Instrument,
     pub note: Note,
     pub beats: f64,
     pub duration: Duration,
@@ -33,6 +34,7 @@ pub fn collect_row(pattern: &Pattern, event: RowEvent) -> Vec<NoteEvent> {
         .filter_map(|(track, steps)| {
             Some(NoteEvent {
                 track,
+                instrument: pattern.instrument(track),
                 note: steps.get(event.row)?.note?,
                 beats: event.beats,
                 duration: event.duration,
@@ -273,6 +275,7 @@ mod tests {
             octave: 4,
         };
         pattern.set_step(2, 0, Some(note)).unwrap();
+        pattern.set_instrument(2, Instrument::Kick);
         let event = RowEvent {
             row: 0,
             beats: 0.25,
@@ -281,6 +284,7 @@ mod tests {
         let notes = collect_row(&pattern, event);
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].track, 2);
+        assert_eq!(notes[0].instrument, Instrument::Kick);
         assert_eq!(notes[0].note, note);
         assert_eq!(notes[0].beats, 0.25);
         assert_eq!(notes[0].duration, event.duration);
@@ -289,6 +293,8 @@ mod tests {
         pattern.set_step(0, 0, Some(second_note)).unwrap();
         let notes = collect_row(&pattern, event);
         assert_eq!(notes.len(), 2);
+        assert_eq!(notes[0].instrument, Instrument::Pluck);
+        assert_eq!(notes[1].instrument, Instrument::Kick);
         assert_eq!((notes[0].track, notes[0].note), (0, second_note));
         assert_eq!((notes[1].track, notes[1].note), (2, note));
         for note in notes {

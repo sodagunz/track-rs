@@ -31,6 +31,18 @@ impl Binding {
 /// The single source of truth for default controls and their descriptions.
 pub const DEFAULT_BINDINGS: &[Binding] = &[
     Binding::new(
+        KeyCode::Char('['),
+        Command::PreviousInstrument,
+        "Previous instrument",
+        "Instruments",
+    ),
+    Binding::new(
+        KeyCode::Char(']'),
+        Command::NextInstrument,
+        "Next instrument",
+        "Instruments",
+    ),
+    Binding::new(
         KeyCode::Char('-'),
         Command::DecreaseTempo,
         "Decrease BPM by 1",
@@ -201,6 +213,8 @@ mod tests {
     #[test]
     fn adjustment_keys_normalize_shift_repeat_and_reject_modifiers() {
         for (key, command) in [
+            ('[', Command::PreviousInstrument),
+            (']', Command::NextInstrument),
             ('-', Command::DecreaseTempo),
             ('+', Command::IncreaseTempo),
             ('f', Command::LowerNote),

@@ -1,6 +1,50 @@
 use anyhow::anyhow;
 use fundsp::math::midi_hz;
 
+/// Built-in voices. Percussion ignores note pitch and uses fixed drum tuning.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Instrument {
+    #[default]
+    Pluck,
+    Sine,
+    Square,
+    Saw,
+    Kick,
+    Snare,
+    HiHat,
+}
+
+impl Instrument {
+    pub const ALL: [Self; 7] = [
+        Self::Pluck,
+        Self::Sine,
+        Self::Square,
+        Self::Saw,
+        Self::Kick,
+        Self::Snare,
+        Self::HiHat,
+    ];
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Pluck => "Pluck",
+            Self::Sine => "Sine",
+            Self::Square => "Square",
+            Self::Saw => "Saw",
+            Self::Kick => "Kick",
+            Self::Snare => "Snare",
+            Self::HiHat => "HiHat",
+        }
+    }
+
+    #[must_use]
+    pub fn cycle(self, forward: bool) -> Self {
+        let index = Self::ALL.iter().position(|instrument| *instrument == self).unwrap_or(0);
+        Self::ALL[(index + if forward { 1 } else { Self::ALL.len() - 1 }) % Self::ALL.len()]
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NotePitch {
     C,
@@ -108,6 +152,7 @@ pub type Track = Vec<PatternStep>;
 pub struct Pattern {
     pub num_rows: usize,
     pub tracks: Vec<Track>,
+    instruments: Vec<Instrument>,
 }
 
 impl Pattern {
@@ -116,6 +161,21 @@ impl Pattern {
         Self {
             num_rows,
             tracks: vec![vec![PatternStep::default(); num_rows]; num_tracks],
+            instruments: vec![Instrument::default(); num_tracks],
+        }
+    }
+
+    /// Tracks appended through the public vector default to Pluck. Assignments follow indices.
+    #[must_use]
+    pub fn instrument(&self, track: usize) -> Instrument {
+        self.instruments.get(track).copied().unwrap_or_default()
+    }
+
+    /// Assign an existing track; invalid track indices are ignored.
+    pub fn set_instrument(&mut self, track: usize, instrument: Instrument) {
+        if track < self.tracks.len() {
+            self.instruments.resize(self.tracks.len(), Instrument::default());
+            self.instruments[track] = instrument;
         }
     }
 

@@ -1,6 +1,9 @@
 #![allow(clippy::precedence)]
 
-use crate::{tracker::Note, transport::NoteEvent};
+use crate::{
+    tracker::{Instrument, Note},
+    transport::NoteEvent,
+};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
@@ -11,6 +14,11 @@ pub const DEFAULT_NOTE_DURATION: Duration = Duration::from_millis(200);
 pub const DEFAULT_FADE_IN: f64 = 0.02;
 pub const DEFAULT_FADE_OUT: f64 = 0.2;
 pub const DEFAULT_CHORUS_AMOUNT: f32 = 1.0;
+const PERCUSSION_ATTACK: f64 = 0.001;
+const KICK_GAIN: f32 = 0.36;
+const SNARE_NOISE_GAIN: f32 = 0.3;
+const SNARE_TONE_GAIN: f32 = 0.14;
+const HIHAT_GAIN: f32 = 0.3;
 
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
@@ -19,8 +27,8 @@ use cpal::{
 use fundsp::{
     math::{cos_hz, xerp11, AttoHash},
     prelude32::{
-        chorus, dcblock, follow, lfo, moog, multipass, pan, pass, pluck, shared, split, var, zero, AudioUnit,
-        BlockRateAdapter, Fade, Net, ReplayMode, Sequencer, U2,
+        chorus, dcblock, highpass_hz, lfo, lowpass_hz, moog, noise, pan, pass, pluck, saw_hz, sine, sine_hz, square_hz,
+        zero, AudioUnit, BlockRateAdapter, Fade, Net, ReplayMode, Sequencer,
     },
     realseq::SequencerBackend,
 };
@@ -43,9 +51,9 @@ impl Output {
     }
 }
 
-fn prepare(sample_rate: f64, dry: bool) -> (Sequencer, Renderer) {
-    let mut sequencer = Sequencer::new(0, 1, ReplayMode::None);
-    let mut net = build_net(sample_rate, sequencer.backend(), dry);
+fn prepare(sample_rate: f64) -> (Sequencer, Renderer) {
+    let mut sequencer = Sequencer::new(0, 2, ReplayMode::None);
+    let mut net = build_net(sample_rate, sequencer.backend());
     (sequencer, BlockRateAdapter::new(Box::new(net.backend())))
 }
 
@@ -89,7 +97,7 @@ impl AudioEngine {
 
         let sample_rate = f64::from(config.sample_rate());
 
-        let (sequencer, renderer) = prepare(sample_rate, dry);
+        let (sequencer, renderer) = prepare(sample_rate);
         let (replacements, receiver) = mpsc::channel();
         let (retired_sender, retired) = mpsc::channel();
         let output = Output {
@@ -118,18 +126,30 @@ impl AudioEngine {
 
     pub fn play(&mut self, note: Note) {
         self.collect_retired();
-        schedule_note(&mut self.sequencer, note, DEFAULT_NOTE_DURATION);
+        schedule_instrument(
+            &mut self.sequencer,
+            note,
+            Instrument::Pluck,
+            DEFAULT_NOTE_DURATION,
+            self.dry,
+        );
     }
     pub fn play_event(&mut self, event: NoteEvent) {
         self.collect_retired();
-        schedule_note(&mut self.sequencer, event.note, event.duration);
+        schedule_instrument(
+            &mut self.sequencer,
+            event.note,
+            event.instrument,
+            event.duration,
+            self.dry,
+        );
     }
 
     /// Replace the entire prepared graph, cancelling voices and effect tails.
     /// The callback switches before its next sample; retired graphs are freed here.
     pub fn stop(&mut self) {
         self.collect_retired();
-        let (sequencer, renderer) = prepare(self.sample_rate, self.dry);
+        let (sequencer, renderer) = prepare(self.sample_rate);
         self.sequencer = sequencer;
         let _ = self.replacements.send(renderer);
     }
@@ -139,35 +159,80 @@ impl AudioEngine {
     }
 }
 
+#[cfg(test)]
 fn schedule_note(sequencer: &mut Sequencer, note: Note, duration: Duration) {
-    let pitch_hz = note.freq();
-    // let pitch = lfo(move |t| pitch_hz * xerp11(1.0, 1.0, 0.5 * (sin_hz(6.0, t) + sin_hz(6.1,
-    // t))));
-    // The synthesis graph uses f32, so rounding the f64 note frequency is required.
-    #[allow(clippy::cast_possible_truncation)]
-    let pitch_hz = pitch_hz as f32;
-    let waveform = Net::wrap(Box::new(
-        zero() >> pluck(pitch_hz, DEFAULT_PLUCK_DECAY, DEFAULT_PLUCK_DAMPING) * DEFAULT_VOICE_GAIN,
-    ));
-    let filter = Net::wrap(Box::new(
-        (pass() | lfo(move |t| (xerp11(400.0, 10000.0, cos_hz(0.1, t)), 0.6))) >> moog(),
-    ));
+    schedule_instrument(sequencer, note, Instrument::Pluck, duration, false);
+}
 
-    let mut note = Box::new(waveform >> filter >> dcblock());
-    let seed: u64 = rand::random();
-    // Give the note its own random seed.
-    note.ping(false, AttoHash::new(seed));
+fn schedule_instrument(sequencer: &mut Sequencer, note: Note, instrument: Instrument, duration: Duration, dry: bool) {
+    schedule_voice(sequencer, note, instrument, duration, dry, rand::random());
+}
+
+fn schedule_voice(
+    sequencer: &mut Sequencer,
+    note: Note,
+    instrument: Instrument,
+    duration: Duration,
+    dry: bool,
+    seed: u64,
+) {
     let seconds = duration.as_secs_f64();
+    let attack = match instrument {
+        // Preserve the drum transient instead of fading through most of it.
+        Instrument::Kick | Instrument::Snare | Instrument::HiHat => PERCUSSION_ATTACK,
+        _ => DEFAULT_FADE_IN,
+    };
     if seconds > 0.0 {
         sequencer.push_relative(
             0.0,
             seconds,
             Fade::Smooth,
-            DEFAULT_FADE_IN.min(seconds),
-            DEFAULT_FADE_OUT.min(seconds),
-            note,
+            attack.min(seconds * 0.25),
+            DEFAULT_FADE_OUT.min(seconds * 0.25),
+            voice(note, instrument, dry, seed),
         );
     }
+}
+
+/// Construct a seeded stereo voice. The sequencer supplies the gate's attack/release.
+/// Kick sweeps 150 to 45 Hz; snare uses 180 Hz plus noise; hi-hat uses high-passed
+/// noise. All percussion ignores note pitch. Only Pluck uses the legacy chorus.
+fn voice(note: Note, instrument: Instrument, dry: bool, seed: u64) -> Box<dyn AudioUnit> {
+    #[allow(clippy::cast_possible_truncation)]
+    let hz = note.freq() as f32;
+    let waveform = match instrument {
+        Instrument::Pluck => {
+            let waveform = Net::wrap(Box::new(
+                zero() >> pluck(hz, DEFAULT_PLUCK_DECAY, DEFAULT_PLUCK_DAMPING) * DEFAULT_VOICE_GAIN,
+            ));
+            let filter = Net::wrap(Box::new(
+                (pass() | lfo(move |t| (xerp11(400.0, 10000.0, cos_hz(0.1, t)), 0.6))) >> moog(),
+            ));
+            waveform >> filter >> dcblock()
+        }
+        Instrument::Sine => Net::wrap(Box::new(sine_hz(hz) * 0.18)),
+        Instrument::Square => Net::wrap(Box::new(square_hz(hz) * 0.12)),
+        Instrument::Saw => Net::wrap(Box::new(saw_hz(hz) * 0.16)),
+        Instrument::Kick => Net::wrap(Box::new(
+            (lfo(|t: f32| 105.0_f32.mul_add((-t * 35.0).exp(), 45.0)) >> sine())
+                * lfo(|t: f32| KICK_GAIN * (-t * 16.0).exp()),
+        )),
+        Instrument::Snare => Net::wrap(Box::new(
+            ((noise() >> highpass_hz(1200.0, 0.7) >> lowpass_hz(10000.0, 0.7)) * SNARE_NOISE_GAIN
+                + sine_hz(180.0) * SNARE_TONE_GAIN)
+                * lfo(|t: f32| (-t * 24.0).exp()),
+        )),
+        Instrument::HiHat => Net::wrap(Box::new(
+            (noise() >> highpass_hz(7000.0, 0.7)) * lfo(|t: f32| HIHAT_GAIN * (-t * 65.0).exp()),
+        )),
+    };
+    let mut stereo = waveform >> pan(0.0);
+    if instrument == Instrument::Pluck && !dry {
+        stereo = stereo >> (chorus(0, 0.0, 0.03, 0.2) | chorus(1, 0.0, 0.03, 0.2)) * (2.0 * DEFAULT_CHORUS_AMOUNT);
+    }
+    let mut voice: Box<dyn AudioUnit> = Box::new(stereo);
+    voice.ping(false, AttoHash::new(seed));
+    voice
 }
 
 fn build_stream<T>(config: SupportedStreamConfig, device: &Device, mut output: Output) -> anyhow::Result<Stream>
@@ -207,62 +272,139 @@ where
     }
 }
 
-fn build_net(sample_rate: f64, sequencer_backend: SequencerBackend, dry: bool) -> Net {
-    // let room_size = 10.0;
-    // let reverb_amount = shared(0.25);
-    // let reverb_time = 2.0;
-    // let reverb_diffusion = 0.5;
-    let chorus_amount = shared(DEFAULT_CHORUS_AMOUNT);
-
+fn build_net(sample_rate: f64, sequencer_backend: SequencerBackend) -> Net {
     let mut net = Net::wrap(Box::new(sequencer_backend));
-    // let (reverb, reverb_id) = Net::wrap_id(create_reverb(room_size, reverb_time,
-    // reverb_diffusion));
-    let (phaser, _phaser_id) = Net::wrap_id(Box::new(multipass::<U2>()));
-    let (flanger, _flanger_id) = Net::wrap_id(Box::new(multipass::<U2>()));
-    net = net >> pan(0.0);
-    if dry {
-        net.set_sample_rate(sample_rate);
-        return net;
-    }
-    // Smooth chorus and reverb amounts to prevent discontinuities.
-    net = net
-        >> ((1.0 - var(&chorus_amount) >> follow(0.01) >> split()) * multipass()
-            & (var(&chorus_amount) >> follow(0.01) >> split())
-                * 2.0
-                * (chorus(0, 0.0, 0.03, 0.2) | chorus(1, 0.0, 0.03, 0.2)));
-    net = net >> phaser >> flanger;
-    // net = net
-    //     >> ((1.0 - var(&reverb_amount) >> follow(0.01) >> split::<U2>()) * multipass()
-    //         & (var(&reverb_amount) >> follow(0.01) >> split::<U2>()) * reverb);
-
     net.set_sample_rate(sample_rate);
-
     net
 }
-
-// FIXME: this implementation of reverb requires building in release mode, otherwise we underrun
-// ALSA. I'll comment it for now, until I find out how to turn it on only on release builds.
-// fn create_reverb(room_size: f32, time: f32, diffusion: f32) -> Box<dyn AudioUnit> {
-//     //Box::new(reverb3_stereo(time, diffusion, highshelf_hz(5000.0, 1.0, db_amp(-1.0))))
-//     Box::new(reverb2_stereo(
-//         room_size,
-//         time,
-//         diffusion,
-//         1.0,
-//         highshelf_hz(5000.0, 1.0, db_amp(-1.0)),
-//     ))
-//     //Box::new(reverb4_stereo(room_size, time))
-// }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tracker::NotePitch;
 
+    fn render_presets(instruments: &[Instrument], dry: bool, duration: Duration) -> Vec<(f32, f32)> {
+        let (mut seq, mut renderer) = prepare(48_000.0);
+        for instrument in instruments {
+            schedule_voice(
+                &mut seq,
+                Note {
+                    pitch: NotePitch::C,
+                    octave: 4,
+                },
+                *instrument,
+                duration,
+                dry,
+                42,
+            );
+        }
+        (0..48_000).map(|_| renderer.get_stereo()).collect()
+    }
+
+    #[test]
+    fn percussion_has_an_audible_attack() {
+        let mut attacks = Vec::new();
+        for instrument in [Instrument::Kick, Instrument::Snare, Instrument::HiHat] {
+            let samples = render_presets(&[instrument], true, Duration::from_millis(125));
+            let rms = |samples: &[(f32, f32)]| {
+                (samples.iter().map(|(l, r)| f64::from(l * l + r * r) / 2.0).sum::<f64>()
+                    / f64::from(u32::try_from(samples.len()).unwrap()))
+                .sqrt()
+            };
+            let attack = rms(&samples[..240]);
+            let body = rms(&samples[..6000]);
+            let peak = samples
+                .iter()
+                .map(|(l, r)| l.abs().max(r.abs()))
+                .fold(0.0_f32, f32::max);
+            assert!((0.01..0.15).contains(&body), "{instrument:?} gate RMS: {body}");
+            assert!((0.1..0.35).contains(&peak), "{instrument:?} peak: {peak}");
+            attacks.push((instrument, attack));
+        }
+        assert!(
+            attacks.iter().all(|(_, attack)| *attack >= 0.03),
+            "quiet attacks: {attacks:?}"
+        );
+        let quietest = attacks.iter().map(|(_, rms)| *rms).fold(f64::INFINITY, f64::min);
+        let loudest = attacks.iter().map(|(_, rms)| *rms).fold(0.0_f64, f64::max);
+        // Compare onsets, not whole gates: the hi-hat intentionally decays faster.
+        assert!(loudest / quietest < 3.0, "unbalanced attacks: {attacks:?}");
+    }
+
+    #[test]
+    fn every_preset_is_deterministic_finite_audible_and_gated() {
+        for instrument in Instrument::ALL {
+            for dry in [false, true] {
+                for millis in [50, 125, 750] {
+                    let duration = Duration::from_millis(millis);
+                    let samples = render_presets(&[instrument], dry, duration);
+                    assert_eq!(samples, render_presets(&[instrument], dry, duration));
+                    assert!(samples.iter().all(|(l, r)| l.is_finite() && r.is_finite()));
+                    assert!(samples.iter().any(|(l, r)| l.abs() + r.abs() > 1e-4), "{instrument:?}");
+                    let end = usize::try_from(millis * 48).unwrap();
+                    assert!(
+                        samples[end..].iter().all(|sample| *sample == (0.0, 0.0)),
+                        "{instrument:?}"
+                    );
+                    let (l, r) = samples[end - 1];
+                    assert!(l.abs() + r.abs() < 0.001, "{instrument:?}: {l}, {r}");
+                    assert_eq!(samples[0], (0.0, 0.0));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_polyphony_is_finite_bounded_and_ends_cleanly() {
+        let samples = render_presets(&Instrument::ALL, false, Duration::from_millis(125));
+        assert!(samples
+            .iter()
+            .all(|(l, r)| l.is_finite() && r.is_finite() && l.abs() < 1.0 && r.abs() < 1.0));
+        assert!(samples.iter().any(|(l, r)| l.abs() + r.abs() > 0.01));
+        assert!(samples[6000..].iter().all(|sample| *sample == (0.0, 0.0)));
+    }
+
+    #[test]
+    fn percussion_ignores_pitch_and_new_presets_bypass_chorus() {
+        for instrument in Instrument::ALL {
+            if instrument != Instrument::Pluck {
+                assert_eq!(
+                    render_presets(&[instrument], false, DEFAULT_NOTE_DURATION),
+                    render_presets(&[instrument], true, DEFAULT_NOTE_DURATION)
+                );
+            }
+        }
+        for instrument in [Instrument::Kick, Instrument::Snare, Instrument::HiHat] {
+            let mut low = voice(
+                Note {
+                    pitch: NotePitch::C,
+                    octave: 0,
+                },
+                instrument,
+                true,
+                42,
+            );
+            let mut high = voice(
+                Note {
+                    pitch: NotePitch::B,
+                    octave: 9,
+                },
+                instrument,
+                true,
+                42,
+            );
+            low.set_sample_rate(48_000.0);
+            high.set_sample_rate(48_000.0);
+            for _ in 0..10_000 {
+                assert_eq!(low.get_stereo(), high.get_stereo());
+            }
+        }
+    }
+
     #[test]
     fn stop_cancels_voices_tails_and_queued_notes_without_resurrection() {
         for dry in [false, true] {
-            let (mut seq, renderer) = prepare(48_000.0, dry);
+            let (mut seq, renderer) = prepare(48_000.0);
             let (tx, replacements) = mpsc::channel();
             let (retired, rx) = mpsc::channel();
             let mut output = Output {
@@ -274,7 +416,9 @@ mod tests {
                 pitch: NotePitch::C,
                 octave: 4,
             };
-            schedule_note(&mut seq, note, Duration::from_secs(2));
+            for instrument in Instrument::ALL {
+                schedule_instrument(&mut seq, note, instrument, Duration::from_secs(2), dry);
+            }
             let mut heard = false;
             for _ in 0..10_000 {
                 let (l, r) = output.sample();
@@ -282,8 +426,10 @@ mod tests {
                 heard |= l.abs() + r.abs() > 1e-6;
             }
             assert!(heard);
-            schedule_note(&mut seq, note, Duration::from_secs(2));
-            let (mut next, renderer) = prepare(48_000.0, dry);
+            for instrument in Instrument::ALL {
+                schedule_instrument(&mut seq, note, instrument, Duration::from_secs(2), dry);
+            }
+            let (mut next, renderer) = prepare(48_000.0);
             tx.send(renderer).unwrap();
             for _ in 0..100_000 {
                 assert_eq!(output.sample(), (0.0, 0.0));
@@ -294,7 +440,7 @@ mod tests {
                 let (l, r) = output.sample();
                 l.abs() + r.abs() > 1e-6
             }));
-            let (_, renderer) = prepare(48_000.0, dry);
+            let (_, renderer) = prepare(48_000.0);
             tx.send(renderer).unwrap();
             for _ in 0..100_000 {
                 assert_eq!(output.sample(), (0.0, 0.0));
@@ -314,9 +460,9 @@ mod tests {
 
     #[test]
     fn scheduled_note_produces_finite_audio_without_an_output_device() {
-        let mut sequencer = Sequencer::new(0, 1, ReplayMode::All);
+        let mut sequencer = Sequencer::new(0, 2, ReplayMode::All);
         let backend = sequencer.backend();
-        let mut net = build_net(48_000.0, backend, false);
+        let mut net = build_net(48_000.0, backend);
         let mut renderer = BlockRateAdapter::new(Box::new(net.backend()));
 
         schedule_note(

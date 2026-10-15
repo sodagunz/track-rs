@@ -1,6 +1,6 @@
 # Tracker controls, audio, and UI
 
-Status: In progress — commands, help, transport, and step 4 tempo controls implemented; instruments and grid improvements pending.
+Status: In progress — commands, help, transport, and step 5 instruments implemented; grid improvements pending.
 
 ## Goal
 
@@ -11,7 +11,7 @@ Make the proof of concept easier to play and extend: explicit commands, discover
 - `src/bindings.rs` resolves terminal events through `DEFAULT_BINDINGS` into typed commands handled by `App`.
 - `src/state.rs` holds editor and playback state. BPM defaults to 120; `-`/`+` adjusts it by one within 20–300.
 - `src/transport.rs` owns row deadlines and collects note events. The main loop waits for input or the next deadline.
-- `src/audio.rs` still uses one pluck voice. Playback notes last one row; stop cancels voices and effect tails.
+- `src/audio.rs` provides seven built-in voices. Playback notes last one row; stop cancels voices and effect tails.
 - `src/ui.rs` renders a plain table without row numbers or musical grouping. Playback highlighting can overwrite the cursor highlight.
 
 ## Scope and decisions
@@ -98,12 +98,12 @@ Implementation notes: `-`/`+` has no `=` alias. `f`/`r` lowers/raises the select
 
 Files: `src/tracker.rs`, `src/audio.rs`, `src/state.rs`, command/binding modules, `src/ui.rs`.
 
-- [ ] Define an `Instrument` enum with sine, square, saw, kick, snare, and hi-hat presets.
-- [ ] Extend the track model with an instrument assignment and provide commands to cycle/select it. Show the assignment in each track header.
-- [ ] Extract voice construction into a factory keyed by instrument. Use note frequency for pitched oscillators and short attack/release envelopes to avoid clicks.
-- [ ] Synthesize a primitive kick with a descending pitch envelope, snare with noise plus a tonal component, and closed hi-hat with filtered noise and short decay.
-- [ ] Define how pitch affects percussion, use conservative preset gains, and keep duration/envelope choices explicit.
-- [ ] Decide whether to retain the current pluck as an additional preset; ensure all six requested sounds are available regardless.
+- [x] Define an `Instrument` enum with sine, square, saw, kick, snare, and hi-hat presets.
+- [x] Extend the track model with an instrument assignment and provide commands to cycle/select it. Show the assignment in each track header.
+- [x] Extract voice construction into a factory keyed by instrument. Use note frequency for pitched oscillators and short attack/release envelopes to avoid clicks.
+- [x] Synthesize a primitive kick with a descending pitch envelope, snare with noise plus a tonal component, and closed hi-hat with filtered noise and short decay.
+- [x] Define how pitch affects percussion, use conservative preset gains, and keep duration/envelope choices explicit.
+- [x] Decide whether to retain the current pluck as an additional preset; ensure all six requested sounds are available regardless.
 
 Acceptance criteria:
 
@@ -137,6 +137,8 @@ Acceptance criteria:
 
 - Transport validation: all 18 nextest tests, strict Clippy, formatting, actionlint, doctests, docs, cargo-deny, and the headless example passed. No listening pass yet.
 
+- Step 5: seven presets, private index-based track assignments (public `Track`/`tracks` retained), repeating modal `[`/`]` controls, compact headers, and resolved note-event instruments. New presets are dry; Pluck retains filter/chorus, now per voice with tails bounded by the gate. Percussion ignores pitch. Seeded offline tests cover gates, mixed playback, routing, and graph-replacement cancellation. Validation: 27 nextest tests, strict all-target Clippy, formatting, doctests, warning-denied docs, cargo-deny (existing duplicate warnings), actionlint, and the ALSA-null example passed. Listening/interactive validation remains pending.
+
 ## Order and validation
 
 Implement in the order above: commands → help → transport/audio structure → tempo → instruments → UI polish. Keep each phase independently reviewable.
@@ -151,7 +153,7 @@ Implement in the order above: commands → help → transport/audio structure �
 
 - [ ] All user actions pass through typed commands.
 - [x] `?` shows the complete current binding list.
-- [ ] Sine, square, saw, kick, snare, and hi-hat are usable.
+- [x] Sine, square, saw, kick, snare, and hi-hat are usable.
 - [ ] Tempo is adjustable from the keyboard and visible.
 - [x] Transport, note scheduling, voice construction, and UI orchestration have clear responsibilities.
 - [ ] Pattern rows have clear four-row and sixteen-row grouping.
