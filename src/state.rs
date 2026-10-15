@@ -19,6 +19,9 @@ pub struct App {
     pub octave: u8,
     pub bpm: f64,
     pub shutdown: bool,
+    pub help_visible: bool,
+    /// Index of the first binding shown; independent of terminal dimensions.
+    pub help_scroll: usize,
 }
 
 pub enum CursorOffset {
@@ -50,6 +53,8 @@ impl Default for App {
             playback_state: PlaybackState::Stopped,
             bpm: 120.0,
             shutdown: false,
+            help_visible: false,
+            help_scroll: 0,
         }
     }
 }
@@ -58,7 +63,26 @@ impl App {
     /// Apply an editor action without depending on terminal key events.
     pub fn handle_command(&mut self, command: Command) {
         match command {
+            Command::ToggleHelp => {
+                self.help_visible = !self.help_visible;
+                self.help_scroll = 0;
+            }
+            Command::DismissHelp => {
+                self.help_visible = false;
+            }
+            Command::ScrollHelpUp | Command::ScrollHelpDown => {
+                if self.help_visible {
+                    self.help_scroll = if command == Command::ScrollHelpUp {
+                        self.help_scroll.saturating_sub(1)
+                    } else {
+                        self.help_scroll
+                            .saturating_add(1)
+                            .min(crate::bindings::DEFAULT_BINDINGS.len().saturating_sub(1))
+                    };
+                }
+            }
             Command::Quit => self.shutdown(),
+            _ if self.help_visible => {}
             Command::TogglePlayback => self.toggle_playback(),
             Command::MoveCursorUp => self.offset_cursor(&CursorOffset::Neg(1), &CursorOffset::None),
             Command::MoveCursorDown => self.offset_cursor(&CursorOffset::Pos(1), &CursorOffset::None),
@@ -116,6 +140,53 @@ impl App {
 mod tests {
     use super::*;
     use crate::tracker::NotePitch;
+
+    #[test]
+    fn help_is_modal_bounded_and_does_not_pause_playback() {
+        let mut app = App::default();
+        app.handle_command(Command::DismissHelp);
+        assert!(!app.shutdown);
+        app.handle_command(Command::TogglePlayback);
+        app.handle_command(Command::InsertNote {
+            pitch: NotePitch::C,
+            octave_offset: 0,
+        });
+        let note = app.pattern.get_step(0, 0).unwrap().note;
+        app.handle_command(Command::ToggleHelp);
+        for binding in crate::bindings::DEFAULT_BINDINGS {
+            if !matches!(
+                binding.command,
+                Command::Quit
+                    | Command::ToggleHelp
+                    | Command::DismissHelp
+                    | Command::ScrollHelpUp
+                    | Command::ScrollHelpDown
+            ) {
+                app.handle_command(binding.command);
+            }
+        }
+        assert_eq!((app.cursor_row, app.cursor_track, app.octave), (0, 0, 4));
+        assert_eq!(app.pattern.get_step(0, 0).unwrap().note, note);
+        assert!(matches!(app.playback_state, PlaybackState::Playing));
+        app.advance_playback_row();
+        assert_eq!(app.playback_row, 1);
+        for _ in 0..100 {
+            app.handle_command(Command::ScrollHelpDown);
+        }
+        assert_eq!(app.help_scroll, crate::bindings::DEFAULT_BINDINGS.len() - 1);
+        for _ in 0..100 {
+            app.handle_command(Command::ScrollHelpUp);
+        }
+        assert_eq!(app.help_scroll, 0);
+        app.handle_command(Command::ToggleHelp);
+        assert!(!app.help_visible);
+        app.handle_command(Command::ToggleHelp);
+        app.handle_command(Command::DismissHelp);
+        assert!(!app.help_visible);
+        app.handle_command(Command::ToggleHelp);
+        app.handle_command(Command::Quit);
+        assert!(app.shutdown);
+    }
 
     #[test]
     fn commands_move_edit_and_delete_at_the_selected_cell() {
