@@ -1,6 +1,6 @@
 # Tracker controls, audio, and UI
 
-Status: In progress — commands, help, transport, and step 5 instruments implemented; grid improvements pending.
+Status: Steps 1–6 implemented; full manual terminal/audio acceptance pass remains pending.
 
 ## Goal
 
@@ -12,7 +12,7 @@ Make the proof of concept easier to play and extend: explicit commands, discover
 - `src/state.rs` holds editor and playback state. BPM defaults to 120; `-`/`+` adjusts it by one within 20–300.
 - `src/transport.rs` owns row deadlines and collects note events. The main loop waits for input or the next deadline.
 - `src/audio.rs` provides seven built-in voices. Playback notes last one row; stop cancels voices and effect tails.
-- `src/ui.rs` renders a plain table without row numbers or musical grouping. Playback highlighting can overwrite the cursor highlight.
+- `src/ui.rs` renders a cursor-derived viewport with decimal row numbers, absolute musical grouping, and independent cursor/playback indicators.
 
 ## Scope and decisions
 
@@ -30,7 +30,7 @@ Make the proof of concept easier to play and extend: explicit commands, discover
 
 Files: `src/bindings.rs`, `src/state.rs`, a new command module, and module declarations in `src/lib.rs`/`src/main.rs` as needed.
 
-- [ ] Define a comprehensive `Command` enum covering existing and planned actions: quit, toggle playback, move cursor in four directions, insert note, delete note, change octave, toggle/dismiss help, change tempo, and select/cycle instrument.
+- [x] Define a comprehensive `Command` enum covering existing and planned actions: quit, toggle playback, move cursor in four directions, insert note, delete note, change octave, toggle/dismiss help, change tempo, and select/cycle instrument.
 - [x] Give commands typed payloads where needed, such as pitch plus an octave offset for note entry. Resolve the current octave in `App::handle_command`, including clamping the upper-C shortcut safely.
 - [x] Add `App::handle_command(Command)` as the entry point for user actions; retain focused state methods behind it.
 - [x] Define default bindings with keys/modifiers, command, description, and help category. Resolve key events through this registry instead of duplicating a match table and help text.
@@ -115,11 +115,11 @@ Acceptance criteria:
 
 Files: `src/ui.rs` and any editor viewport state needed in `src/state.rs`.
 
-- [ ] Add row numbers and consistent note-cell widths/alignment.
-- [ ] Mark every four-row group with a subtle divider or background change and every sixteen-row group with a stronger separator. Anchor grouping to absolute pattern rows.
-- [ ] Give cursor, playback row, and musical grouping a defined visual priority so the selected cell remains clear during playback.
-- [ ] Keep the cursor visible when navigating beyond the viewport and account for separators in scrolling/layout calculations.
-- [ ] Fit track/instrument headers, BPM, octave, playback status, and help hint into a coherent layout, including small terminal sizes.
+- [x] Add row numbers and consistent note-cell widths/alignment.
+- [x] Mark every four-row group with a subtle divider or background change and every sixteen-row group with a stronger separator. Anchor grouping to absolute pattern rows.
+- [x] Give cursor, playback row, and musical grouping a defined visual priority so the selected cell remains clear during playback.
+- [x] Keep the cursor visible when navigating beyond the viewport and account for separators in scrolling/layout calculations.
+- [x] Fit track/instrument headers, BPM, octave, playback status, and help hint into a coherent layout, including small terminal sizes.
 
 Acceptance criteria:
 
@@ -139,6 +139,10 @@ Acceptance criteria:
 
 - Step 5: seven presets, private index-based track assignments (public `Track`/`tracks` retained), repeating modal `[`/`]` controls, compact headers, and resolved note-event instruments. New presets are dry; Pluck retains filter/chorus, now per voice with tails bounded by the gate. Percussion ignores pitch. Seeded offline tests cover gates, mixed playback, routing, and graph-replacement cancellation. Validation: 27 nextest tests, strict all-target Clippy, formatting, doctests, warning-denied docs, cargo-deny (existing duplicate warnings), actionlint, and the ALSA-null example passed. Listening/interactive validation remains pending.
 
+- Step 6: decimal gutters, three-character padded `C4`/`C#4` cells, subtle `─` four-row and brighter `━` sixteen-row gutter separators anchored to absolute rows. Cursor green/black overrides playback; cyan gutter arrows and dark-gray nonselected cells retain playback identity. Deterministic vertical/horizontal viewports follow the cursor, never playback, without new app state. Compact borderless layout retains headers, status, and help; physically tiny screens clip content safely.
+- Step 6 validation: 31 tests passed under both all-target cargo test and devenv-profile nextest; strict all-target Clippy, formatting check, doctests, warning-denied docs, actionlint, and cargo-deny passed (existing duplicate-crate warnings). TestBackend checks exact gutters/styles before and after scrolling, row 63 on short screens, horizontal header alignment, cursor/playback overlap, nonselected natural/sharp notes, tiny/empty screens, and existing help behavior.
+- Human listening feedback: user reported “nice” after the instrument adjustment. This is not a complete sound-identity/levels/clicks/mixed-playback or terminal resize/navigation acceptance pass; that full manual pass remains pending.
+
 ## Order and validation
 
 Implement in the order above: commands → help → transport/audio structure → tempo → instruments → UI polish. Keep each phase independently reviewable.
@@ -151,9 +155,9 @@ Implement in the order above: commands → help → transport/audio structure �
 
 ## Completion checklist
 
-- [ ] All user actions pass through typed commands.
+- [x] All user actions pass through typed commands.
 - [x] `?` shows the complete current binding list.
 - [x] Sine, square, saw, kick, snare, and hi-hat are usable.
-- [ ] Tempo is adjustable from the keyboard and visible.
+- [x] Tempo is adjustable from the keyboard and visible.
 - [x] Transport, note scheduling, voice construction, and UI orchestration have clear responsibilities.
-- [ ] Pattern rows have clear four-row and sixteen-row grouping.
+- [x] Pattern rows have clear four-row and sixteen-row grouping.
