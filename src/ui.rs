@@ -18,6 +18,11 @@ pub struct TUI<W: std::io::Write> {
 }
 
 impl<W: std::io::Write> TUI<W> {
+    /// Enter raw mode and initialize the alternate-screen terminal.
+    ///
+    /// # Errors
+    /// Returns an error if enabling raw mode, entering the alternate screen,
+    /// or initializing the terminal fails.
     pub fn new(writer: W) -> anyhow::Result<Self> {
         enable_raw_mode()?;
         let mut w = writer;
@@ -26,9 +31,14 @@ impl<W: std::io::Write> TUI<W> {
         let backend = CrosstermBackend::new(w);
         let terminal = Terminal::new(backend)?;
 
-        Ok(TUI { terminal })
+        Ok(Self { terminal })
     }
 
+    /// Restore normal terminal mode and show the cursor.
+    ///
+    /// # Errors
+    /// Returns an error if disabling raw mode, leaving the alternate screen,
+    /// or showing the cursor fails.
     pub fn destroy(&mut self) -> anyhow::Result<()> {
         disable_raw_mode()?;
         execute!(self.terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -37,6 +47,11 @@ impl<W: std::io::Write> TUI<W> {
         Ok(())
     }
 
+    /// Render the current application state.
+    ///
+    /// # Panics
+    /// Panics if drawing to the terminal fails or the pattern's track lengths
+    /// are inconsistent with its row count.
     pub fn draw(&mut self, state: &App) {
         self.terminal.draw(|f| render(f, state)).unwrap();
     }
@@ -186,10 +201,10 @@ fn draw_pattern_editor(f: &mut Frame, area: Rect, app_state: &App) {
                 style = style.bg(Color::Green).fg(Color::Black); // Highlight cursor
             }
 
-            if let crate::state::PlaybackState::Playing = app_state.playback_state {
-                if row_idx == app_state.playback_row {
-                    style = style.bg(Color::DarkGray); // Highlight playback caret
-                }
+            if matches!(app_state.playback_state, crate::state::PlaybackState::Playing)
+                && row_idx == app_state.playback_row
+            {
+                style = style.bg(Color::DarkGray); // Highlight playback caret
             }
 
             row_cells.push(Cell::from(cell_str).style(style));
@@ -222,10 +237,10 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app_state: &App) {
 }
 
 fn format_step(step: PatternStep) -> String {
-    match step.note {
-        Some(note) => format!("{:?}{:1}", note.pitch, note.octave),
-        None => " . ".to_string(),
-    }
+    step.note.map_or_else(
+        || " . ".to_string(),
+        |note| format!("{:?}{:1}", note.pitch, note.octave),
+    )
 }
 
 #[cfg(test)]

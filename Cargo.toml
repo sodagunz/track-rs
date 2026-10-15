@@ -10,13 +10,11 @@ keywords=["audio", "daw", "tracker", "production", "music"]
 categories=["multimedia", "multimedia::audio", "command-line-interface"]
 
 [dependencies]
-rodio = "0.23.0"
 ratatui = { version = "0.30.2", features = ["crossterm"] }
 crossterm = "0.29.0"
 anyhow = "1.0.104"
 fundsp = "0.23.0"
 cpal = "0.18.2"
-symphonia = "0.6.1"
 rand = "0.10.3"
 
 [lints.rust]

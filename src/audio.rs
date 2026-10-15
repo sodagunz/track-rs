@@ -16,11 +16,19 @@ use fundsp::{
 
 pub struct AudioEngine {
     sequencer: Sequencer,
-    stream: Stream,
+    // Keep the output stream alive for as long as the engine.
+    _stream: Stream,
 }
 
 impl AudioEngine {
-    // TODO: get the config and device inside
+    /// Create and start the default audio output stream.
+    ///
+    /// # Errors
+    /// Returns an error if building or starting the output stream fails.
+    ///
+    /// # Panics
+    /// Panics if no default output device or configuration is available, or if
+    /// the device uses a sample format other than F32, I16, or U16.
     pub fn new() -> anyhow::Result<Self> {
         let host = cpal::default_host();
 
@@ -45,7 +53,10 @@ impl AudioEngine {
         };
 
         stream.play()?;
-        Ok(AudioEngine { sequencer, stream })
+        Ok(Self {
+            sequencer,
+            _stream: stream,
+        })
     }
 
     pub fn play(&mut self, note: Note) {
@@ -57,7 +68,10 @@ fn schedule_note(sequencer: &mut Sequencer, note: Note) {
     let pitch_hz = note.freq();
     // let pitch = lfo(move |t| pitch_hz * xerp11(1.0, 1.0, 0.5 * (sin_hz(6.0, t) + sin_hz(6.1,
     // t))));
-    let waveform = Net::wrap(Box::new(zero() >> pluck(pitch_hz as f32, 0.5, 0.5) * 0.5));
+    // The synthesis graph uses f32, so rounding the f64 note frequency is required.
+    #[allow(clippy::cast_possible_truncation)]
+    let pitch_hz = pitch_hz as f32;
+    let waveform = Net::wrap(Box::new(zero() >> pluck(pitch_hz, 0.5, 0.5) * 0.5));
     let filter = Net::wrap(Box::new(
         (pass() | lfo(move |t| (xerp11(400.0, 10000.0, cos_hz(0.1, t)), 0.6))) >> moog(),
     ));
@@ -76,9 +90,9 @@ where
 {
     let mut fx_net_backend = BlockRateAdapter::new(Box::new(fx_net.backend()));
     let mut next_value = move || fx_net_backend.get_stereo();
-    let err_fn = |err| eprintln!("an error occurred on stream: {}", err);
+    let err_fn = |err| eprintln!("an error occurred on stream: {err}");
 
-    let channels = config.channels() as usize;
+    let channels = usize::from(config.channels());
     let stream = device.build_output_stream(
         config.into(),
         move |data: &mut [T], _: &cpal::OutputCallbackInfo| write_data(data, channels, &mut next_value),
@@ -95,8 +109,8 @@ where
 {
     for frame in output.chunks_mut(channels) {
         let sample = next_sample();
-        let left: T = T::from_sample(sample.0 as f64);
-        let right: T = T::from_sample(sample.1 as f64);
+        let left: T = T::from_sample(f64::from(sample.0));
+        let right: T = T::from_sample(f64::from(sample.1));
 
         for (channel, sample) in frame.iter_mut().enumerate() {
             if channel & 1 == 0 {
@@ -118,8 +132,8 @@ fn build_net(sample_rate: f64, sequencer_backend: SequencerBackend) -> Net {
     let mut net = Net::wrap(Box::new(sequencer_backend));
     // let (reverb, reverb_id) = Net::wrap_id(create_reverb(room_size, reverb_time,
     // reverb_diffusion));
-    let (phaser, phaser_id) = Net::wrap_id(Box::new(multipass::<U2>()));
-    let (flanger, flanger_id) = Net::wrap_id(Box::new(multipass::<U2>()));
+    let (phaser, _phaser_id) = Net::wrap_id(Box::new(multipass::<U2>()));
+    let (flanger, _flanger_id) = Net::wrap_id(Box::new(multipass::<U2>()));
     net = net >> pan(0.0);
     // Smooth chorus and reverb amounts to prevent discontinuities.
     net = net

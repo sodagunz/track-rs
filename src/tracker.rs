@@ -25,7 +25,7 @@ pub struct Note {
 }
 
 impl Note {
-    #[allow(clippy::cast_precision_loss)]
+    #[must_use]
     pub fn freq(self) -> f64 {
         // freq = 440.0 * 2^((midi_note - 69) / 12)
         let pitch_class = match self.pitch {
@@ -45,7 +45,7 @@ impl Note {
 
         let midi_note = (i32::from(self.octave) * 12) + pitch_class + 12;
 
-        midi_hz(midi_note as f64)
+        midi_hz(f64::from(midi_note))
     }
 }
 
@@ -63,17 +63,23 @@ pub struct Pattern {
 }
 
 impl Pattern {
+    #[must_use]
     pub fn new(num_rows: usize, num_tracks: usize) -> Self {
-        Pattern {
+        Self {
             num_rows,
             tracks: vec![vec![PatternStep::default(); num_rows]; num_tracks],
         }
     }
 
+    #[must_use]
     pub fn get_step(&self, track_idx: usize, row_idx: usize) -> Option<&PatternStep> {
         self.tracks.get(track_idx)?.get(row_idx)
     }
 
+    /// Replace the note at the specified track and row.
+    ///
+    /// # Errors
+    /// Returns an error if the track or row index is outside the pattern.
     pub fn set_step(&mut self, track_idx: usize, row_idx: usize, new_note: Option<Note>) -> anyhow::Result<()> {
         self.tracks
             .get_mut(track_idx)

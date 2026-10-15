@@ -33,9 +33,9 @@ pub enum CursorOffset {
 impl CursorOffset {
     fn apply_to(&self, position: usize) -> usize {
         match self {
-            CursorOffset::Pos(delta) => position.checked_add(*delta).unwrap_or(position),
-            CursorOffset::Neg(delta) => position.checked_sub(*delta).unwrap_or(position),
-            CursorOffset::None => position,
+            Self::Pos(delta) => position.checked_add(*delta).unwrap_or(position),
+            Self::Neg(delta) => position.checked_sub(*delta).unwrap_or(position),
+            Self::None => position,
         }
     }
 }
@@ -44,7 +44,7 @@ impl Default for App {
     fn default() -> Self {
         let default_rows = 64;
         let default_tracks = 4;
-        App {
+        Self {
             pattern: Pattern::new(default_rows, default_tracks),
             cursor_row: 0,
             cursor_track: 0,
@@ -106,11 +106,11 @@ impl App {
         self.cursor_track = dt.apply_to(self.cursor_track).clamp(0, max_tracks - 1);
     }
 
-    pub fn shutdown(&mut self) {
+    pub const fn shutdown(&mut self) {
         self.shutdown = true;
     }
 
-    pub fn toggle_playback(&mut self) {
+    pub const fn toggle_playback(&mut self) {
         match self.playback_state {
             PlaybackState::Stopped => {
                 self.playback_state = PlaybackState::Playing;
@@ -123,14 +123,18 @@ impl App {
         }
     }
 
+    /// Replace the note at the cursor position.
+    ///
+    /// # Panics
+    /// Panics if the cursor is outside the pattern's tracks or rows.
     pub fn insert_note_under_cursor(&mut self, note: Option<Note>) {
         self.pattern
             .set_step(self.cursor_track, self.cursor_row, note)
             .expect("Cursor should be whitin bounds");
     }
 
-    pub fn advance_playback_row(&mut self) {
-        if let PlaybackState::Playing = self.playback_state {
+    pub const fn advance_playback_row(&mut self) {
+        if matches!(self.playback_state, PlaybackState::Playing) {
             self.playback_row = (self.playback_row + 1) % self.pattern.num_rows;
         }
     }

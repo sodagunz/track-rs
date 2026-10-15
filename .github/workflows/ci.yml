@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [develop]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  checks:
+    name: Rust checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libasound2-dev libudev-dev pkg-config
+      - name: Install nightly Rust
+        uses: dtolnay/rust-toolchain@f0d5300ba8908d942c808f4d31c08471d7798ba3 # nightly
+        with:
+          components: rustfmt, clippy
+      - name: Install validation tools
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
+        with:
+          tool: cargo-nextest,cargo-deny,actionlint
+      - name: Check workflow syntax
+        run: actionlint
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Check dependency policy
+        run: cargo deny --locked check
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Tests
+        run: cargo nextest run --all-targets --locked
+      - name: Documentation tests
+        run: cargo test --doc --locked
+      - name: Build documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --locked
+      - name: Run examples with null audio output
+        env:
+          ALSA_CONFIG_PATH: ${{ github.workspace }}/.github/ci/alsa.conf
+        shell: bash
+        run: |
+          cargo metadata --no-deps --format-version 1 --locked > /tmp/metadata.json
+          python3 - <<'PY'
+          import json
+          import subprocess
+
+          with open('/tmp/metadata.json') as source:
+              metadata = json.load(source)
+          members = set(metadata['workspace_members'])
+          for package in metadata['packages']:
+              if package['id'] not in members:
+                  continue
+              for target in package['targets']:
+                  if 'example' in target['kind']:
+                      subprocess.run(
+                          ['cargo', 'run', '--locked', '--package', package['name'], '--example', target['name']],
+                          check=True, timeout=30,
+                      )
+          PY
