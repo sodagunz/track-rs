@@ -83,12 +83,24 @@ fn render(f: &mut Frame, state: &App) {
         );
     }
     if hint_rows > 0 {
+        let line = state.prompt.as_ref().map_or_else(
+            || {
+                format!(
+                    "{} {} Help  {}{} {}",
+                    state.mode.label(),
+                    command_keys(Command::ToggleHelp),
+                    if state.is_dirty() { "* " } else { "" },
+                    state.status,
+                    state
+                        .path
+                        .as_ref()
+                        .map_or_else(|| "[unsaved]".into(), |path| path.display().to_string())
+                )
+            },
+            |text| format!(":{text}"),
+        );
         f.render_widget(
-            Paragraph::new(format!(
-                "{} {} Help",
-                state.mode.label(),
-                command_keys(Command::ToggleHelp)
-            )),
+            Paragraph::new(line),
             Rect::new(area.x, area.bottom() - 1, area.width, 1),
         );
     }
@@ -215,7 +227,7 @@ fn draw_pattern_editor(f: &mut Frame, area: Rect, state: &App) {
     if area.is_empty() {
         return;
     }
-    let pattern = &state.pattern;
+    let pattern = &state.project.patterns[state.selected_pattern];
     let visible_tracks = usize::from(area.width.saturating_sub(GUTTER) / TRACK_WIDTH)
         .max(usize::from(area.width > GUTTER))
         .min(pattern.tracks.len());
@@ -235,7 +247,10 @@ fn draw_pattern_editor(f: &mut Frame, area: Rect, state: &App) {
         let mut header = vec![Span::raw("Row  ")];
         for track in first_track..first_track + visible_tracks {
             header.push(Span::styled(
-                format!("{:<10}", format!("{} {}", track + 1, pattern.instrument(track).label())),
+                format!(
+                    "{:<10}",
+                    format!("{} {}", track + 1, state.project.instrument(track).label())
+                ),
                 Style::default().fg(Color::Green),
             ));
         }
@@ -310,7 +325,7 @@ fn draw_status_bar(f: &mut Frame, area: Rect, state: &App) {
             row.max(state.cursor_row),
             track.max(state.cursor_track)
         )),
-        state.bpm,
+        state.project.bpm,
         state.octave,
         state.edit_step,
         state.playback_state,
@@ -345,11 +360,40 @@ mod tests {
     }
 
     #[test]
+    fn file_prompt_dirty_path_and_errors_render_through_real_keys() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::default();
+        app.handle_command(Command::IncreaseTempo);
+        app.path = Some(std::path::PathBuf::from("my song.json"));
+        let mut terminal = Terminal::new(TestBackend::new(100, 8)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        assert!(screen(&terminal).contains("* "));
+        assert!(screen(&terminal).contains("my song.json"));
+        for ch in ":w my next song.json".chars() {
+            crate::bindings::handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE), &mut app);
+        }
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        assert!(screen(&terminal).contains(":w my next song.json"));
+        crate::bindings::handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut app);
+        app.path = None;
+        for ch in ":w".chars() {
+            crate::bindings::handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE), &mut app);
+        }
+        crate::bindings::handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &mut app);
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        assert!(screen(&terminal).contains("No file path"));
+        for (width, height) in [(1, 1), (12, 2), (40, 3)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+        }
+    }
+
+    #[test]
     fn instrument_headers_fit_existing_columns_without_moving_highlights() {
         use crate::tracker::Instrument;
         for instrument in Instrument::ALL {
             let mut app = App::default();
-            app.pattern.set_instrument(1, instrument);
+            app.project.set_instrument(1, instrument);
             app.cursor_track = 1;
             app.playback_row = 1;
             app.handle_command(Command::TogglePlayback);
@@ -402,7 +446,9 @@ mod tests {
             ..App::default()
         };
         for (track, pitch) in [(0, NotePitch::C), (1, NotePitch::Cs), (2, NotePitch::D)] {
-            app.pattern.set_step(track, 0, Some(Note { pitch, octave: 4 })).unwrap();
+            app.project.patterns[app.selected_pattern]
+                .set_step(track, 0, Some(Note { pitch, octave: 4 }))
+                .unwrap();
         }
         let mut terminal = Terminal::new(TestBackend::new(45, 4)).unwrap();
         terminal.draw(|f| draw_pattern_editor(f, f.area(), &app)).unwrap();
@@ -449,7 +495,7 @@ mod tests {
             playback_state: crate::state::PlaybackState::Playing,
             ..App::default()
         };
-        app.pattern.set_instrument(3, crate::tracker::Instrument::HiHat);
+        app.project.set_instrument(3, crate::tracker::Instrument::HiHat);
         let mut terminal = Terminal::new(TestBackend::new(15, 6)).unwrap();
         terminal.draw(|f| render(f, &app)).unwrap();
         assert!(screen(&terminal).contains("4 HiHat"));

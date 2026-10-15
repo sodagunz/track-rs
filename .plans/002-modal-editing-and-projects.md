@@ -1,6 +1,6 @@
 # Modal editing and projects
 
-Status: Phases 1–3 implemented; phases 4–5 planned. Builds on `feat/pattern-grid` (#9).
+Status: Phases 1–4 implemented; phase 5 planned. Builds on `feat/pattern-grid` (#9).
 
 Make writing and reusing a pattern comfortable, then make it safe to keep. Each
 phase gets its own branch/stacked PR. Don't build the mixer or a full Vim clone.
@@ -130,31 +130,54 @@ remain unimplemented.
 Touches: a small project model, a file-format module, editor state, and a minimal
 command prompt. This is persistence, not an interchange format.
 
-- [ ] Separate document data from editor/runtime state. Introduce a project with
+- [x] Separate document data from editor/runtime state. Introduce a project with
   BPM, track instruments, patterns, and a playback order, initially one pattern
   and `[0]`. Keep track assignments shared across patterns; avoid serializing
   parallel public vectors whose lengths can disagree.
-- [ ] Use versioned JSON with explicit pitch/instrument names and row/track
+- [x] Use versioned JSON with explicit pitch/instrument names and row/track
   dimensions. Version 1 includes the pattern list/order even before arrangement
   editing. Add serialization dependencies here, not in earlier phases.
-- [ ] Add Normal `:` with only `w [path]`, `e[!] <path>`, `q`, `q!`, and `wq`.
+- [x] Add Normal `:` with only `w [path]`, `e[!] <path>`, `q`, `q!`, and `wq`.
   Parse the path as the remainder so spaces work; no shell expansion/evaluation.
   `Esc` cancels; prompt input never dispatches note/editor shortcuts.
-- [ ] Save through a temporary file beside the destination, flush it, and replace
+- [x] Save through a temporary file beside the destination, flush it, and replace
   the destination atomically where supported. Surface errors; never silently
   truncate an existing file or mark a failed save as clean.
-- [ ] Validate version, finite/in-range BPM, dimensions, pitches, instruments,
+- [x] Validate version, finite/in-range BPM, dimensions, pitches, instruments,
   order references, and documented allocation/file-size limits before replacing
   the live project. Reject unsupported versions clearly; no migration engine yet.
-- [ ] Track dirty state against the saved revision, including undo/redo. Refuse
+- [x] Track dirty state against the saved revision, including undo/redo. Refuse
   ordinary quit/load while dirty; `q!`/`e!` explicitly discards changes. Successful load
   stops audio and resets history, clipboard, selection, and cursor. Failed load
   leaves the existing project and runtime untouched.
-- [ ] Test round trips, a checked-in v1 fixture, unknown versions, malformed and
+- [x] Test round trips, a checked-in v1 fixture, unknown versions, malformed and
   oversized files, save failures preserving the old file, and dirty-state flows.
 
 Done: compose, save, restart, load, and hear the same pattern. No MIDI, autosave,
 plugin state, or compatibility promise for unpublished experimental formats.
+
+Phase 4: `Project` owns BPM, shared instruments, patterns, and order; `App`
+keeps the selected pattern index and editor/runtime state. Cell history patches
+include a pattern index; no pattern/order editing or song playback is exposed.
+The v1 fixture includes multiple patterns of different lengths and repeated order
+entries. JSON uses named instruments/pitches and explicit row/track dimensions.
+Limits are 16 MiB raw/encoded, 128 tracks, 256 patterns, 4096 rows per pattern,
+1,000,000 total cells, and 65,536 order entries. Invalid files never replace the
+live project. Saves use a same-directory `NamedTempFile`, flush, sync, and persist;
+failed writes preserve the saved checkpoint and path. Revision tokens remain
+independent of retained history. A load requests a runtime stop independently of
+the playback-state mirror, then resets editor/history state only after validation.
+
+Phase 4 validation: actionlint, formatting, strict all-target Clippy, 60 nextest
+tests, all-target cargo tests, 0 doctests, warning-free docs, cargo-deny, and the
+null-audio example passed using `.devenv/profile/bin` tools. Cargo-deny reports
+duplicate-version warnings only; no policy exceptions or advisory suppressions
+were added. Tests cover fixture/multipattern round trips, corruption and limits,
+failed persist to a directory, preservation of prior bytes, dirty undo/redo and
+divergence/eviction, failed-load isolation, runtime stop requests, literal prompt
+keystrokes with spaces/shell metacharacters, non-Unicode remembered paths, and
+headless prompt/status rendering. No interactive terminal or audible playback
+pass was performed. Phase 5 remains unimplemented.
 
 ## 5. Multiple patterns and a playback order
 

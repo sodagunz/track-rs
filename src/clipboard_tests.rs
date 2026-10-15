@@ -4,7 +4,7 @@ use crate::{
     bindings::handle_key,
     command::Command,
     state::{App, Mode},
-    tracker::{Instrument, Note, NotePitch, Pattern},
+    tracker::{Instrument, Note, NotePitch},
 };
 
 fn key(app: &mut App, code: KeyCode) {
@@ -16,20 +16,23 @@ fn keys(app: &mut App, text: &str) {
     }
 }
 fn note(app: &App, track: usize, row: usize) -> Option<Note> {
-    app.pattern.get_step(track, row).unwrap().note
+    app.project.patterns[app.selected_pattern]
+        .get_step(track, row)
+        .unwrap()
+        .note
 }
 fn seed() -> App {
     let mut app = App {
-        pattern: Pattern::new(8, 4),
+        project: crate::project::Project::new(8, 4),
         ..App::default()
     };
     for (track, row, pitch) in [(0, 0, NotePitch::C), (1, 1, NotePitch::D), (2, 2, NotePitch::E)] {
-        app.pattern
+        app.project.patterns[app.selected_pattern]
             .set_step(track, row, Some(Note { pitch, octave: 4 }))
             .unwrap();
     }
-    app.pattern.set_instrument(0, Instrument::Kick);
-    app.pattern.set_instrument(1, Instrument::Snare);
+    app.project.set_instrument(0, Instrument::Kick);
+    app.project.set_instrument(1, Instrument::Snare);
     app
 }
 
@@ -45,7 +48,7 @@ fn reversed_snapshot_overlaps_overwrites_empties_and_undoes_atomically() {
     assert_eq!(note(&app, 2, 2).unwrap().pitch, NotePitch::D);
     assert_eq!(note(&app, 1, 2), None);
     assert_eq!(note(&app, 2, 1), None);
-    assert_eq!(app.pattern.instrument(1), Instrument::Snare);
+    assert_eq!(app.project.instrument(1), Instrument::Snare);
     assert_eq!((app.cursor_row, app.cursor_track), (1, 1));
     keys(&mut app, "u");
     assert_eq!(app.revision(), revision);
@@ -54,8 +57,8 @@ fn reversed_snapshot_overlaps_overwrites_empties_and_undoes_atomically() {
     handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL), &mut app);
     keys(&mut app, "u6j2lp"); // bottom right: clip both axes
     assert_eq!(note(&app, 3, 7).unwrap().pitch, NotePitch::C);
-    assert_eq!(app.pattern.num_rows, 8);
-    assert_eq!(app.pattern.tracks.len(), 4);
+    assert_eq!(app.project.patterns[app.selected_pattern].num_rows, 8);
+    assert_eq!(app.project.patterns[app.selected_pattern].tracks.len(), 4);
     keys(&mut app, "u");
     assert_eq!(note(&app, 3, 7), None);
 }

@@ -35,7 +35,7 @@ impl Binding {
                 | Command::RaiseNote
                 | Command::DecreaseOctave
                 | Command::IncreaseOctave => &[Mode::Insert],
-                Command::Undo | Command::Redo | Command::Paste => &[Mode::Normal],
+                Command::OpenPrompt | Command::Undo | Command::Redo | Command::Paste => &[Mode::Normal],
                 Command::Copy
                 | Command::Cut
                 | Command::EnterInsert
@@ -52,6 +52,12 @@ impl Binding {
 
 /// The single source of truth for default controls and their descriptions.
 pub const DEFAULT_BINDINGS: &[Binding] = &[
+    Binding::new(
+        KeyCode::Char(':'),
+        Command::OpenPrompt,
+        "w [path], e[!] path, q[!], wq; Esc cancels",
+        "Files",
+    ),
     Binding {
         modes: &[Mode::Normal, Mode::Visual],
         ..Binding::new(
@@ -295,7 +301,7 @@ pub const DEFAULT_BINDINGS: &[Binding] = &[
 /// Resolve terminal input using editor mode and pending-count state.
 /// Counts are capped before arithmetic and consumed by one movement command.
 pub fn resolve(key: KeyEvent, state: &mut App) -> Option<Command> {
-    if key.kind == KeyEventKind::Release {
+    if state.prompt.is_some() || key.kind == KeyEventKind::Release {
         return None;
     }
     let mut modifiers = key.modifiers;
@@ -368,6 +374,37 @@ pub fn resolve(key: KeyEvent, state: &mut App) -> Option<Command> {
 
 /// Dispatch one real key through the shared resolver.
 pub fn handle_key(key: KeyEvent, state: &mut App) {
+    if state.prompt.is_some() {
+        if key.kind == KeyEventKind::Release
+            || key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+        {
+            return;
+        }
+        match key.code {
+            KeyCode::Esc => {
+                state.prompt = None;
+            }
+            KeyCode::Enter if key.kind == KeyEventKind::Press => {
+                if let Some(text) = state.prompt.take() {
+                    state.execute_prompt(&text);
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(text) = &mut state.prompt {
+                    text.pop();
+                }
+            }
+            KeyCode::Char(ch) => {
+                if let Some(text) = &mut state.prompt {
+                    text.push(ch);
+                }
+            }
+            _ => {}
+        }
+        return;
+    }
     if let Some(command) = resolve(key, state) {
         state.handle_command(command);
     }
@@ -423,10 +460,21 @@ mod tests {
         let mut app = App::default();
         assert_eq!(app.mode, Mode::Normal);
         sequence(&mut app, "zxc");
-        assert_eq!(app.pattern.get_step(0, 0).unwrap().note, None);
+        assert_eq!(
+            app.project.patterns[app.selected_pattern].get_step(0, 0).unwrap().note,
+            None
+        );
         sequence(&mut app, "iv");
         assert_eq!(app.mode, Mode::Insert);
-        assert_eq!(app.pattern.get_step(0, 0).unwrap().note.unwrap().pitch, NotePitch::F);
+        assert_eq!(
+            app.project.patterns[app.selected_pattern]
+                .get_step(0, 0)
+                .unwrap()
+                .note
+                .unwrap()
+                .pitch,
+            NotePitch::F
+        );
         sequence(&mut app, "2j"); // Insert digits don't count.
         assert_eq!(app.cursor_row, 1);
         escape(&mut app);
@@ -470,9 +518,12 @@ mod tests {
             sequence(&mut app, invalid);
             assert_eq!(app.pending_count, None, "{invalid}");
             assert_eq!(app.mode, Mode::Normal);
-            assert_eq!(app.bpm, 120.0);
-            assert_eq!(app.pattern.instrument(0), crate::tracker::Instrument::Pluck);
-            assert_eq!(app.pattern.get_step(0, 0).unwrap().note, None);
+            assert_eq!(app.project.bpm, 120.0);
+            assert_eq!(app.project.instrument(0), crate::tracker::Instrument::Pluck);
+            assert_eq!(
+                app.project.patterns[app.selected_pattern].get_step(0, 0).unwrap().note,
+                None
+            );
             assert!(matches!(app.playback_state, crate::state::PlaybackState::Stopped));
         }
         sequence(&mut app, "2");
@@ -500,7 +551,13 @@ mod tests {
             escape(&mut app);
             assert!(!app.help_visible);
             assert_eq!((app.mode, app.selection_anchor), (mode, anchor));
-            assert_eq!(app.pattern.get_step(track, row).unwrap().note, None);
+            assert_eq!(
+                app.project.patterns[app.selected_pattern]
+                    .get_step(track, row)
+                    .unwrap()
+                    .note,
+                None
+            );
         }
     }
 
@@ -548,7 +605,10 @@ mod tests {
             }
         }
         key(&mut app, KeyCode::Char('v'), KeyModifiers::NONE, KeyEventKind::Repeat);
-        assert_eq!(app.pattern.get_step(0, 17).unwrap().note, None);
+        assert_eq!(
+            app.project.patterns[app.selected_pattern].get_step(0, 17).unwrap().note,
+            None
+        );
         key(&mut app, KeyCode::Char('Q'), KeyModifiers::SHIFT, KeyEventKind::Press);
         assert!(app.shutdown);
     }
@@ -562,26 +622,39 @@ mod tests {
             sequence(&mut app, "jjllkh+-][ ");
             assert_eq!((app.cursor_row, app.cursor_track), (1, 1));
             assert_eq!(app.mode, mode);
-            assert_eq!(app.bpm, 120.0);
+            assert_eq!(app.project.bpm, 120.0);
             assert!(matches!(app.playback_state, crate::state::PlaybackState::Playing));
             sequence(&mut app, "z");
             key(&mut app, KeyCode::Delete, KeyModifiers::NONE, KeyEventKind::Press);
-            assert_eq!(app.pattern.get_step(1, 1).unwrap().note, None);
+            assert_eq!(
+                app.project.patterns[app.selected_pattern].get_step(1, 1).unwrap().note,
+                None
+            );
         }
         let mut app = App::default();
         sequence(&mut app, "izsr");
-        let note = app.pattern.get_step(0, 0).unwrap().note.unwrap();
+        let note = app.project.patterns[app.selected_pattern]
+            .get_step(0, 0)
+            .unwrap()
+            .note
+            .unwrap();
         assert_eq!(note.pitch, NotePitch::Cs);
         assert_eq!(note.octave, 4);
         assert_eq!(app.octave, 5);
         escape(&mut app);
         sequence(&mut app, "xfrzas");
         key(&mut app, KeyCode::Delete, KeyModifiers::NONE, KeyEventKind::Press);
-        assert_eq!(app.pattern.get_step(0, 0).unwrap().note, None);
+        assert_eq!(
+            app.project.patterns[app.selected_pattern].get_step(0, 0).unwrap().note,
+            None
+        );
         assert_eq!(app.octave, 5);
         sequence(&mut app, "i");
         key(&mut app, KeyCode::Delete, KeyModifiers::NONE, KeyEventKind::Press);
-        assert_eq!(app.pattern.get_step(0, 0).unwrap().note, None);
+        assert_eq!(
+            app.project.patterns[app.selected_pattern].get_step(0, 0).unwrap().note,
+            None
+        );
     }
 
     #[test]

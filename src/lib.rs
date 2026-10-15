@@ -10,3 +10,9 @@ pub mod state;
 pub mod tracker;
 pub mod transport;
 pub mod ui;
+
+pub mod project;
+pub mod project_file;
+
+#[cfg(test)]
+mod project_tests;

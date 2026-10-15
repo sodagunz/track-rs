@@ -23,7 +23,7 @@ pub struct NoteEvent {
 
 /// Collect notes without constructing voices or opening an output device.
 #[must_use]
-pub fn collect_row(pattern: &Pattern, event: RowEvent) -> Vec<NoteEvent> {
+pub fn collect_row(pattern: &Pattern, instruments: &[Instrument], event: RowEvent) -> Vec<NoteEvent> {
     if event.row >= pattern.num_rows {
         return Vec::new();
     }
@@ -34,7 +34,7 @@ pub fn collect_row(pattern: &Pattern, event: RowEvent) -> Vec<NoteEvent> {
         .filter_map(|(track, steps)| {
             Some(NoteEvent {
                 track,
-                instrument: pattern.instrument(track),
+                instrument: instruments.get(track).copied().unwrap_or_default(),
                 note: steps.get(event.row)?.note?,
                 beats: event.beats,
                 duration: event.duration,
@@ -130,15 +130,15 @@ mod tests {
                     start,
                     matches!(app.playback_state, PlaybackState::Playing),
                     64,
-                    app.bpm,
+                    app.project.bpm,
                     4
                 )
                 .is_none());
             assert_eq!(transport.deadline(), None);
-            app.bpm = 120.0;
+            app.project.bpm = 120.0;
             app.handle_command(Command::TogglePlayback);
             assert_eq!(
-                transport.update(start, true, 64, app.bpm, 4).unwrap().duration,
+                transport.update(start, true, 64, app.project.bpm, 4).unwrap().duration,
                 Duration::from_millis(125)
             );
             let boundary = transport.deadline().unwrap();
@@ -148,17 +148,17 @@ mod tests {
                     boundary.checked_sub(Duration::from_nanos(1)).unwrap(),
                     true,
                     64,
-                    app.bpm,
+                    app.project.bpm,
                     4
                 )
                 .is_none());
             assert_eq!(transport.deadline(), Some(boundary));
-            let event = transport.update(boundary, true, 64, app.bpm, 4).unwrap();
-            let period = Duration::from_secs_f64(60.0 / app.bpm / 4.0);
+            let event = transport.update(boundary, true, 64, app.project.bpm, 4).unwrap();
+            let period = Duration::from_secs_f64(60.0 / app.project.bpm / 4.0);
             assert_eq!(event.row, 1);
             assert_eq!(event.duration, period);
             assert_eq!(transport.deadline(), Some(boundary + period));
-            app.pattern
+            app.project.patterns[app.selected_pattern]
                 .set_step(
                     0,
                     1,
@@ -168,8 +168,16 @@ mod tests {
                     }),
                 )
                 .unwrap();
-            assert_eq!(collect_row(&app.pattern, event)[0].duration, period);
-            assert!(transport.update(boundary, true, 64, app.bpm, 4).is_none());
+            assert_eq!(
+                collect_row(
+                    &app.project.patterns[app.selected_pattern],
+                    &app.project.instruments,
+                    event
+                )[0]
+                .duration,
+                period
+            );
+            assert!(transport.update(boundary, true, 64, app.project.bpm, 4).is_none());
         }
     }
 
@@ -275,13 +283,13 @@ mod tests {
             octave: 4,
         };
         pattern.set_step(2, 0, Some(note)).unwrap();
-        pattern.set_instrument(2, Instrument::Kick);
+        let instruments = [Instrument::Pluck, Instrument::Pluck, Instrument::Kick];
         let event = RowEvent {
             row: 0,
             beats: 0.25,
             duration: Duration::from_millis(125),
         };
-        let notes = collect_row(&pattern, event);
+        let notes = collect_row(&pattern, &instruments, event);
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].track, 2);
         assert_eq!(notes[0].instrument, Instrument::Kick);
@@ -291,7 +299,7 @@ mod tests {
 
         let second_note = Note { octave: 5, ..note };
         pattern.set_step(0, 0, Some(second_note)).unwrap();
-        let notes = collect_row(&pattern, event);
+        let notes = collect_row(&pattern, &instruments, event);
         assert_eq!(notes.len(), 2);
         assert_eq!(notes[0].instrument, Instrument::Pluck);
         assert_eq!(notes[1].instrument, Instrument::Kick);
@@ -301,9 +309,9 @@ mod tests {
             assert_eq!(note.beats, event.beats);
             assert_eq!(note.duration, event.duration);
         }
-        assert!(collect_row(&pattern, RowEvent { row: 1, ..event }).is_empty());
-        assert!(collect_row(&pattern, RowEvent { row: 2, ..event }).is_empty());
-        assert!(collect_row(&Pattern::new(0, 3), event).is_empty());
-        assert!(collect_row(&Pattern::new(2, 0), event).is_empty());
+        assert!(collect_row(&pattern, &instruments, RowEvent { row: 1, ..event }).is_empty());
+        assert!(collect_row(&pattern, &instruments, RowEvent { row: 2, ..event }).is_empty());
+        assert!(collect_row(&Pattern::new(0, 3), &instruments, event).is_empty());
+        assert!(collect_row(&Pattern::new(2, 0), &instruments, event).is_empty());
     }
 }

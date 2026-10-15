@@ -43,7 +43,11 @@ fn main_loop<W: std::io::Write>(
             bindings::handle_key(key, app_state);
         }
         let playing = !app_state.shutdown && matches!(app_state.playback_state, PlaybackState::Playing);
-        if was_playing && !playing {
+        let stop_requested = app_state.take_stop_request();
+        if stop_requested {
+            transport.stop();
+        }
+        if stop_requested || (was_playing && !playing) {
             audio_engine.stop();
         }
         was_playing = playing;
@@ -51,12 +55,16 @@ fn main_loop<W: std::io::Write>(
         if let Some(row) = transport.update(
             now,
             playing,
-            app_state.pattern.num_rows,
-            app_state.bpm,
+            app_state.project.patterns[app_state.selected_pattern].num_rows,
+            app_state.project.bpm,
             track_rs::transport::DEFAULT_ROWS_PER_BEAT,
         ) {
             app_state.playback_row = row.row;
-            for event in track_rs::transport::collect_row(&app_state.pattern, row) {
+            for event in track_rs::transport::collect_row(
+                &app_state.project.patterns[app_state.selected_pattern],
+                app_state.project.instruments(),
+                row,
+            ) {
                 audio_engine.play_event(event);
             }
         }

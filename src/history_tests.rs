@@ -5,7 +5,7 @@ use crate::{
     command::Command,
     history::{MAX_MUTATIONS, MAX_TRANSACTIONS},
     state::{App, Mode, PlaybackState},
-    tracker::{Instrument, Note, NotePitch, Pattern},
+    tracker::{Instrument, Note, NotePitch},
     transport::{collect_row, Transport},
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -37,25 +37,25 @@ fn every_document_edit_round_trips_with_revision_identity() {
         Command::IncreaseTempo,
     ] {
         let before = (
-            app.pattern.get_step(0, 0).unwrap().note,
-            app.pattern.instrument(0),
-            app.bpm,
+            app.project.patterns[app.selected_pattern].get_step(0, 0).unwrap().note,
+            app.project.instrument(0),
+            app.project.bpm,
             app.revision(),
         );
         app.handle_command(command);
         let after = (
-            app.pattern.get_step(0, 0).unwrap().note,
-            app.pattern.instrument(0),
-            app.bpm,
+            app.project.patterns[app.selected_pattern].get_step(0, 0).unwrap().note,
+            app.project.instrument(0),
+            app.project.bpm,
             app.revision(),
         );
         assert_ne!(before.3, after.3, "{command:?}");
         app.handle_command(Command::Undo);
         assert_eq!(
             (
-                app.pattern.get_step(0, 0).unwrap().note,
-                app.pattern.instrument(0),
-                app.bpm,
+                app.project.patterns[app.selected_pattern].get_step(0, 0).unwrap().note,
+                app.project.instrument(0),
+                app.project.bpm,
                 app.revision()
             ),
             before
@@ -63,9 +63,9 @@ fn every_document_edit_round_trips_with_revision_identity() {
         app.handle_command(Command::Redo);
         assert_eq!(
             (
-                app.pattern.get_step(0, 0).unwrap().note,
-                app.pattern.instrument(0),
-                app.bpm,
+                app.project.patterns[app.selected_pattern].get_step(0, 0).unwrap().note,
+                app.project.instrument(0),
+                app.project.bpm,
                 app.revision()
             ),
             after
@@ -81,8 +81,10 @@ fn noops_invalid_targets_and_navigation_preserve_redo() {
     let edited = app.revision();
     app.handle_command(Command::Undo);
     app.insert_note_under_cursor(None);
+    let pattern = app.selected_pattern;
     app.edit(|edit| {
         edit.set_cell(
+            pattern,
             0,
             0,
             Some(Note {
@@ -90,7 +92,7 @@ fn noops_invalid_targets_and_navigation_preserve_redo() {
                 octave: 4,
             }),
         );
-        edit.set_cell(0, 0, None);
+        edit.set_cell(pattern, 0, 0, None);
         edit.set_tempo(130.0);
         edit.set_tempo(120.0);
         edit.set_instrument(0, Instrument::Kick);
@@ -99,8 +101,9 @@ fn noops_invalid_targets_and_navigation_preserve_redo() {
     app.handle_command(Command::LowerNote);
     app.handle_command(Command::RaiseNote);
     app.handle_command(Command::SetInstrument(Instrument::Pluck));
+    let pattern = app.selected_pattern;
     app.edit(|edit| {
-        edit.set_cell(usize::MAX, 0, None);
+        edit.set_cell(pattern, usize::MAX, 0, None);
         edit.set_instrument(usize::MAX, Instrument::Kick);
         edit.set_tempo(f64::NAN);
         edit.set_tempo(0.0);
@@ -123,7 +126,13 @@ fn noops_invalid_targets_and_navigation_preserve_redo() {
     assert!(matches!(app.playback_state, PlaybackState::Playing));
 
     for (bpm, command) in [(20.0, Command::DecreaseTempo), (300.0, Command::IncreaseTempo)] {
-        let mut app = App { bpm, ..App::default() };
+        let mut app = App {
+            project: crate::project::Project {
+                bpm,
+                ..crate::project::Project::default()
+            },
+            ..App::default()
+        };
         let revision = app.revision();
         app.handle_command(command);
         assert_eq!(app.revision(), revision);
@@ -183,35 +192,55 @@ fn bulk_seam_is_atomic_and_mutation_budget_evicts_oversized_edits() {
         pitch: NotePitch::F,
         octave: 4,
     });
+    let pattern = app.selected_pattern;
     app.edit(|edit| {
-        edit.set_cell(0, 0, note);
-        edit.set_cell(1, 1, note);
+        edit.set_cell(pattern, 0, 0, note);
+        edit.set_cell(pattern, 1, 1, note);
         edit.set_instrument(1, Instrument::Snare);
         edit.set_tempo(140.0);
     });
     app.handle_command(Command::Undo);
     assert_eq!(app.revision(), initial);
-    assert_eq!(app.pattern.get_step(1, 1).unwrap().note, None);
-    assert_eq!(app.pattern.instrument(1), Instrument::Pluck);
-    assert_eq!(app.bpm, 120.0);
+    assert_eq!(
+        app.project.patterns[app.selected_pattern].get_step(1, 1).unwrap().note,
+        None
+    );
+    assert_eq!(app.project.instrument(1), Instrument::Pluck);
+    assert_eq!(app.project.bpm, 120.0);
     app.handle_command(Command::Redo);
-    assert_eq!(app.pattern.get_step(0, 0).unwrap().note, note);
-    assert_eq!(app.pattern.get_step(1, 1).unwrap().note, note);
-    assert_eq!(app.pattern.get_step(0, 1).unwrap().note, None);
+    assert_eq!(
+        app.project.patterns[app.selected_pattern].get_step(0, 0).unwrap().note,
+        note
+    );
+    assert_eq!(
+        app.project.patterns[app.selected_pattern].get_step(1, 1).unwrap().note,
+        note
+    );
+    assert_eq!(
+        app.project.patterns[app.selected_pattern].get_step(0, 1).unwrap().note,
+        None
+    );
 
     let mut app = App {
-        pattern: Pattern::new(MAX_MUTATIONS + 1, 1),
+        project: crate::project::Project::new(MAX_MUTATIONS + 1, 1),
         ..App::default()
     };
+    let pattern = app.selected_pattern;
     app.edit(|edit| {
         for row in 0..=MAX_MUTATIONS {
-            edit.set_cell(0, row, note);
+            edit.set_cell(pattern, 0, row, note);
         }
     });
     let oversized = app.revision();
     app.handle_command(Command::Undo);
     assert_eq!(app.revision(), oversized);
-    assert_eq!(app.pattern.get_step(0, MAX_MUTATIONS).unwrap().note, note);
+    assert_eq!(
+        app.project.patterns[app.selected_pattern]
+            .get_step(0, MAX_MUTATIONS)
+            .unwrap()
+            .note,
+        note
+    );
     app.handle_command(Command::IncreaseTempo);
     app.handle_command(Command::Undo);
     assert_eq!(app.revision(), oversized);
@@ -266,7 +295,7 @@ fn playback_keeps_deadline_and_reads_restored_future_events() {
     let mut app = App::default();
     let mut transport = Transport::default();
     app.handle_command(Command::TogglePlayback);
-    transport.update(Instant::now(), true, 64, app.bpm, 4).unwrap();
+    transport.update(Instant::now(), true, 64, app.project.bpm, 4).unwrap();
     let boundary = transport.deadline().unwrap();
     app.playback_row = 7;
     app.cursor_row = 1;
@@ -274,8 +303,9 @@ fn playback_keeps_deadline_and_reads_restored_future_events() {
         pitch: NotePitch::D,
         octave: 5,
     });
+    let pattern = app.selected_pattern;
     app.edit(|edit| {
-        edit.set_cell(0, 1, note);
+        edit.set_cell(pattern, 0, 1, note);
         edit.set_instrument(0, Instrument::Kick);
         edit.set_tempo(150.0);
     });
@@ -284,14 +314,23 @@ fn playback_keeps_deadline_and_reads_restored_future_events() {
     assert_eq!(app.playback_row, 7);
     assert_eq!(app.cursor_row, 1);
     assert!(matches!(app.playback_state, PlaybackState::Playing));
-    let event = transport.update(boundary, true, 64, app.bpm, 4).unwrap();
+    let event = transport.update(boundary, true, 64, app.project.bpm, 4).unwrap();
     assert_eq!(event.row, 1);
-    assert!(collect_row(&app.pattern, event).is_empty());
+    assert!(collect_row(
+        &app.project.patterns[app.selected_pattern],
+        app.project.instruments(),
+        event
+    )
+    .is_empty());
     let next_boundary = transport.deadline();
     app.handle_command(Command::Redo);
     assert_eq!(transport.deadline(), next_boundary);
-    let notes = collect_row(&app.pattern, event);
+    let notes = collect_row(
+        &app.project.patterns[app.selected_pattern],
+        app.project.instruments(),
+        event,
+    );
     assert_eq!(notes[0].note, note.unwrap());
     assert_eq!(notes[0].instrument, Instrument::Kick);
-    assert_eq!(app.bpm, 150.0);
+    assert_eq!(app.project.bpm, 150.0);
 }

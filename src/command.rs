@@ -3,6 +3,7 @@ use crate::tracker::{Instrument, NotePitch};
 /// User actions, independent of terminal input and the current editor state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
+    OpenPrompt,
     Undo,
     Redo,
     EnterInsert,

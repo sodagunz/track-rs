@@ -58,6 +58,30 @@ Space toggles playback and `-`/`+` adjusts BPM by 1 (20–300) in every mode.
 `[`/`]` cycles the selected track’s instrument: Pluck (default), Sine, Square, Saw,
 Kick, Snare, HiHat. Percussion ignores pitch; new presets play dry.
 
+### Project files
+
+In Normal mode, `:` opens a command prompt. Type `:w my song.json` and Enter to
+save; `:w` saves to the same path. `:e my song.json` loads a project. Paths are
+literal remainders (spaces work; no quotes, shell expansion, or commands).
+Esc cancels the prompt.
+
+`q`/`Q` and `:q` refuse to quit with unsaved edits; `:q!` discards them.
+`:e! path` discards edits before loading a valid file. Invalid loads leave the
+current project and playback untouched. Successful loads stop audio and reset
+history, clipboard, selection, cursor, and mode. `:wq` quits only after saving.
+The footer shows `*` for unsaved changes, the file path, and command results.
+Undo/redo can return to the saved revision; branching edits remain dirty even
+when their values happen to match the saved file.
+
+Files use experimental version 1 JSON, not a stable interchange format. They
+contain BPM, shared track instruments, named pitches/octaves, explicitly sized
+patterns, and an order list (initially `[0]`). Multiple patterns round-trip, but
+pattern switching and order editing/playback are not implemented yet. Unknown
+versions are rejected. Limits: 16 MiB encoded, 128 tracks, 256 patterns, 4096 rows
+per pattern, 1,000,000 cells total, and 65,536 order entries. BPM must be finite
+and 20–300; notes span C0–B9. Saves flush and sync a temporary file beside the
+target, then atomically replace it where supported; a failed save stays dirty.
+
 ### Dev
 
 With `devenv`, `direnv`, and `nix` installed:

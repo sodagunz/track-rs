@@ -1,7 +1,10 @@
 //! Value-diff transactions; editor and transport state never enter the journal.
 use std::collections::{BTreeMap, VecDeque};
 
-use crate::tracker::{Instrument, Note, Pattern};
+use crate::{
+    project::Project,
+    tracker::{Instrument, Note},
+};
 
 pub const MAX_TRANSACTIONS: usize = 256;
 pub const MAX_MUTATIONS: usize = 65_536;
@@ -13,6 +16,7 @@ pub struct Revision(u64);
 #[derive(Clone, Debug)]
 enum Mutation {
     Cell {
+        pattern: usize,
         track: usize,
         row: usize,
         before: Option<Note>,
@@ -30,11 +34,13 @@ enum Mutation {
 }
 
 impl Mutation {
-    const fn key(&self) -> (u8, usize, usize) {
+    const fn key(&self) -> (u8, usize, usize, usize) {
         match *self {
-            Self::Cell { track, row, .. } => (0, track, row),
-            Self::Instrument { track, .. } => (1, track, 0),
-            Self::Tempo { .. } => (2, 0, 0),
+            Self::Cell {
+                pattern, track, row, ..
+            } => (0, pattern, track, row),
+            Self::Instrument { track, .. } => (1, 0, track, 0),
+            Self::Tempo { .. } => (2, 0, 0, 0),
         }
     }
 
@@ -56,22 +62,23 @@ impl Mutation {
         }
     }
 
-    fn apply(&self, pattern: &mut Pattern, bpm: &mut f64, forward: bool) {
+    fn apply(&self, project: &mut Project, forward: bool) {
         match *self {
             Self::Cell {
+                pattern,
                 track,
                 row,
                 before,
                 after,
             } => {
-                pattern
+                project.patterns[pattern]
                     .set_step(track, row, if forward { after } else { before })
                     .expect("history cell exists");
             }
             Self::Instrument { track, before, after } => {
-                pattern.set_instrument(track, if forward { after } else { before });
+                project.set_instrument(track, if forward { after } else { before });
             }
-            Self::Tempo { before, after } => *bpm = if forward { after } else { before },
+            Self::Tempo { before, after } => project.bpm = if forward { after } else { before },
         }
     }
 }
@@ -79,44 +86,44 @@ impl Mutation {
 /// One atomic edit. Add any number of cells for a future rectangle operation.
 /// Invalid targets and unchanged values are ignored before recording.
 pub struct Edit<'a> {
-    pattern: &'a mut Pattern,
-    bpm: &'a mut f64,
+    project: &'a mut Project,
     changes: Vec<Mutation>,
 }
 
 impl Edit<'_> {
-    pub fn set_cell(&mut self, track: usize, row: usize, after: Option<Note>) {
-        let Some(step) = self.pattern.get_step(track, row) else {
+    pub fn set_cell(&mut self, pattern: usize, track: usize, row: usize, after: Option<Note>) {
+        let Some(step) = self.project.patterns.get(pattern).and_then(|p| p.get_step(track, row)) else {
             return;
         };
         if step.note != after {
             self.changes.push(Mutation::Cell {
+                pattern,
                 track,
                 row,
                 before: step.note,
                 after,
             });
             // The immutable lookup above validated the same target.
-            let _ = self.pattern.set_step(track, row, after);
+            let _ = self.project.patterns[pattern].set_step(track, row, after);
         }
     }
 
     pub fn set_instrument(&mut self, track: usize, after: Instrument) {
-        let before = self.pattern.instrument(track);
-        if track < self.pattern.tracks.len() && before != after {
+        let before = self.project.instrument(track);
+        if track < self.project.instruments.len() && before != after {
             self.changes.push(Mutation::Instrument { track, before, after });
-            self.pattern.set_instrument(track, after);
+            self.project.set_instrument(track, after);
         }
     }
 
     #[allow(clippy::float_cmp)] // Exact document equality, not approximate DSP comparison.
     pub fn set_tempo(&mut self, after: f64) {
-        if after.is_finite() && (20.0..=300.0).contains(&after) && *self.bpm != after {
+        if after.is_finite() && (20.0..=300.0).contains(&after) && self.project.bpm != after {
             self.changes.push(Mutation::Tempo {
-                before: *self.bpm,
+                before: self.project.bpm,
                 after,
             });
-            *self.bpm = after;
+            self.project.bpm = after;
         }
     }
 }
@@ -147,10 +154,9 @@ impl History {
     ///
     /// # Panics
     /// Panics if the operation panics or the revision counter exhausts u64.
-    pub fn edit(&mut self, pattern: &mut Pattern, bpm: &mut f64, operation: impl FnOnce(&mut Edit<'_>)) {
+    pub fn edit(&mut self, project: &mut Project, operation: impl FnOnce(&mut Edit<'_>)) {
         let mut edit = Edit {
-            pattern,
-            bpm,
+            project,
             changes: Vec::new(),
         };
         operation(&mut edit);
@@ -185,24 +191,24 @@ impl History {
         self.position = self.entries.len();
     }
 
-    pub fn undo(&mut self, pattern: &mut Pattern, bpm: &mut f64) {
+    pub fn undo(&mut self, project: &mut Project) {
         if self.position == 0 {
             return;
         }
         self.position -= 1;
         let entry = &self.entries[self.position];
         for change in entry.changes.iter().rev() {
-            change.apply(pattern, bpm, false);
+            change.apply(project, false);
         }
         self.revision = entry.before;
     }
 
-    pub fn redo(&mut self, pattern: &mut Pattern, bpm: &mut f64) {
+    pub fn redo(&mut self, project: &mut Project) {
         let Some(entry) = self.entries.get(self.position) else {
             return;
         };
         for change in &entry.changes {
-            change.apply(pattern, bpm, true);
+            change.apply(project, true);
         }
         self.revision = entry.after;
         self.position += 1;
