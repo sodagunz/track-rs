@@ -19,11 +19,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Startup:
     let mut audio_engine = AudioEngine::new()?;
     let mut tui = TUI::new(stdout())?;
-    let mut app_state = App::new();
+    let mut app_state = App::default();
 
     let listener = bindings::listen();
 
-    //Main loop
+    // Main loop
     main_loop(&mut app_state, &mut tui, &mut audio_engine, &listener);
 
     tui.destroy()?;
@@ -38,7 +38,7 @@ fn main_loop<W: std::io::Write>(
     listener: &Receiver<crossterm::event::KeyEvent>,
 ) {
     let mut last_frame = Instant::now();
-    let frame_period = Duration::from_millis(50); //UI refresh rate
+    let frame_period = Duration::from_millis(50); // UI refresh rate
 
     let mut last_playback_time: Option<Instant> = None;
 
@@ -47,13 +47,14 @@ fn main_loop<W: std::io::Write>(
             break;
         }
 
-        //Play audio
+        // Play audio
         let seconds_per_beat = 60.0 / app_state.bpm;
         let rows_per_beat = 4.0;
         let seconds_per_row = seconds_per_beat / rows_per_beat;
 
-        assert!((seconds_per_row > 0.0), "Too fast a BPM champ!"); //FIXME: Tempo should be
-                                                                   //ridiculously high for this assert to even trigger
+        assert!((seconds_per_row > 0.0), "Too fast a BPM champ!"); // FIXME: Tempo should be
+                                                                   // ridiculously high for this
+                                                                   // assert to even trigger
 
         let playback_interval = Duration::from_secs_f64(seconds_per_row);
 
@@ -78,8 +79,8 @@ fn main_loop<W: std::io::Write>(
                     for track_idx in 0..app_state.pattern.tracks.len() {
                         if let Some(step) = app_state.pattern.get_step(track_idx, current_row).copied() {
                             if let Some(note) = step.note {
-                                audio_engine.play(note); //FIXME: send async message to audio
-                                                         //thread?
+                                audio_engine.play(note); // FIXME: send async message to audio
+                                                         // thread?
                             }
                         }
                     }
@@ -94,15 +95,15 @@ fn main_loop<W: std::io::Write>(
         // TODO: move to its own thingy
         bindings::handle(listener, app_state);
 
-        //Draw UI
+        // Draw UI
         // TODO: move to its own thingy, renderer maybe?
         if last_frame.elapsed() >= frame_period {
             tui.draw(app_state);
             last_frame = Instant::now();
         }
 
-        //Prevent Busy-Waiting
-        //Calculates smallest potential wait time until next frame or next playback tick
+        // Prevent Busy-Waiting
+        // Calculates smallest potential wait time until next frame or next playback tick
         let time_until_next_frame = frame_period.saturating_sub(last_frame.elapsed());
         let time_until_next_tick = match (app_state.playback_state, last_playback_time) {
             (PlaybackState::Playing, Some(last_time)) => playback_interval.saturating_sub(last_time.elapsed()),

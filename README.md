@@ -7,12 +7,10 @@ audio. Sorry Mario, your blazingly fast modern tracker is in another repo.
 
 ### Dev
 
-With `direnv`, `nix` (and flakes + nix command features enabled) you should be
-able to just:
+With `devenv`, `direnv`, and `nix` installed:
 
 ```bash
 cd track-rs
-# direnv mounts the flake
-
+direnv allow
 cargo run
 ```

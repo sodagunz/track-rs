@@ -34,8 +34,8 @@ impl CursorOffset {
     }
 }
 
-impl App {
-    pub fn new() -> Self {
+impl Default for App {
+    fn default() -> Self {
         let default_rows = 64;
         let default_tracks = 4;
         App {
@@ -49,7 +49,9 @@ impl App {
             shutdown: false,
         }
     }
+}
 
+impl App {
     pub fn offset_cursor(&mut self, dr: &CursorOffset, dt: &CursorOffset) {
         let max_rows = self.pattern.num_rows;
         let max_tracks = self.pattern.tracks.len();

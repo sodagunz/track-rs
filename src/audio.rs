@@ -1,21 +1,18 @@
 #![allow(clippy::precedence)]
+
 use crate::tracker::Note;
-use anyhow::{anyhow, Context};
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
-    Device, FromSample, SizedSample, Stream, StreamConfig, SupportedStreamConfig,
+    Device, FromSample, SizedSample, Stream, SupportedStreamConfig,
 };
 use fundsp::{
-    hacker::{
-        chorus, dcblock, follow, highshelf_hz, lfo, moog, multipass, pass, pluck, reverb2_stereo, shared, split, zero,
-        AudioUnit, BlockRateAdapter, Fade, Sequencer, U2,
+    math::{cos_hz, xerp11, AttoHash},
+    prelude32::{
+        chorus, dcblock, follow, lfo, moog, multipass, pan, pass, pluck, shared, split, var, zero, AudioUnit,
+        BlockRateAdapter, Fade, Net, ReplayMode, Sequencer, U2,
     },
-    math::{cos_hz, db_amp, midi_hz, sin_hz, xerp11, AttoHash},
-    net::Net,
-    prelude::{pan, var},
     realseq::SequencerBackend,
 };
-use std::{f32, time::Duration};
 
 pub struct AudioEngine {
     sequencer: Sequencer,
@@ -23,7 +20,7 @@ pub struct AudioEngine {
 }
 
 impl AudioEngine {
-    //TODO: get the config and device inside
+    // TODO: get the config and device inside
     pub fn new() -> anyhow::Result<Self> {
         let host = cpal::default_host();
 
@@ -32,12 +29,12 @@ impl AudioEngine {
             .expect("failed to find a default output device");
         let config = device.default_output_config().expect("no default output config");
 
-        let sample_rate = config.sample_rate().0 as f64;
+        let sample_rate = f64::from(config.sample_rate());
 
-        let mut sequencer = Sequencer::new(true, 1);
+        let mut sequencer = Sequencer::new(0, 1, ReplayMode::All);
         let sequencer_backend = sequencer.backend();
 
-        //TODO: move to voice, this builds a fundsp net:
+        // TODO: move to voice, this builds a fundsp net:
         let mut fx_net = build_net(sample_rate, sequencer_backend);
 
         let stream = match config.sample_format() {
@@ -52,20 +49,25 @@ impl AudioEngine {
     }
 
     pub fn play(&mut self, note: Note) {
-        let pitch_hz = note.freq();
-        // let pitch = lfo(move |t| pitch_hz * xerp11(1.0, 1.0, 0.5 * (sin_hz(6.0, t) + sin_hz(6.1, t))));
-        let waveform = Net::wrap(Box::new(zero() >> pluck(pitch_hz as f32, 0.5, 0.5) * 0.5));
-        let filter = Net::wrap(Box::new(
-            (pass() | lfo(move |t| (xerp11(400.0, 10000.0, cos_hz(0.1, t)), 0.6))) >> moog(),
-        ));
-
-        let mut note = Box::new(waveform >> filter >> dcblock());
-        let seed: u64 = rand::random();
-        // Give the note its own random seed.
-        note.ping(false, AttoHash::new(seed));
-        // TODO: end_time should be based on note lenght
-        self.sequencer.push_relative(0.0, 0.9, Fade::Smooth, 0.02, 0.2, note);
+        schedule_note(&mut self.sequencer, note);
     }
+}
+
+fn schedule_note(sequencer: &mut Sequencer, note: Note) {
+    let pitch_hz = note.freq();
+    // let pitch = lfo(move |t| pitch_hz * xerp11(1.0, 1.0, 0.5 * (sin_hz(6.0, t) + sin_hz(6.1,
+    // t))));
+    let waveform = Net::wrap(Box::new(zero() >> pluck(pitch_hz as f32, 0.5, 0.5) * 0.5));
+    let filter = Net::wrap(Box::new(
+        (pass() | lfo(move |t| (xerp11(400.0, 10000.0, cos_hz(0.1, t)), 0.6))) >> moog(),
+    ));
+
+    let mut note = Box::new(waveform >> filter >> dcblock());
+    let seed: u64 = rand::random();
+    // Give the note its own random seed.
+    note.ping(false, AttoHash::new(seed));
+    // TODO: end_time should be based on note lenght
+    sequencer.push_relative(0.0, 0.2, Fade::Smooth, 0.02, 0.2, note);
 }
 
 fn build_stream<T>(config: SupportedStreamConfig, device: &Device, fx_net: &mut Net) -> anyhow::Result<Stream>
@@ -78,7 +80,7 @@ where
 
     let channels = config.channels() as usize;
     let stream = device.build_output_stream(
-        &config.into(),
+        config.into(),
         move |data: &mut [T], _: &cpal::OutputCallbackInfo| write_data(data, channels, &mut next_value),
         err_fn,
         None,
@@ -107,14 +109,15 @@ where
 }
 
 fn build_net(sample_rate: f64, sequencer_backend: SequencerBackend) -> Net {
-    let room_size = 10.0;
-    let reverb_amount = shared(0.25);
-    let reverb_time = 2.0;
-    let reverb_diffusion = 0.5;
+    // let room_size = 10.0;
+    // let reverb_amount = shared(0.25);
+    // let reverb_time = 2.0;
+    // let reverb_diffusion = 0.5;
     let chorus_amount = shared(1.0);
 
     let mut net = Net::wrap(Box::new(sequencer_backend));
-    let (reverb, reverb_id) = Net::wrap_id(create_reverb(room_size, reverb_time, reverb_diffusion));
+    // let (reverb, reverb_id) = Net::wrap_id(create_reverb(room_size, reverb_time,
+    // reverb_diffusion));
     let (phaser, phaser_id) = Net::wrap_id(Box::new(multipass::<U2>()));
     let (flanger, flanger_id) = Net::wrap_id(Box::new(multipass::<U2>()));
     net = net >> pan(0.0);
@@ -125,23 +128,55 @@ fn build_net(sample_rate: f64, sequencer_backend: SequencerBackend) -> Net {
                 * 2.0
                 * (chorus(0, 0.0, 0.03, 0.2) | chorus(1, 0.0, 0.03, 0.2)));
     net = net >> phaser >> flanger;
-    net = net
-        >> ((1.0 - var(&reverb_amount) >> follow(0.01) >> split::<U2>()) * multipass()
-            & (var(&reverb_amount) >> follow(0.01) >> split::<U2>()) * reverb);
+    // net = net
+    //     >> ((1.0 - var(&reverb_amount) >> follow(0.01) >> split::<U2>()) * multipass()
+    //         & (var(&reverb_amount) >> follow(0.01) >> split::<U2>()) * reverb);
 
     net.set_sample_rate(sample_rate);
 
     net
 }
 
-fn create_reverb(room_size: f32, time: f32, diffusion: f32) -> Box<dyn AudioUnit> {
-    //Box::new(reverb3_stereo(time, diffusion, highshelf_hz(5000.0, 1.0, db_amp(-1.0))))
-    Box::new(reverb2_stereo(
-        room_size,
-        time,
-        diffusion,
-        1.0,
-        highshelf_hz(5000.0, 1.0, db_amp(-1.0)),
-    ))
-    //Box::new(reverb4_stereo(room_size, time))
+// FIXME: this implementation of reverb requires building in release mode, otherwise we underrun
+// ALSA. I'll comment it for now, until I find out how to turn it on only on release builds.
+// fn create_reverb(room_size: f32, time: f32, diffusion: f32) -> Box<dyn AudioUnit> {
+//     //Box::new(reverb3_stereo(time, diffusion, highshelf_hz(5000.0, 1.0, db_amp(-1.0))))
+//     Box::new(reverb2_stereo(
+//         room_size,
+//         time,
+//         diffusion,
+//         1.0,
+//         highshelf_hz(5000.0, 1.0, db_amp(-1.0)),
+//     ))
+//     //Box::new(reverb4_stereo(room_size, time))
+// }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tracker::NotePitch;
+
+    #[test]
+    fn scheduled_note_produces_finite_audio_without_an_output_device() {
+        let mut sequencer = Sequencer::new(0, 1, ReplayMode::All);
+        let backend = sequencer.backend();
+        let mut net = build_net(48_000.0, backend);
+        let mut renderer = BlockRateAdapter::new(Box::new(net.backend()));
+
+        schedule_note(
+            &mut sequencer,
+            Note {
+                pitch: NotePitch::C,
+                octave: 4,
+            },
+        );
+
+        let mut heard_note = false;
+        for _ in 0..48_000 {
+            let (left, right) = renderer.get_stereo();
+            assert!(left.is_finite() && right.is_finite());
+            heard_note |= left.abs() > 1e-6 || right.abs() > 1e-6;
+        }
+        assert!(heard_note);
+    }
 }
