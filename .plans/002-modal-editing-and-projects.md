@@ -1,6 +1,7 @@
 # Modal editing and projects
 
-Status: Phases 1–4 implemented; phase 5 planned. Builds on `feat/pattern-grid` (#9).
+Status: Phases 1–5 implemented; interactive terminal/audio validation pending.
+Builds on `feat/pattern-grid` (#9).
 
 Make writing and reusing a pattern comfortable, then make it safe to keep. Each
 phase gets its own branch/stacked PR. Don't build the mixer or a full Vim clone.
@@ -181,23 +182,59 @@ pass was performed. Phase 5 remains unimplemented.
 
 ## 5. Multiple patterns and a playback order
 
-- [ ] Add create/duplicate/switch pattern actions and a basic order-list editor.
+- [x] Add create/duplicate/switch pattern actions and a basic order-list editor.
   Start in the pattern panel; defer a full F2 arrangement view. Choose and document
   bindings alongside implementation, without stealing Insert piano keys.
-- [ ] Order entries reference existing patterns and can repeat them. Allow append,
+- [x] Order entries reference existing patterns and can repeat them. Allow append,
   remove, and reorder entries. Prevent an empty order and invalid references;
   defer deleting patterns to avoid reference-remapping rules in this pass.
-- [ ] Keep edited pattern separate from playing pattern. Offer pattern-loop and
+- [x] Keep edited pattern separate from playing pattern. Offer pattern-loop and
   song-order playback; show both positions. Song start begins at order 0/row 0;
   completing the last entry loops the order. Stop/restart keeps existing semantics.
-- [ ] Extend the device-free transport without drift or catch-up bursts across
+- [x] Extend the device-free transport without drift or catch-up bursts across
   patterns of different lengths. Editing the order stops playback before applying
   the change; undo/redo of those edits does too. Pattern switching alone doesn't.
-- [ ] Include project/arrangement edits in history and persistence. Test repeated
+- [x] Include project/arrangement edits in history and persistence. Test repeated
   entries, different lengths, delayed updates across boundaries, undo/redo,
   save/load, and editing one pattern while another plays.
 
 Done: arrange an A/A/B loop, save it, reload it, and play the same sequence.
+
+Phase 5 implementation is done. Normal-only, press-only controls: PageUp/Down
+switch edit patterns; Ctrl-n/Ctrl-d create blank/duplicate patterns of the current
+dimensions; Ctrl-Left/Right selects an order entry; Ctrl-a appends the edit pattern;
+Ctrl-x removes an entry; Ctrl-Up/Down reorders it. `O` toggles Pattern/Song playback
+and stops; Space explicitly restarts. No extra input mode, command grammar, F2
+view, or pattern deletion. Registry-generated help and README describe these keys.
+The scrolling one-line order strip highlights selection; the title distinguishes
+edit pattern from playing order/pattern/row. Pattern switching clamps the cursor
+and clears selection/count without stopping playback.
+
+Pattern loops pin their pattern at start. Song playback flattens one order cycle,
+skips missed cycles arithmetically, then locates the current entry in O(order
+length), independent of elapsed time. Existing anchored deadlines and tempo-boundary
+semantics remain unchanged; each update emits at most one row. Actual order edits
+stop before mutation and request runtime audio cancellation; structural undo/redo
+also stops. No-op removals/reorders, exhausted history, and rejected limits don't
+stop. Ordinary cell/instrument/BPM history keeps playback running.
+
+Structural history stores appended-pattern snapshots and before/after orders,
+not full-project copies for note edits. Pattern cells and both order lengths count
+against the existing 65,536-value budget; oversized transactions apply but evict
+retained history. Creation and order append check v1 allocation limits before
+allocation. Existing version 1 save/load persists all patterns and repeated entries
+without changing the schema or bypassing serialization validation.
+
+Phase 5 validation: formatting, strict all-target Clippy, 68 nextest tests,
+all-target cargo tests, 0 doctests, warning-free docs, actionlint, cargo-deny,
+and the null-audio example passed. Cargo-deny reports duplicate-version warnings
+only. Tests cover actual A/A/B keys, blank/deep duplicate creation, independent
+editing during playback, pinning, repeated entries with different lengths,
+delayed catch-up across millions of cycles and tempo changes, stop/restart,
+structural undo/redo and no-op stops, allocation/history budgets, dirty save/load
+round trips, order selection/highlighting, and small-terminal resizing.
+No interactive terminal or audible playback pass was performed; that manual
+validation remains pending. `.ideas/ui.md` is untouched by this implementation.
 
 ## Validation and deferred work
 

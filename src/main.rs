@@ -52,18 +52,24 @@ fn main_loop<W: std::io::Write>(
         }
         was_playing = playing;
         let now = Instant::now();
-        if let Some(row) = transport.update(
+        if let Some(event) = transport.update_project(
             now,
             playing,
-            app_state.project.patterns[app_state.selected_pattern].num_rows,
-            app_state.project.bpm,
+            &app_state.project,
+            if app_state.playback_mode == track_rs::state::PlaybackMode::Song {
+                track_rs::transport::PlaybackRoute::Song
+            } else {
+                track_rs::transport::PlaybackRoute::Pattern(app_state.playing_pattern)
+            },
             track_rs::transport::DEFAULT_ROWS_PER_BEAT,
         ) {
-            app_state.playback_row = row.row;
+            app_state.playback_row = event.row.row;
+            app_state.playing_pattern = event.pattern;
+            app_state.playing_order = event.order.unwrap_or(0);
             for event in track_rs::transport::collect_row(
-                &app_state.project.patterns[app_state.selected_pattern],
+                &app_state.project.patterns[event.pattern],
                 app_state.project.instruments(),
-                row,
+                event.row,
             ) {
                 audio_engine.play_event(event);
             }

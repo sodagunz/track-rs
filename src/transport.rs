@@ -43,13 +43,78 @@ pub fn collect_row(pattern: &Pattern, instruments: &[Instrument], event: RowEven
         .collect()
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum PlaybackRoute {
+    Pattern(usize),
+    Song,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct PlaybackEvent {
+    pub pattern: usize,
+    pub order: Option<usize>,
+    pub row: RowEvent,
+}
+
 #[derive(Default)]
 pub struct Transport {
     deadline: Option<Instant>,
     row: usize,
+    route: Option<PlaybackRoute>,
 }
 
 impl Transport {
+    /// Flatten one cycle, skip elapsed cycles arithmetically, then locate one row.
+    /// Work is bounded by order length, never by the number of missed deadlines.
+    pub fn update_project(
+        &mut self,
+        now: Instant,
+        playing: bool,
+        project: &crate::project::Project,
+        route: PlaybackRoute,
+        rows_per_beat: u32,
+    ) -> Option<PlaybackEvent> {
+        let route = if self.deadline.is_some() {
+            self.route.unwrap_or(route)
+        } else {
+            route
+        };
+        self.route = Some(route);
+        match route {
+            PlaybackRoute::Pattern(pattern) => {
+                let rows = project.patterns.get(pattern).map_or(0, |p| p.num_rows);
+                let row = self.update(now, playing, rows, project.bpm, rows_per_beat)?;
+                Some(PlaybackEvent {
+                    pattern,
+                    order: None,
+                    row,
+                })
+            }
+            PlaybackRoute::Song => {
+                let rows = project.order.iter().try_fold(0_usize, |total, &index| {
+                    total.checked_add(project.patterns.get(index)?.num_rows)
+                });
+                let Some(rows) = rows.filter(|&rows| rows > 0) else {
+                    self.stop();
+                    return None;
+                };
+                let mut row = self.update(now, playing, rows, project.bpm, rows_per_beat)?;
+                for (order, &pattern) in project.order.iter().enumerate() {
+                    let length = project.patterns[pattern].num_rows;
+                    if row.row < length {
+                        return Some(PlaybackEvent {
+                            pattern,
+                            order: Some(order),
+                            row,
+                        });
+                    }
+                    row.row -= length;
+                }
+                None
+            }
+        }
+    }
+
     #[must_use]
     pub const fn deadline(&self) -> Option<Instant> {
         self.deadline
@@ -57,6 +122,7 @@ impl Transport {
 
     pub const fn stop(&mut self) {
         self.deadline = None;
+        self.route = None;
     }
 
     /// Invalid rates or empty patterns stop the clock. A new start emits row zero.

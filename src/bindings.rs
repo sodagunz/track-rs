@@ -52,6 +52,113 @@ impl Binding {
 
 /// The single source of truth for default controls and their descriptions.
 pub const DEFAULT_BINDINGS: &[Binding] = &[
+    Binding {
+        modes: &[Mode::Normal],
+        ..Binding::new(
+            KeyCode::PageUp,
+            Command::PreviousPattern,
+            "Previous edit pattern",
+            "Arrangement",
+        )
+    },
+    Binding {
+        modes: &[Mode::Normal],
+        ..Binding::new(
+            KeyCode::PageDown,
+            Command::NextPattern,
+            "Next edit pattern",
+            "Arrangement",
+        )
+    },
+    Binding {
+        modes: &[Mode::Normal],
+        modifiers: KeyModifiers::CONTROL,
+        ..Binding::new(
+            KeyCode::Char('n'),
+            Command::NewPattern,
+            "Create blank pattern (same dimensions)",
+            "Arrangement",
+        )
+    },
+    Binding {
+        modes: &[Mode::Normal],
+        modifiers: KeyModifiers::CONTROL,
+        ..Binding::new(
+            KeyCode::Char('d'),
+            Command::DuplicatePattern,
+            "Duplicate edit pattern",
+            "Arrangement",
+        )
+    },
+    Binding {
+        modes: &[Mode::Normal],
+        modifiers: KeyModifiers::CONTROL,
+        ..Binding::new(
+            KeyCode::Left,
+            Command::PreviousOrder,
+            "Select previous order entry",
+            "Arrangement",
+        )
+    },
+    Binding {
+        modes: &[Mode::Normal],
+        modifiers: KeyModifiers::CONTROL,
+        ..Binding::new(
+            KeyCode::Right,
+            Command::NextOrder,
+            "Select next order entry",
+            "Arrangement",
+        )
+    },
+    Binding {
+        modes: &[Mode::Normal],
+        modifiers: KeyModifiers::CONTROL,
+        ..Binding::new(
+            KeyCode::Char('a'),
+            Command::AppendOrder,
+            "Append edit pattern to order (stops)",
+            "Arrangement",
+        )
+    },
+    Binding {
+        modes: &[Mode::Normal],
+        modifiers: KeyModifiers::CONTROL,
+        ..Binding::new(
+            KeyCode::Char('x'),
+            Command::RemoveOrder,
+            "Remove selected order entry (stops)",
+            "Arrangement",
+        )
+    },
+    Binding {
+        modes: &[Mode::Normal],
+        modifiers: KeyModifiers::CONTROL,
+        ..Binding::new(
+            KeyCode::Up,
+            Command::OrderEarlier,
+            "Move order entry earlier (stops)",
+            "Arrangement",
+        )
+    },
+    Binding {
+        modes: &[Mode::Normal],
+        modifiers: KeyModifiers::CONTROL,
+        ..Binding::new(
+            KeyCode::Down,
+            Command::OrderLater,
+            "Move order entry later (stops)",
+            "Arrangement",
+        )
+    },
+    Binding {
+        modes: &[Mode::Normal],
+        ..Binding::new(
+            KeyCode::Char('O'),
+            Command::ToggleSong,
+            "Toggle Pattern/Song playback (stops)",
+            "Arrangement",
+        )
+    },
     Binding::new(
         KeyCode::Char(':'),
         Command::OpenPrompt,

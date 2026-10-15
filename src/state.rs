@@ -24,6 +24,13 @@ impl Mode {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PlaybackMode {
+    #[default]
+    Pattern,
+    Song,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum PlaybackState {
     Stopped,
@@ -41,6 +48,10 @@ pub struct App {
     pub pending_count: Option<u16>,
     pub project: Project,
     pub selected_pattern: usize,
+    pub selected_order: usize,
+    pub playback_mode: PlaybackMode,
+    pub playing_pattern: usize,
+    pub playing_order: usize,
     pub prompt: Option<String>,
     pub status: String,
     pub path: Option<std::path::PathBuf>,
@@ -87,6 +98,10 @@ impl Default for App {
             pending_count: None,
             project: Project::new(default_rows, default_tracks),
             selected_pattern: 0,
+            selected_order: 0,
+            playback_mode: PlaybackMode::Pattern,
+            playing_pattern: 0,
+            playing_order: 0,
             prompt: None,
             status: String::new(),
             path: None,
@@ -154,6 +169,9 @@ impl App {
                 self.project = project;
                 self.path = Some(path);
                 self.selected_pattern = 0;
+                self.selected_order = 0;
+                self.playing_pattern = 0;
+                self.playing_order = 0;
                 self.history = History::default();
                 self.saved_revision = self.revision();
                 self.clipboard.clear();
@@ -201,19 +219,23 @@ impl App {
                 self.pending_count = None;
                 self.help_visible = false;
             }
-            Command::ScrollHelpUp | Command::ScrollHelpDown => {
-                if self.help_visible {
-                    self.help_scroll = if command == Command::ScrollHelpUp {
-                        self.help_scroll.saturating_sub(1)
-                    } else {
-                        self.help_scroll
-                            .saturating_add(1)
-                            .min(crate::bindings::DEFAULT_BINDINGS.len().saturating_sub(1))
-                    };
-                }
-            }
+            Command::ScrollHelpUp | Command::ScrollHelpDown => self.scroll_help(command == Command::ScrollHelpDown),
             Command::Quit => self.shutdown(),
             _ if self.help_visible => {}
+
+            Command::PreviousPattern
+            | Command::NextPattern
+            | Command::NewPattern
+            | Command::DuplicatePattern
+            | Command::PreviousOrder
+            | Command::NextOrder
+            | Command::AppendOrder
+            | Command::RemoveOrder
+            | Command::OrderEarlier
+            | Command::OrderLater
+            | Command::ToggleSong
+            | Command::Undo
+            | Command::Redo => self.handle_arrangement(command),
             Command::OpenPrompt => self.open_prompt(),
             Command::EnterInsert => {
                 self.mode = Mode::Insert;
@@ -256,8 +278,6 @@ impl App {
             Command::CycleEditStep => self.cycle_edit_step(),
             Command::Copy | Command::Cut => self.copy_or_cut(command == Command::Cut),
             Command::Paste => self.paste(),
-            Command::Undo => self.history.undo(&mut self.project),
-            Command::Redo => self.history.redo(&mut self.project),
             Command::SetInstrument(instrument) => {
                 let track = self.cursor_track;
                 self.edit(|edit| edit.set_instrument(track, instrument));
@@ -275,22 +295,137 @@ impl App {
                     (self.project.bpm + if command == Command::IncreaseTempo { 1.0 } else { -1.0 }).clamp(20.0, 300.0);
                 self.edit(|edit| edit.set_tempo(bpm));
             }
-            Command::LowerNote | Command::RaiseNote => {
-                if let Some(note) = self.project.patterns[self.selected_pattern]
-                    .get_step(self.cursor_track, self.cursor_row)
-                    .and_then(|step| step.note)
-                {
-                    self.insert_note_under_cursor(Some(note.transpose(if command == Command::RaiseNote {
-                        1
-                    } else {
-                        -1
-                    })));
-                }
-            }
+            Command::LowerNote | Command::RaiseNote => self.transpose_note(command == Command::RaiseNote),
             Command::DeleteNote => self.clear_selection(),
             Command::DecreaseOctave => self.octave = self.octave.saturating_sub(1).min(9),
             Command::IncreaseOctave => self.octave = self.octave.saturating_add(1).min(9),
         }
+    }
+
+    fn transpose_note(&mut self, raise: bool) {
+        if let Some(note) = self.project.patterns[self.selected_pattern]
+            .get_step(self.cursor_track, self.cursor_row)
+            .and_then(|step| step.note)
+        {
+            self.insert_note_under_cursor(Some(note.transpose(if raise { 1 } else { -1 })));
+        }
+    }
+
+    fn scroll_help(&mut self, down: bool) {
+        if self.help_visible {
+            self.help_scroll = if down {
+                self.help_scroll
+                    .saturating_add(1)
+                    .min(crate::bindings::DEFAULT_BINDINGS.len().saturating_sub(1))
+            } else {
+                self.help_scroll.saturating_sub(1)
+            };
+        }
+    }
+
+    fn handle_arrangement(&mut self, command: Command) {
+        match command {
+            Command::PreviousPattern => self.switch_pattern(self.selected_pattern.saturating_sub(1)),
+            Command::NextPattern => {
+                self.switch_pattern((self.selected_pattern + 1).min(self.project.patterns.len() - 1));
+            }
+            Command::NewPattern | Command::DuplicatePattern => {
+                let source = self.selected_pattern;
+                let count = self.project.patterns.len();
+                self.edit(|edit| edit.append_pattern(source, command == Command::DuplicatePattern));
+                if self.project.patterns.len() > count {
+                    self.switch_pattern(count);
+                } else {
+                    self.status = "Pattern/cell limit reached".into();
+                }
+            }
+            Command::PreviousOrder => self.selected_order = self.selected_order.saturating_sub(1),
+            Command::NextOrder => self.selected_order = (self.selected_order + 1).min(self.project.order.len() - 1),
+            Command::AppendOrder | Command::RemoveOrder | Command::OrderEarlier | Command::OrderLater => {
+                self.arrange(command);
+            }
+            Command::ToggleSong => {
+                self.stop_playback();
+                self.playback_mode = if self.playback_mode == PlaybackMode::Song {
+                    PlaybackMode::Pattern
+                } else {
+                    PlaybackMode::Song
+                };
+            }
+            Command::Undo | Command::Redo => {
+                let redo = command == Command::Redo;
+                let structural = self.history.structural_next(redo);
+                if structural {
+                    self.stop_playback();
+                }
+                if redo {
+                    self.history.redo(&mut self.project);
+                } else {
+                    self.history.undo(&mut self.project);
+                }
+                if structural {
+                    self.selected_order = self.selected_order.min(self.project.order.len() - 1);
+                    self.playing_pattern = self.playing_pattern.min(self.project.patterns.len() - 1);
+                    self.playing_order = self.playing_order.min(self.project.order.len() - 1);
+                    self.switch_pattern(self.selected_pattern.min(self.project.patterns.len() - 1));
+                }
+            }
+            _ => unreachable!("arrangement command"),
+        }
+    }
+
+    fn switch_pattern(&mut self, index: usize) {
+        self.selected_pattern = index;
+        self.selection_anchor = None;
+        self.pending_count = None;
+        self.offset_cursor(&CursorOffset::None, &CursorOffset::None);
+    }
+
+    const fn stop_playback(&mut self) {
+        self.playback_state = PlaybackState::Stopped;
+        self.stop_requested = true;
+    }
+
+    fn arrange(&mut self, command: Command) {
+        let index = self.selected_order;
+        // Reject no-ops and limits before allocating an order snapshot or stopping.
+        match command {
+            Command::AppendOrder if self.project.order.len() >= crate::project_file::MAX_ORDER => {
+                self.status = "Order limit reached".into();
+                return;
+            }
+            Command::RemoveOrder if self.project.order.len() == 1 => return,
+            Command::OrderEarlier if index == 0 || self.project.order[index] == self.project.order[index - 1] => return,
+            Command::OrderLater
+                if index + 1 == self.project.order.len()
+                    || self.project.order[index] == self.project.order[index + 1] =>
+            {
+                return
+            }
+            _ => {}
+        }
+        self.stop_playback();
+        let mut order = self.project.order.clone();
+        match command {
+            Command::AppendOrder => {
+                order.push(self.selected_pattern);
+                self.selected_order = order.len() - 1;
+            }
+            Command::RemoveOrder => {
+                order.remove(index);
+                self.selected_order = index.min(order.len() - 1);
+            }
+            Command::OrderEarlier => {
+                order.swap(index, index - 1);
+                self.selected_order -= 1;
+            }
+            Command::OrderLater => {
+                order.swap(index, index + 1);
+                self.selected_order += 1;
+            }
+            _ => unreachable!(),
+        }
+        self.edit(|edit| edit.set_order(order));
     }
 
     fn open_prompt(&mut self) {
@@ -423,22 +558,30 @@ impl App {
         }
     }
 
-    pub const fn toggle_playback(&mut self) {
+    pub fn toggle_playback(&mut self) {
         match self.playback_state {
             PlaybackState::Stopped => {
                 self.playback_state = PlaybackState::Playing;
+                self.playing_order = 0;
+                self.playing_pattern = if self.playback_mode == PlaybackMode::Song {
+                    self.project.order[0]
+                } else {
+                    self.selected_pattern
+                };
                 self.playback_row = 0; // TODO: feat(Loop) loop_start_cursor/playback_start_cursor
             }
             PlaybackState::Playing => {
-                self.playback_state = PlaybackState::Stopped;
-                // The runtime observes this transition and cancels audio.
+                self.stop_playback();
             }
         }
     }
 
     /// Apply one document transaction, including future multi-cell operations.
     pub fn edit(&mut self, operation: impl FnOnce(&mut Edit<'_>)) {
-        self.history.edit(&mut self.project, operation);
+        if self.history.edit(&mut self.project, operation) {
+            self.stop_playback();
+            self.selected_order = self.selected_order.min(self.project.order.len() - 1);
+        }
     }
 
     /// Stable identity for future saved-revision comparisons, even after eviction.
@@ -457,9 +600,9 @@ impl App {
     /// Legacy standalone editor helper; the runtime uses `Transport` instead.
     pub fn advance_playback_row(&mut self) {
         if matches!(self.playback_state, PlaybackState::Playing)
-            && self.project.patterns[self.selected_pattern].num_rows > 0
+            && self.project.patterns[self.playing_pattern].num_rows > 0
         {
-            self.playback_row = (self.playback_row + 1) % self.project.patterns[self.selected_pattern].num_rows;
+            self.playback_row = (self.playback_row + 1) % self.project.patterns[self.playing_pattern].num_rows;
         }
     }
 }

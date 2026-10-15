@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod arrangement_tests;
 pub mod audio;
 pub mod bindings;
 #[cfg(test)]

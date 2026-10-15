@@ -60,18 +60,23 @@ impl<W: std::io::Write> TUI<W> {
 fn render(f: &mut Frame, state: &App) {
     let area = f.area();
     let title_rows = u16::from(area.height >= 6);
+    let order_rows = u16::from(area.height >= 7);
     let status_rows = u16::from(area.height >= 3);
     let hint_rows = u16::from(area.height > 0);
     if title_rows > 0 {
         draw_title_bar(f, Rect::new(area.x, area.y, area.width, title_rows), state);
     }
+    if order_rows > 0 {
+        draw_order(f, Rect::new(area.x, area.y + title_rows, area.width, 1), state);
+    }
     draw_pattern_editor(
         f,
         Rect::new(
             area.x,
-            area.y + title_rows,
+            area.y + title_rows + order_rows,
             area.width,
-            area.height.saturating_sub(title_rows + status_rows + hint_rows),
+            area.height
+                .saturating_sub(title_rows + order_rows + status_rows + hint_rows),
         ),
         state,
     );
@@ -214,10 +219,40 @@ fn draw_help(f: &mut Frame, state: &App) {
     }
 }
 
-fn draw_title_bar(f: &mut Frame, area: Rect, _: &App) {
-    let block = Block::default()
-        .borders(Borders::BOTTOM)
-        .title(Line::from("track-rs").centered());
+fn draw_order(f: &mut Frame, area: Rect, state: &App) {
+    let visible = usize::from(area.width.saturating_sub(15) / 12).max(1);
+    let start = state.selected_order.saturating_add(1).saturating_sub(visible);
+    let mut spans = vec![Span::raw(format!(
+        "Order {}/{} ",
+        state.selected_order,
+        state.project.order.len()
+    ))];
+    for (index, pattern) in state.project.order.iter().enumerate().skip(start).take(visible) {
+        spans.push(Span::styled(
+            format!(" {index}:P{pattern} "),
+            if index == state.selected_order {
+                Style::default().bg(Color::Green).fg(Color::Black)
+            } else {
+                Style::default()
+            },
+        ));
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+fn draw_title_bar(f: &mut Frame, area: Rect, state: &App) {
+    let block = Block::default().borders(Borders::BOTTOM).title(Line::from(format!(
+        "track-rs  Edit:P{}  {} Play:O{} P{} Row:{}",
+        state.selected_pattern,
+        if state.playback_mode == crate::state::PlaybackMode::Song {
+            "Song"
+        } else {
+            "Pattern"
+        },
+        state.playing_order,
+        state.playing_pattern,
+        state.playback_row
+    )));
     f.render_widget(block, area);
 }
 
@@ -260,7 +295,9 @@ fn draw_pattern_editor(f: &mut Frame, area: Rect, state: &App) {
         );
     }
     for (offset, row) in (first_row..pattern.num_rows).take(visible_rows).enumerate() {
-        let playing = matches!(state.playback_state, crate::state::PlaybackState::Playing) && row == state.playback_row;
+        let playing = matches!(state.playback_state, crate::state::PlaybackState::Playing)
+            && state.selected_pattern == state.playing_pattern
+            && row == state.playback_row;
         let background = if playing {
             Color::DarkGray
         } else if row % 2 == 0 {
@@ -389,6 +426,36 @@ mod tests {
     }
 
     #[test]
+    fn order_strip_scrolls_selection_and_playback_only_marks_the_playing_pattern() {
+        let mut app = App::default();
+        app.handle_command(Command::DuplicatePattern);
+        app.handle_command(Command::AppendOrder);
+        app.handle_command(Command::TogglePlayback);
+        app.handle_command(Command::PreviousPattern);
+        app.project.order = vec![0; 100];
+        app.selected_order = 99;
+        let mut terminal = Terminal::new(TestBackend::new(90, 24)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let text = screen(&terminal);
+        assert!(text.contains("Edit:P0"));
+        assert!(text.contains("Pattern Play:O0 P1 Row:0"));
+        assert!(text.contains("99:P0"));
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 3)].symbol(), " ");
+        assert!(buffer
+            .content()
+            .iter()
+            .any(|cell| cell.symbol() == "9" && cell.bg == Color::Green));
+        app.handle_command(Command::NextPattern);
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        assert_eq!(terminal.backend().buffer()[(0, 3)].symbol(), "▶");
+        for (width, height) in [(0, 0), (1, 1), (12, 3), (30, 7)] {
+            terminal.resize(Rect::new(0, 0, width, height)).unwrap();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+        }
+    }
+
+    #[test]
     fn instrument_headers_fit_existing_columns_without_moving_highlights() {
         use crate::tracker::Instrument;
         for instrument in Instrument::ALL {
@@ -405,8 +472,8 @@ mod tests {
             assert!(text.contains("1 Pluck"));
             assert!(format!("2 {}", instrument.label()).len() <= 10);
             let buffer = terminal.backend().buffer();
-            assert_eq!(buffer[(15, 2)].bg, Color::Green);
-            assert_eq!(buffer[(15, 3)].bg, Color::DarkGray);
+            assert_eq!(buffer[(15, 3)].bg, Color::Green);
+            assert_eq!(buffer[(15, 4)].bg, Color::DarkGray);
         }
     }
 
