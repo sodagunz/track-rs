@@ -84,7 +84,11 @@ fn render(f: &mut Frame, state: &App) {
     }
     if hint_rows > 0 {
         f.render_widget(
-            Paragraph::new(format!("{} Help", command_keys(Command::ToggleHelp))),
+            Paragraph::new(format!(
+                "{} {} Help",
+                state.mode.label(),
+                command_keys(Command::ToggleHelp)
+            )),
             Rect::new(area.x, area.bottom() - 1, area.width, 1),
         );
     }
@@ -106,11 +110,20 @@ fn key_label(key: crossterm::event::KeyCode) -> String {
     }
 }
 
+fn binding_label(binding: &crate::bindings::Binding) -> String {
+    let prefix = if binding.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+        "Ctrl-"
+    } else {
+        ""
+    };
+    format!("{prefix}{}", key_label(binding.key))
+}
+
 fn command_keys(command: Command) -> String {
     DEFAULT_BINDINGS
         .iter()
         .filter(|binding| binding.command == command)
-        .map(|binding| key_label(binding.key))
+        .map(binding_label)
         .collect::<Vec<_>>()
         .join("/")
 }
@@ -157,10 +170,16 @@ fn draw_help(f: &mut Frame, state: &App) {
     let mut lines = Vec::new();
     for binding in &bindings[start..] {
         lines.push(Line::from(format!(
-            "[{}] {}: {}",
+            "[{}] {}: {} ({})",
             binding.category,
-            key_label(binding.key),
-            binding.description
+            binding_label(binding),
+            binding.description,
+            binding
+                .modes
+                .iter()
+                .map(|mode| mode.label())
+                .collect::<Vec<_>>()
+                .join("/")
         )));
     }
     let footer_rows = u16::from(inner.height >= 4);
@@ -255,6 +274,8 @@ fn draw_pattern_editor(f: &mut Frame, area: Rect, state: &App) {
             let step = pattern.get_step(track, row).copied().expect("Pattern row must exist");
             let style = if row == state.cursor_row && track == state.cursor_track {
                 Style::default().bg(Color::Green).fg(Color::Black)
+            } else if state.is_selected(row, track) {
+                Style::default().bg(Color::Blue).fg(Color::White)
             } else if playing {
                 Style::default().bg(Color::DarkGray)
             } else {
@@ -277,8 +298,24 @@ fn draw_pattern_editor(f: &mut Frame, area: Rect, state: &App) {
 
 fn draw_status_bar(f: &mut Frame, area: Rect, state: &App) {
     let status = format!(
-        "BPM: {:.1} Oct:{} {:?} P:{:02} Pos:{:02},{:02}",
-        state.bpm, state.octave, state.playback_state, state.playback_row, state.cursor_row, state.cursor_track,
+        "{}{}{} BPM: {:.1} Oct:{} {:?} P:{:02} Pos:{:02},{:02}",
+        state.mode.label(),
+        state
+            .pending_count
+            .map_or_else(String::new, |count| format!(" Count:{count}")),
+        state.selection_anchor.map_or_else(String::new, |(row, track)| format!(
+            " Sel:{},{}–{},{}",
+            row.min(state.cursor_row),
+            track.min(state.cursor_track),
+            row.max(state.cursor_row),
+            track.max(state.cursor_track)
+        )),
+        state.bpm,
+        state.octave,
+        state.playback_state,
+        state.playback_row,
+        state.cursor_row,
+        state.cursor_track,
     );
     f.render_widget(Paragraph::new(status), area);
 }
@@ -435,7 +472,16 @@ mod tests {
         assert_eq!(bindings.len(), DEFAULT_BINDINGS.len());
         assert!(bindings.windows(2).all(|pair| pair[0].category <= pair[1].category));
         for binding in DEFAULT_BINDINGS {
-            assert_eq!(bindings.iter().filter(|entry| entry.key == binding.key).count(), 1);
+            assert_eq!(
+                bindings
+                    .iter()
+                    .filter(|entry| entry.key == binding.key
+                        && entry.command == binding.command
+                        && entry.modifiers == binding.modifiers
+                        && entry.modes == binding.modes)
+                    .count(),
+                1
+            );
         }
         for category in bindings.iter().map(|binding| binding.category) {
             let displayed: Vec<_> = bindings
@@ -478,6 +524,42 @@ mod tests {
                     "missing {expected} at {width}x{height}: {text}"
                 );
                 app.handle_command(Command::ScrollHelpDown);
+            }
+        }
+    }
+
+    #[test]
+    fn real_keys_render_modes_counts_and_scrolled_selection_with_cursor_priority() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::default();
+        for ch in "16j2lv3k1h12".chars() {
+            crate::bindings::handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE), &mut app);
+        }
+        app.handle_command(Command::TogglePlayback);
+        app.playback_row = 15;
+        let mut terminal = Terminal::new(TestBackend::new(80, 8)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let text = screen(&terminal);
+        assert!(text.contains("VISUAL Count:12 Sel:13,1–16,2"));
+        let buffer = terminal.backend().buffer();
+        // Cursor follows scrolling; selected cells take precedence over playback.
+        assert_eq!(buffer[(15, 5)].bg, Color::Green);
+        assert_eq!(buffer[(25, 5)].bg, Color::Blue);
+        app.cursor_row = 15;
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(15, 5)].bg, Color::Green);
+        assert_eq!(buffer[(25, 5)].bg, Color::Blue);
+        assert_eq!(buffer[(0, 5)].symbol(), "▶");
+        for (keys, mode) in [("", "NORMAL"), ("i", "INSERT"), ("v", "VISUAL")] {
+            let mut app = App::default();
+            for ch in keys.chars() {
+                crate::bindings::handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE), &mut app);
+            }
+            for (width, height) in [(20, 3), (12, 2), (6, 1)] {
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal.draw(|frame| render(frame, &app)).unwrap();
+                assert!(screen(&terminal).contains(mode));
             }
         }
     }

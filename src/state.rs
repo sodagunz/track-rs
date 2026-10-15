@@ -3,6 +3,25 @@ use crate::{
     tracker::{Note, Pattern},
 };
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Mode {
+    #[default]
+    Normal,
+    Insert,
+    Visual,
+}
+
+impl Mode {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Normal => "NORMAL",
+            Self::Insert => "INSERT",
+            Self::Visual => "VISUAL",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum PlaybackState {
     Stopped,
@@ -11,6 +30,9 @@ pub enum PlaybackState {
 
 #[derive(Clone, Debug)]
 pub struct App {
+    pub mode: Mode,
+    pub selection_anchor: Option<(usize, usize)>,
+    pub pending_count: Option<u16>,
     pub pattern: Pattern,
     pub cursor_row: usize,
     pub cursor_track: usize,
@@ -32,10 +54,10 @@ pub enum CursorOffset {
 }
 
 impl CursorOffset {
-    fn apply_to(&self, position: usize) -> usize {
+    const fn apply_to(&self, position: usize) -> usize {
         match self {
-            Self::Pos(delta) => position.checked_add(*delta).unwrap_or(position),
-            Self::Neg(delta) => position.checked_sub(*delta).unwrap_or(position),
+            Self::Pos(delta) => position.saturating_add(*delta),
+            Self::Neg(delta) => position.saturating_sub(*delta),
             Self::None => position,
         }
     }
@@ -46,6 +68,9 @@ impl Default for App {
         let default_rows = 64;
         let default_tracks = 4;
         Self {
+            mode: Mode::Normal,
+            selection_anchor: None,
+            pending_count: None,
             pattern: Pattern::new(default_rows, default_tracks),
             cursor_row: 0,
             cursor_track: 0,
@@ -61,14 +86,25 @@ impl Default for App {
 }
 
 impl App {
+    /// Whether a cell lies in the inclusive Visual rectangle.
+    #[must_use]
+    pub fn is_selected(&self, row: usize, track: usize) -> bool {
+        self.selection_anchor.is_some_and(|(anchor_row, anchor_track)| {
+            (anchor_row.min(self.cursor_row)..=anchor_row.max(self.cursor_row)).contains(&row)
+                && (anchor_track.min(self.cursor_track)..=anchor_track.max(self.cursor_track)).contains(&track)
+        })
+    }
+
     /// Apply an editor action without depending on terminal key events.
     pub fn handle_command(&mut self, command: Command) {
         match command {
             Command::ToggleHelp => {
+                self.pending_count = None;
                 self.help_visible = !self.help_visible;
                 self.help_scroll = 0;
             }
             Command::DismissHelp => {
+                self.pending_count = None;
                 self.help_visible = false;
             }
             Command::ScrollHelpUp | Command::ScrollHelpDown => {
@@ -84,6 +120,35 @@ impl App {
             }
             Command::Quit => self.shutdown(),
             _ if self.help_visible => {}
+            Command::EnterInsert => {
+                self.mode = Mode::Insert;
+                self.selection_anchor = None;
+            }
+            Command::EnterNormal => {
+                self.mode = Mode::Normal;
+                self.selection_anchor = None;
+                self.pending_count = None;
+            }
+            Command::ToggleVisual => {
+                if self.mode == Mode::Visual {
+                    self.mode = Mode::Normal;
+                    self.selection_anchor = None;
+                } else {
+                    self.mode = Mode::Visual;
+                    self.selection_anchor = Some((self.cursor_row, self.cursor_track));
+                }
+            }
+            Command::CountDigit(_) => {}
+            Command::MoveCursor { rows, tracks } => {
+                let offset = |value: i32| {
+                    if value < 0 {
+                        CursorOffset::Neg(value.unsigned_abs() as usize)
+                    } else {
+                        CursorOffset::Pos(value.unsigned_abs() as usize)
+                    }
+                };
+                self.offset_cursor(&offset(rows), &offset(tracks));
+            }
             Command::TogglePlayback => self.toggle_playback(),
             Command::MoveCursorUp => self.offset_cursor(&CursorOffset::Neg(1), &CursorOffset::None),
             Command::MoveCursorDown => self.offset_cursor(&CursorOffset::Pos(1), &CursorOffset::None),
@@ -243,6 +308,7 @@ mod tests {
         use NotePitch::{As, Cs, Ds, Fs, Gs, A, B, C, D, E, F, G};
         let pitches = [C, Cs, D, Ds, E, F, Fs, G, Gs, A, As, B];
         let mut app = App {
+            mode: Mode::Insert,
             cursor_row: 3,
             cursor_track: 2,
             ..App::default()
@@ -278,7 +344,10 @@ mod tests {
 
     #[test]
     fn help_is_modal_bounded_and_does_not_pause_playback() {
-        let mut app = App::default();
+        let mut app = App {
+            mode: Mode::Insert,
+            ..App::default()
+        };
         app.handle_command(Command::DismissHelp);
         assert!(!app.shutdown);
         app.handle_command(Command::TogglePlayback);
@@ -326,7 +395,10 @@ mod tests {
 
     #[test]
     fn commands_move_edit_and_delete_at_the_selected_cell() {
-        let mut app = App::default();
+        let mut app = App {
+            mode: Mode::Insert,
+            ..App::default()
+        };
         app.handle_command(Command::MoveCursorDown);
         app.handle_command(Command::MoveCursorRight);
         app.handle_command(Command::InsertNote {
@@ -356,7 +428,10 @@ mod tests {
 
     #[test]
     fn octave_commands_and_upper_c_stay_in_range() {
-        let mut app = App::default();
+        let mut app = App {
+            mode: Mode::Insert,
+            ..App::default()
+        };
         for _ in 0..20 {
             app.handle_command(Command::IncreaseOctave);
         }

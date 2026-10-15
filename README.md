@@ -20,8 +20,19 @@ There's still a human on the driver seat, at least for the time being.
 quits. While help is open, editing and playback toggles are blocked, but playback
 keeps running.
 
-`-`/`+` adjusts BPM by 1 (20–300). `f`/`r` lowers/raises the selected note
+Start in Normal mode. `i` enters Insert; `v` starts an inclusive rectangular
+Visual selection and cancels it when pressed again. `Esc` returns to Normal
+without changing notes. `hjkl` moves in every mode. In Normal/Visual, prefix
+movement with a count (`16j`, `2l`); counts cap at 9999 and movement clamps at
+pattern edges. `0` is only a trailing digit. Other sequences discard the count
+without editing; help also clears counts but preserves mode and selection.
+
+In Insert, `zxcvbnm,` enters C D E F G A B and the next C; `a`/`s` changes the
+entry octave and Delete clears a note. `f`/`r` lowers/raises the selected note
 one semitone (C0–B9); empty cells stay empty. Note-entry octave is unchanged.
+Movement and adjustments can repeat; note entry and mode switches are press-only.
+
+Space toggles playback and `-`/`+` adjusts BPM by 1 (20–300) in every mode.
 
 `[`/`]` cycles the selected track’s instrument: Pluck (default), Sine, Square, Saw,
 Kick, Snare, HiHat. Percussion ignores pitch; new presets play dry.

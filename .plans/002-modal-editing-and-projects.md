@@ -1,6 +1,6 @@
 # Modal editing and projects
 
-Status: Planned. Builds on `feat/pattern-grid` (#9).
+Status: Phase 1 implemented; phases 2–5 planned. Builds on `feat/pattern-grid` (#9).
 
 Make writing and reusing a pattern comfortable, then make it safe to keep. Each
 phase gets its own branch/stacked PR. Don't build the mixer or a full Vim clone.
@@ -30,23 +30,30 @@ phase gets its own branch/stacked PR. Don't build the mixer or a full Vim clone.
 Touches: `src/bindings.rs`, `src/command.rs`, `src/state.rs`, `src/ui.rs`, input
 call sites in `src/main.rs`.
 
-- [ ] Add an input resolver with mode, modifiers, and pending-count handling. It
+- [x] Add an input resolver with mode, modifiers, and pending-count handling. It
   emits terminal-independent commands; the editor owns mode/selection state.
   Replace the old stateless dispatch path rather than maintaining two resolvers.
-- [ ] Extend the binding registry with mode/modifier metadata. Generate help from
-  it, including counts and `Ctrl-r`; don't keep a separate help key table.
-- [ ] Add Normal/Insert/Visual transitions, counted movement, and a visible mode,
+- [x] Extend the binding registry with mode/modifier metadata. Generate help from
+  it, including counts; don't keep a separate help key table. Defer `Ctrl-r` help
+  until redo is implemented in phase 2.
+- [x] Add Normal/Insert/Visual transitions, counted movement, and a visible mode,
   count, and selection cue. Keep the cursor visible; cursor styling wins over
   selection, with playback still identifiable in the gutter.
-- [ ] Bound counts before arithmetic; dispatch a counted move once, not N times.
+- [x] Bound counts before arithmetic; dispatch a counted move once, not N times.
   `0` is only a trailing count digit for now. Unknown keys and `Esc` reset counts.
   Ignore releases; repeat movement/adjustments, not mode switches or operators.
-- [ ] Test actual key sequences: `i v` inserts F, Normal `v` selects, `16j`, `2l`,
+- [x] Test actual key sequences: `i v` inserts F, Normal `v` selects, `16j`, `2l`,
   reversed selections, overflow counts, edge clamping, help interruption, and
   press/repeat/release behavior. Verify the mode in small-terminal renders.
 
 Done: navigation and selection work without unintended note entry. Clear/cut,
 copy/paste, and history follow below; don't expose unimplemented help actions.
+
+Phase 1 validation: formatting, strict all-target Clippy, 35 nextest tests,
+0 doctests, warning-free docs, actionlint, cargo-deny, and the null-audio example
+passed. Cargo-deny reports duplicate-version warnings. Real-key and headless UI
+tests cover modes/counts/selection/help/resizing; no interactive terminal or
+audible playback pass was performed. Counts saturate at 9999.
 
 ## 2. Undoable edits
 

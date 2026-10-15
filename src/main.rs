@@ -40,9 +40,7 @@ fn main_loop<W: std::io::Write>(
     let mut pending = None;
     loop {
         if let Some(key) = pending.take() {
-            if let Some(command) = bindings::resolve(key) {
-                app_state.handle_command(command);
-            }
+            bindings::handle_key(key, app_state);
         }
         let playing = !app_state.shutdown && matches!(app_state.playback_state, PlaybackState::Playing);
         if was_playing && !playing {
