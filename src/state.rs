@@ -1,4 +1,7 @@
-use crate::tracker::{Note, Pattern};
+use crate::{
+    command::Command,
+    tracker::{Note, Pattern},
+};
 
 #[derive(Clone, Copy, Debug)]
 pub enum PlaybackState {
@@ -52,6 +55,25 @@ impl Default for App {
 }
 
 impl App {
+    /// Apply an editor action without depending on terminal key events.
+    pub fn handle_command(&mut self, command: Command) {
+        match command {
+            Command::Quit => self.shutdown(),
+            Command::TogglePlayback => self.toggle_playback(),
+            Command::MoveCursorUp => self.offset_cursor(&CursorOffset::Neg(1), &CursorOffset::None),
+            Command::MoveCursorDown => self.offset_cursor(&CursorOffset::Pos(1), &CursorOffset::None),
+            Command::MoveCursorLeft => self.offset_cursor(&CursorOffset::None, &CursorOffset::Neg(1)),
+            Command::MoveCursorRight => self.offset_cursor(&CursorOffset::None, &CursorOffset::Pos(1)),
+            Command::InsertNote { pitch, octave_offset } => self.insert_note_under_cursor(Some(Note {
+                pitch,
+                octave: self.octave.saturating_add(octave_offset).min(9),
+            })),
+            Command::DeleteNote => self.insert_note_under_cursor(None),
+            Command::DecreaseOctave => self.octave = self.octave.saturating_sub(1).min(9),
+            Command::IncreaseOctave => self.octave = self.octave.saturating_add(1).min(9),
+        }
+    }
+
     pub fn offset_cursor(&mut self, dr: &CursorOffset, dt: &CursorOffset) {
         let max_rows = self.pattern.num_rows;
         let max_tracks = self.pattern.tracks.len();
@@ -87,5 +109,73 @@ impl App {
         if let PlaybackState::Playing = self.playback_state {
             self.playback_row = (self.playback_row + 1) % self.pattern.num_rows;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tracker::NotePitch;
+
+    #[test]
+    fn commands_move_edit_and_delete_at_the_selected_cell() {
+        let mut app = App::default();
+        app.handle_command(Command::MoveCursorDown);
+        app.handle_command(Command::MoveCursorRight);
+        app.handle_command(Command::InsertNote {
+            pitch: NotePitch::D,
+            octave_offset: 1,
+        });
+        assert_eq!(
+            app.pattern.get_step(1, 1).unwrap().note,
+            Some(Note {
+                pitch: NotePitch::D,
+                octave: 5
+            })
+        );
+        app.handle_command(Command::DeleteNote);
+        assert_eq!(app.pattern.get_step(1, 1).unwrap().note, None);
+        app.handle_command(Command::MoveCursorUp);
+        app.handle_command(Command::MoveCursorLeft);
+        app.handle_command(Command::MoveCursorUp);
+        app.handle_command(Command::MoveCursorLeft);
+        assert_eq!((app.cursor_row, app.cursor_track), (0, 0));
+        for _ in 0..100 {
+            app.handle_command(Command::MoveCursorDown);
+            app.handle_command(Command::MoveCursorRight);
+        }
+        assert_eq!((app.cursor_row, app.cursor_track), (63, 3));
+    }
+
+    #[test]
+    fn octave_commands_and_upper_c_stay_in_range() {
+        let mut app = App::default();
+        for _ in 0..20 {
+            app.handle_command(Command::IncreaseOctave);
+        }
+        assert_eq!(app.octave, 9);
+        app.handle_command(Command::InsertNote {
+            pitch: NotePitch::C,
+            octave_offset: 1,
+        });
+        assert_eq!(app.pattern.get_step(0, 0).unwrap().note.unwrap().octave, 9);
+        for _ in 0..20 {
+            app.handle_command(Command::DecreaseOctave);
+        }
+        assert_eq!(app.octave, 0);
+    }
+
+    #[test]
+    fn playback_commands_restart_at_row_zero_and_quit() {
+        let mut app = App::default();
+        app.handle_command(Command::TogglePlayback);
+        assert!(matches!(app.playback_state, PlaybackState::Playing));
+        app.advance_playback_row();
+        app.handle_command(Command::TogglePlayback);
+        assert!(matches!(app.playback_state, PlaybackState::Stopped));
+        app.handle_command(Command::TogglePlayback);
+        assert_eq!(app.playback_row, 0);
+        app.handle_command(Command::Quit);
+        assert!(app.shutdown);
     }
 }

@@ -1,19 +1,15 @@
-use audio::AudioEngine;
-use state::{App, PlaybackState};
+use track_rs::{
+    audio::AudioEngine,
+    bindings,
+    state::{App, PlaybackState},
+    ui::TUI,
+};
 
 use std::{
     io::stdout,
     sync::mpsc::Receiver,
-    thread,
     time::{Duration, Instant},
 };
-use ui::TUI;
-
-mod audio;
-mod bindings;
-mod state;
-mod tracker;
-mod ui;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Startup:
@@ -116,7 +112,7 @@ fn main_loop<W: std::io::Write>(
             Duration::from_millis(10),
         );
 
-        let sleep_time = if suggested_sleep >= Duration::from_millis(5) {
+        let _sleep_time = if suggested_sleep >= Duration::from_millis(5) {
             suggested_sleep
         } else {
             Duration::from_millis(1)
