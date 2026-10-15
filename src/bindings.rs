@@ -30,13 +30,17 @@ impl Binding {
             modifiers: KeyModifiers::NONE,
             modes: match command {
                 Command::InsertNote { .. }
-                | Command::DeleteNote
+                | Command::CycleEditStep
                 | Command::LowerNote
                 | Command::RaiseNote
                 | Command::DecreaseOctave
                 | Command::IncreaseOctave => &[Mode::Insert],
-                Command::Undo | Command::Redo => &[Mode::Normal],
-                Command::EnterInsert | Command::ToggleVisual | Command::CountDigit(_) => &[Mode::Normal, Mode::Visual],
+                Command::Undo | Command::Redo | Command::Paste => &[Mode::Normal],
+                Command::Copy
+                | Command::Cut
+                | Command::EnterInsert
+                | Command::ToggleVisual
+                | Command::CountDigit(_) => &[Mode::Normal, Mode::Visual],
                 _ => &[Mode::Normal, Mode::Insert, Mode::Visual],
             },
             command,
@@ -48,6 +52,39 @@ impl Binding {
 
 /// The single source of truth for default controls and their descriptions.
 pub const DEFAULT_BINDINGS: &[Binding] = &[
+    Binding {
+        modes: &[Mode::Normal, Mode::Visual],
+        ..Binding::new(
+            KeyCode::Char('x'),
+            Command::DeleteNote,
+            "Clear cell/rectangle; finish selection",
+            "Clipboard",
+        )
+    },
+    Binding::new(
+        KeyCode::Char('d'),
+        Command::Cut,
+        "Copy then clear; finish selection",
+        "Clipboard",
+    ),
+    Binding::new(
+        KeyCode::Char('y'),
+        Command::Copy,
+        "Copy cell/rectangle; finish selection",
+        "Clipboard",
+    ),
+    Binding::new(
+        KeyCode::Char('p'),
+        Command::Paste,
+        "Paste snapshot (overwrite, clip edges)",
+        "Clipboard",
+    ),
+    Binding::new(
+        KeyCode::Tab,
+        Command::CycleEditStep,
+        "Cycle entry step 0/1/2/4 rows",
+        "Notes",
+    ),
     Binding::new(KeyCode::Char('u'), Command::Undo, "Undo edit", "History"),
     Binding {
         modifiers: KeyModifiers::CONTROL,
@@ -245,7 +282,12 @@ pub const DEFAULT_BINDINGS: &[Binding] = &[
         "Insert C one octave up",
         "Notes",
     ),
-    Binding::new(KeyCode::Delete, Command::DeleteNote, "Delete note", "Notes"),
+    Binding::new(
+        KeyCode::Delete,
+        Command::DeleteNote,
+        "Clear cell/rectangle without copying",
+        "Notes",
+    ),
     Binding::new(KeyCode::Char('a'), Command::DecreaseOctave, "Decrease octave", "Notes"),
     Binding::new(KeyCode::Char('s'), Command::IncreaseOctave, "Increase octave", "Notes"),
 ];
@@ -535,7 +577,7 @@ mod tests {
         escape(&mut app);
         sequence(&mut app, "xfrzas");
         key(&mut app, KeyCode::Delete, KeyModifiers::NONE, KeyEventKind::Press);
-        assert_eq!(app.pattern.get_step(0, 0).unwrap().note, Some(note));
+        assert_eq!(app.pattern.get_step(0, 0).unwrap().note, None);
         assert_eq!(app.octave, 5);
         sequence(&mut app, "i");
         key(&mut app, KeyCode::Delete, KeyModifiers::NONE, KeyEventKind::Press);

@@ -298,7 +298,7 @@ fn draw_pattern_editor(f: &mut Frame, area: Rect, state: &App) {
 
 fn draw_status_bar(f: &mut Frame, area: Rect, state: &App) {
     let status = format!(
-        "{}{}{} BPM: {:.1} Oct:{} {:?} P:{:02} Pos:{:02},{:02}",
+        "{}{}{} BPM: {:.1} Oct:{} Step:{} {:?} P:{:02} Pos:{:02},{:02}",
         state.mode.label(),
         state
             .pending_count
@@ -312,6 +312,7 @@ fn draw_status_bar(f: &mut Frame, area: Rect, state: &App) {
         )),
         state.bpm,
         state.octave,
+        state.edit_step,
         state.playback_state,
         state.playback_row,
         state.cursor_row,
@@ -562,6 +563,27 @@ mod tests {
                 assert!(screen(&terminal).contains(mode));
             }
         }
+    }
+
+    #[test]
+    fn insert_step_is_visible_in_status_and_registry_help() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::default();
+        app.handle_command(Command::EnterInsert);
+        let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        for step in [0, 1, 2, 4] {
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            assert!(screen(&terminal).contains(&format!("Step:{step}")));
+            crate::bindings::handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &mut app);
+        }
+        app.handle_command(Command::ToggleHelp);
+        app.help_scroll = help_bindings()
+            .iter()
+            .position(|binding| binding.command == Command::CycleEditStep)
+            .unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let text = screen(&terminal);
+        assert!(text.contains("Tab") && text.contains("0/1/2/4"));
     }
 
     #[test]

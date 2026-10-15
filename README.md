@@ -30,7 +30,21 @@ without editing; help also clears counts but preserves mode and selection.
 In Insert, `zxcvbnm,` enters C D E F G A B and the next C; `a`/`s` changes the
 entry octave and Delete clears a note. `f`/`r` lowers/raises the selected note
 one semitone (C0–B9); empty cells stay empty. Note-entry octave is unchanged.
+Tab cycles the Insert edit step through 0/1/2/4 rows (default 0), shown in status.
+Valid note entry advances by that step, clamped at the last row—even re-entering
+the same note, which creates no undo entry. Other edits don't advance.
 Movement and adjustments can repeat; note entry and mode switches are press-only.
+
+Normal `x` or Delete clears one cell; `d` copies then clears, `y` copies, and `p`
+pastes at the cursor. Visual `d`/`y` acts on the inclusive rectangle; Visual `x`
+or Delete clears it without copying. All four finish Visual mode, keep the
+cursor in place, and clear the selection. `v`/`Esc` cancels without editing or
+changing the clipboard. Operators are press-only and don't accept counts.
+
+The internal clipboard snapshots notes and empty cells, not instruments or BPM.
+Paste overwrites empty cells too, clips at pattern edges, and never wraps or
+resizes. Cut, rectangle clear, and paste each undo as one edit; the clipboard
+survives undo/redo. An unset clipboard does nothing.
 
 In Normal, `u` undoes an edit and `Ctrl-r` redoes it (press-only, no counts).
 Notes, transposition, track instruments, and BPM are undoable; navigation, modes,

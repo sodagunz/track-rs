@@ -1,5 +1,7 @@
 pub mod audio;
 pub mod bindings;
+#[cfg(test)]
+mod clipboard_tests;
 pub mod command;
 pub mod history;
 #[cfg(test)]

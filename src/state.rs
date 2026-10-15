@@ -32,6 +32,9 @@ pub enum PlaybackState {
 #[derive(Clone, Debug)]
 pub struct App {
     pub(crate) history: History,
+    // Track-major owned snapshot; None cells are part of the rectangle.
+    pub(crate) clipboard: Vec<Vec<Option<Note>>>,
+    pub edit_step: usize,
     pub mode: Mode,
     pub selection_anchor: Option<(usize, usize)>,
     pub pending_count: Option<u16>,
@@ -71,6 +74,8 @@ impl Default for App {
         let default_tracks = 4;
         Self {
             history: History::default(),
+            clipboard: Vec::new(),
+            edit_step: 0,
             mode: Mode::Normal,
             selection_anchor: None,
             pending_count: None,
@@ -157,10 +162,13 @@ impl App {
             Command::MoveCursorDown => self.offset_cursor(&CursorOffset::Pos(1), &CursorOffset::None),
             Command::MoveCursorLeft => self.offset_cursor(&CursorOffset::None, &CursorOffset::Neg(1)),
             Command::MoveCursorRight => self.offset_cursor(&CursorOffset::None, &CursorOffset::Pos(1)),
-            Command::InsertNote { pitch, octave_offset } => self.insert_note_under_cursor(Some(Note {
+            Command::InsertNote { pitch, octave_offset } => self.enter_note(Note {
                 pitch,
                 octave: self.octave.saturating_add(octave_offset).min(9),
-            })),
+            }),
+            Command::CycleEditStep => self.cycle_edit_step(),
+            Command::Copy | Command::Cut => self.copy_or_cut(command == Command::Cut),
+            Command::Paste => self.paste(),
             Command::Undo => self.history.undo(&mut self.pattern, &mut self.bpm),
             Command::Redo => self.history.redo(&mut self.pattern, &mut self.bpm),
             Command::SetInstrument(instrument) => {
@@ -192,10 +200,100 @@ impl App {
                     })));
                 }
             }
-            Command::DeleteNote => self.insert_note_under_cursor(None),
+            Command::DeleteNote => self.clear_selection(),
             Command::DecreaseOctave => self.octave = self.octave.saturating_sub(1).min(9),
             Command::IncreaseOctave => self.octave = self.octave.saturating_add(1).min(9),
         }
+    }
+
+    const fn cycle_edit_step(&mut self) {
+        self.edit_step = match self.edit_step {
+            0 => 1,
+            1 => 2,
+            2 => 4,
+            _ => 0,
+        };
+    }
+
+    fn enter_note(&mut self, note: Note) {
+        if self.pattern.get_step(self.cursor_track, self.cursor_row).is_some() {
+            self.insert_note_under_cursor(Some(note));
+            if self.mode == Mode::Insert {
+                self.offset_cursor(&CursorOffset::Pos(self.edit_step), &CursorOffset::None);
+            }
+        }
+    }
+
+    fn copy_or_cut(&mut self, cut: bool) {
+        self.copy_rectangle();
+        if cut {
+            self.clear_rectangle();
+        }
+        self.finish_selection();
+    }
+
+    fn rectangle(&self) -> (usize, usize, usize, usize) {
+        let (row, track) = if self.mode == Mode::Visual {
+            self.selection_anchor.unwrap_or((self.cursor_row, self.cursor_track))
+        } else {
+            (self.cursor_row, self.cursor_track)
+        };
+        (
+            row.min(self.cursor_row),
+            row.max(self.cursor_row).min(self.pattern.num_rows.saturating_sub(1)),
+            track.min(self.cursor_track),
+            track
+                .max(self.cursor_track)
+                .min(self.pattern.tracks.len().saturating_sub(1)),
+        )
+    }
+
+    fn copy_rectangle(&mut self) {
+        let (first_row, last_row, first_track, last_track) = self.rectangle();
+        self.clipboard = (first_track..=last_track)
+            .map(|track| {
+                (first_row..=last_row)
+                    .map(|row| self.pattern.get_step(track, row).and_then(|step| step.note))
+                    .collect()
+            })
+            .collect();
+    }
+
+    fn clear_rectangle(&mut self) {
+        let (first_row, last_row, first_track, last_track) = self.rectangle();
+        self.edit(|edit| {
+            for track in first_track..=last_track {
+                for row in first_row..=last_row {
+                    edit.set_cell(track, row, None);
+                }
+            }
+        });
+    }
+
+    fn clear_selection(&mut self) {
+        self.clear_rectangle();
+        self.finish_selection();
+    }
+
+    fn finish_selection(&mut self) {
+        if self.mode == Mode::Visual {
+            self.mode = Mode::Normal;
+        }
+        self.selection_anchor = None;
+    }
+
+    fn paste(&mut self) {
+        let (track, row) = (self.cursor_track, self.cursor_row);
+        let tracks = self.pattern.tracks.len().saturating_sub(track);
+        let rows = self.pattern.num_rows.saturating_sub(row);
+        let clipboard = self.clipboard.clone();
+        self.edit(|edit| {
+            for (dt, cells) in clipboard.iter().take(tracks).enumerate() {
+                for (dr, note) in cells.iter().take(rows).enumerate() {
+                    edit.set_cell(track + dt, row + dr, *note);
+                }
+            }
+        });
     }
 
     pub fn offset_cursor(&mut self, dr: &CursorOffset, dt: &CursorOffset) {

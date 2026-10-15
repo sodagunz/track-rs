@@ -1,6 +1,6 @@
 # Modal editing and projects
 
-Status: Phases 1–2 implemented; phases 3–5 planned. Builds on `feat/pattern-grid` (#9).
+Status: Phases 1–3 implemented; phases 4–5 planned. Builds on `feat/pattern-grid` (#9).
 
 Make writing and reusing a pattern comfortable, then make it safe to keep. Each
 phase gets its own branch/stacked PR. Don't build the mixer or a full Vim clone.
@@ -91,22 +91,39 @@ audible playback pass was performed. No phase 3–5 behavior is implemented.
 
 ## 3. Selection, clipboard, and edit step
 
-- [ ] Implement Normal `x`, `d`, `y`, `p`, and Visual `d`/`y`. Delete remains a
+- [x] Implement Normal `x`, `d`, `y`, `p`, and Visual `d`/`y`. Delete remains a
   non-cutting clear alias; `d` copies then clears. Clearing never shifts rows.
-- [ ] Copy a deep snapshot of the selected rectangle's cells, including empty
+- [x] Copy a deep snapshot of the selected rectangle's cells, including empty
   cells, not track instruments or tempo. A single-cell action is a 1×1 rectangle.
-- [ ] Paste overwrites, including copied empty cells, starting at the cursor.
+- [x] Paste overwrites, including copied empty cells, starting at the cursor.
   Clip at pattern edges; don't wrap, add tracks, or resize the pattern. Empty
   clipboard is a no-op. Undo restores the entire affected region at once.
-- [ ] Clear selection after cut/copy; keep cursor position. Clipboard survives
+- [x] Clear selection after cut/copy; keep cursor position. Clipboard survives
   undo/redo. Selection and bulk edits must not change neighboring cells.
-- [ ] Add an Insert-mode edit step of 0/1/2/4 rows, default 0 (current behavior).
+- [x] Add an Insert-mode edit step of 0/1/2/4 rows, default 0 (current behavior).
   Choose unused bindings and show the value in status/help. Only successful note
   entry advances; clamp at the last row. No advance on transpose, clear, or paste.
-- [ ] Test reversed/multi-track selections, empty cells, overlapping copy/paste,
+- [x] Test reversed/multi-track selections, empty cells, overlapping copy/paste,
   clipped pastes, atomic undo, and each edit step. Render selection after scrolling.
 
 Done: a short drum phrase can be copied across rows/tracks without re-entering it.
+
+Phase 3: Visual `x`/Delete clears the rectangle without copying, then returns to
+Normal and clears the selection, just like Visual cut/copy. Cursor stays put.
+Insert Tab cycles edit step 0/1/2/4 (default 0). Valid note entry advances even
+when the same note is already present; that no-op preserves revision and redo.
+Transpose, clear, and paste never advance. Clipboard snapshots are independent
+of history, instruments, and BPM. Bulk edits use the existing `App::edit` patch
+interface as one transaction.
+
+Phase 3 validation: formatting, strict all-target Clippy, 46 nextest tests,
+all-target cargo tests, 0 doctests, warning-free docs, actionlint, cargo-deny,
+and the null-audio example passed. Cargo-deny reports duplicate-version warnings.
+Key-dispatch tests cover clipboard rectangles, overlap, empty-cell overwrite,
+edge clipping, atomic history, cancellation, counts/help/modifiers/repeats, and
+all edit steps. Headless UI tests cover step status/help and scrolled selection.
+No interactive terminal or audible playback pass was performed. Phases 4–5
+remain unimplemented.
 
 ## 4. Minimal save/load
 
