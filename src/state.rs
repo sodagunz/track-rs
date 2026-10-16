@@ -65,8 +65,9 @@ pub struct App {
     pub octave: u8,
     pub shutdown: bool,
     pub help_visible: bool,
-    /// Index of the first binding shown; independent of terminal dimensions.
-    pub help_scroll: usize,
+    /// Rendered-line offset and last measured viewport limit for the help overlay.
+    pub help_scroll: std::cell::Cell<usize>,
+    pub(crate) help_scroll_max: std::cell::Cell<usize>,
 }
 
 pub enum CursorOffset {
@@ -114,7 +115,8 @@ impl Default for App {
             playback_state: PlaybackState::Stopped,
             shutdown: false,
             help_visible: false,
-            help_scroll: 0,
+            help_scroll: std::cell::Cell::new(0),
+            help_scroll_max: std::cell::Cell::new(0),
         }
     }
 }
@@ -217,7 +219,7 @@ impl App {
             Command::ToggleHelp => {
                 self.pending_count = None;
                 self.help_visible = !self.help_visible;
-                self.help_scroll = 0;
+                self.help_scroll.set(0);
             }
             Command::DismissHelp => {
                 self.pending_count = None;
@@ -330,15 +332,14 @@ impl App {
         }
     }
 
-    fn scroll_help(&mut self, down: bool) {
+    fn scroll_help(&self, down: bool) {
         if self.help_visible {
-            self.help_scroll = if down {
-                self.help_scroll
-                    .saturating_add(1)
-                    .min(crate::bindings::DEFAULT_BINDINGS.len().saturating_sub(1))
+            let current = self.help_scroll.get().min(self.help_scroll_max.get());
+            self.help_scroll.set(if down {
+                current.saturating_add(1).min(self.help_scroll_max.get())
             } else {
-                self.help_scroll.saturating_sub(1)
-            };
+                current.saturating_sub(1)
+            });
         }
     }
 
@@ -830,11 +831,11 @@ mod tests {
         for _ in 0..100 {
             app.handle_command(Command::ScrollHelpDown);
         }
-        assert_eq!(app.help_scroll, crate::bindings::DEFAULT_BINDINGS.len() - 1);
+        assert_eq!(app.help_scroll.get(), app.help_scroll_max.get());
         for _ in 0..100 {
             app.handle_command(Command::ScrollHelpUp);
         }
-        assert_eq!(app.help_scroll, 0);
+        assert_eq!(app.help_scroll.get(), 0);
         app.handle_command(Command::ToggleHelp);
         assert!(!app.help_visible);
         app.handle_command(Command::ToggleHelp);
