@@ -333,8 +333,10 @@ fn draw_pattern_editor(f: &mut Frame, area: Rect, state: &App) {
             } else {
                 Style::default()
             };
-            spans.push(Span::styled(format_step(step), style));
-            spans.push(Span::raw("       "));
+            let text = format_step(step);
+            spans.push(Span::styled(text[..3].to_owned(), style));
+            spans.push(Span::styled(text[3..].to_owned(), Style::default()));
+            spans.push(Span::raw("  "));
         }
         f.render_widget(
             Paragraph::new(Line::from(spans)).style(Style::default().fg(foreground).bg(background)),
@@ -350,7 +352,7 @@ fn draw_pattern_editor(f: &mut Frame, area: Rect, state: &App) {
 
 fn draw_status_bar(f: &mut Frame, area: Rect, state: &App) {
     let status = format!(
-        "{}{}{} BPM: {:.1} Oct:{} Step:{} {:?} P:{:02} Pos:{:02},{:02}",
+        "{}{}{} BPM: {:.1} Oct:{} Step:{} Len:{} {:?} P:{:02} Pos:{:02},{:02}",
         state.mode.label(),
         state
             .pending_count
@@ -365,6 +367,10 @@ fn draw_status_bar(f: &mut Frame, area: Rect, state: &App) {
         state.project.bpm,
         state.octave,
         state.edit_step,
+        state.project.patterns[state.selected_pattern]
+            .get_step(state.cursor_track, state.cursor_row)
+            .and_then(|step| step.note)
+            .map_or_else(|| "-".to_owned(), |note| format!("{}t", note.length_ticks.ticks())),
         state.playback_state,
         state.playback_row,
         state.cursor_row,
@@ -375,8 +381,14 @@ fn draw_status_bar(f: &mut Frame, area: Rect, state: &App) {
 
 fn format_step(step: PatternStep) -> String {
     step.note.map_or_else(
-        || " . ".to_string(),
-        |note| format!("{:<3}", format!("{}{}", note.pitch, note.octave)),
+        || " .      ".to_string(),
+        |note| {
+            format!(
+                "{:<3}:{:>4}",
+                format!("{}{}", note.pitch, note.octave),
+                note.length_ticks.ticks()
+            )
+        },
     )
 }
 
@@ -514,7 +526,15 @@ mod tests {
         };
         for (track, pitch) in [(0, NotePitch::C), (1, NotePitch::Cs), (2, NotePitch::D)] {
             app.project.patterns[app.selected_pattern]
-                .set_step(track, 0, Some(Note { pitch, octave: 4 }))
+                .set_step(
+                    track,
+                    0,
+                    Some(Note {
+                        length_ticks: crate::tracker::NoteLength::default(),
+                        pitch,
+                        octave: 4,
+                    }),
+                )
                 .unwrap();
         }
         let mut terminal = Terminal::new(TestBackend::new(45, 4)).unwrap();
@@ -696,6 +716,36 @@ mod tests {
     }
 
     #[test]
+    fn gate_lengths_fit_ten_column_cells_and_selected_status() {
+        let mut app = App::default();
+        for (track, ticks) in [(0, 1), (1, 16), (2, 4096)] {
+            app.project.patterns[0]
+                .set_step(
+                    track,
+                    0,
+                    Some(Note {
+                        pitch: NotePitch::Cs,
+                        octave: 4,
+                        length_ticks: crate::tracker::NoteLength::try_from(ticks).unwrap(),
+                    }),
+                )
+                .unwrap();
+        }
+        let mut terminal = Terminal::new(TestBackend::new(100, 1)).unwrap();
+        terminal.draw(|f| draw_pattern_editor(f, f.area(), &app)).unwrap();
+        let row = screen(&terminal);
+        for (column, expected) in [(5, "C#4:   1"), (15, "C#4:  16"), (25, "C#4:4096"), (35, " .      ")] {
+            assert_eq!(row.chars().skip(column).take(8).collect::<String>(), expected);
+        }
+        app.cursor_track = 2;
+        terminal.draw(|f| draw_status_bar(f, f.area(), &app)).unwrap();
+        assert!(screen(&terminal).contains("Step:0 Len:4096t"));
+        app.cursor_track = 3;
+        terminal.draw(|f| draw_status_bar(f, f.area(), &app)).unwrap();
+        assert!(screen(&terminal).contains("Len:-"));
+    }
+
+    #[test]
     fn insert_step_is_visible_in_status_and_registry_help() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = App::default();
@@ -731,6 +781,7 @@ mod tests {
     fn renders_pattern_and_status_without_a_terminal() {
         let mut app = App::default();
         app.insert_note_under_cursor(Some(Note {
+            length_ticks: crate::tracker::NoteLength::default(),
             pitch: NotePitch::C,
             octave: 4,
         }));

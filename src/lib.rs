@@ -22,3 +22,6 @@ pub mod project_file;
 
 #[cfg(test)]
 mod project_tests;
+
+#[cfg(test)]
+mod length_tests;

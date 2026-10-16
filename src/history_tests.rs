@@ -88,6 +88,7 @@ fn noops_invalid_targets_and_navigation_preserve_redo() {
             0,
             0,
             Some(Note {
+                length_ticks: crate::tracker::NoteLength::default(),
                 pitch: NotePitch::C,
                 octave: 4,
             }),
@@ -110,6 +111,7 @@ fn noops_invalid_targets_and_navigation_preserve_redo() {
     });
     app.cursor_row = usize::MAX;
     app.insert_note_under_cursor(Some(Note {
+        length_ticks: crate::tracker::NoteLength::default(),
         pitch: NotePitch::C,
         octave: 4,
     }));
@@ -142,11 +144,19 @@ fn noops_invalid_targets_and_navigation_preserve_redo() {
         (NotePitch::B, 9, Command::RaiseNote),
     ] {
         let mut app = App::default();
-        app.insert_note_under_cursor(Some(Note { pitch, octave }));
+        app.insert_note_under_cursor(Some(Note {
+            length_ticks: crate::tracker::NoteLength::default(),
+            pitch,
+            octave,
+        }));
         let revision = app.revision();
         app.handle_command(command);
         assert_eq!(app.revision(), revision);
-        app.insert_note_under_cursor(Some(Note { pitch, octave }));
+        app.insert_note_under_cursor(Some(Note {
+            length_ticks: crate::tracker::NoteLength::default(),
+            pitch,
+            octave,
+        }));
         assert_eq!(app.revision(), revision);
     }
 }
@@ -189,6 +199,7 @@ fn bulk_seam_is_atomic_and_mutation_budget_evicts_oversized_edits() {
     let mut app = App::default();
     let initial = app.revision();
     let note = Some(Note {
+        length_ticks: crate::tracker::NoteLength::default(),
         pitch: NotePitch::F,
         octave: 4,
     });
@@ -300,6 +311,7 @@ fn playback_keeps_deadline_and_reads_restored_future_events() {
     app.playback_row = 7;
     app.cursor_row = 1;
     let note = Some(Note {
+        length_ticks: crate::tracker::NoteLength::default(),
         pitch: NotePitch::D,
         octave: 5,
     });

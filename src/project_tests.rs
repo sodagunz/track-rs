@@ -60,6 +60,8 @@ fn version_one_fixture_and_multi_pattern_round_trip_preserve_shared_voices() {
     project_file::save(&project, &path).unwrap();
     assert_eq!(project_file::load(&path).unwrap(), project);
     let encoded = fs::read_to_string(path).unwrap();
+    assert!(encoded.contains("\"version\": 2"));
+    assert!(encoded.contains("\"length_ticks\": 16"));
     assert!(encoded.contains("\"F#\""));
     assert!(encoded.contains("\"HiHat\""));
     assert!(!encoded.contains("playback"));
@@ -82,7 +84,7 @@ fn malformed_values_and_dimension_corruption_are_rejected() {
         corruptions.push(value);
     }
     for (pointer, replacement) in [
-        ("/version", json!(2)),
+        ("/version", json!(3)),
         ("/version", json!(0)),
         ("/instruments/0", json!("Unknown")),
         ("/instruments", json!([])),
@@ -332,6 +334,7 @@ fn pattern_indexed_history_does_not_follow_selected_pattern() {
     let mut app = App::default();
     app.project.patterns.push(Pattern::new(3, 4));
     let note = Some(Note {
+        length_ticks: crate::tracker::NoteLength::default(),
         pitch: NotePitch::Cs,
         octave: 4,
     });

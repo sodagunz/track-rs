@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "bpm": 120.0,
+  "instruments": ["Sine", "Pluck"],
+  "patterns": [
+    {
+      "rows": 2,
+      "tracks": 2,
+      "cells": [
+        [{"pitch": "A", "octave": 4, "length_ticks": 4096}, null],
+        [null, {"pitch": "C#", "octave": 3, "length_ticks": 1}]
+      ]
+    }
+  ],
+  "order": [0, 0]
+}
