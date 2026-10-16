@@ -70,8 +70,8 @@ fn render(f: &mut Frame, state: &App) {
     let area = f.area();
     let title_rows = u16::from(area.height >= 6);
     let order_rows = u16::from(area.height >= 7);
-    let status_rows = u16::from(area.height >= 3);
-    let hint_rows = u16::from(area.height > 0);
+    let hint_rows = u16::from(area.height > 0 && (state.prompt.is_some() || area.height >= 4));
+    let status_rows = u16::from(area.height.saturating_sub(hint_rows) >= 3);
     if title_rows > 0 {
         draw_buffer_line(f, Rect::new(area.x, area.y, area.width, title_rows), state);
     }
@@ -99,19 +99,19 @@ fn render(f: &mut Frame, state: &App) {
     if hint_rows > 0 {
         let line = state.prompt.as_ref().map_or_else(
             || {
-                format!(
-                    "{} {} Help  {}{} {}",
-                    state.mode.label(),
-                    command_keys(Command::ToggleHelp),
-                    if state.is_dirty() { "* " } else { "" },
-                    state.status,
-                    state
-                        .path
-                        .as_ref()
-                        .map_or_else(|| "[unsaved]".into(), |path| path.display().to_string())
-                )
+                if state.status.is_empty() {
+                    "? Help".to_owned()
+                } else {
+                    state.status.clone()
+                }
             },
-            |text| format!(":{text}"),
+            |text| {
+                let (visible, cursor) = presentation::prompt_view(text, area.width);
+                if area.width > 0 {
+                    f.set_cursor_position((area.x + cursor, area.bottom() - 1));
+                }
+                visible
+            },
         );
         f.render_widget(
             Paragraph::new(line),
@@ -464,7 +464,18 @@ fn format_step(step: PatternStep) -> String {
 mod tests {
     use super::*;
     use crate::tracker::{Note, NotePitch};
-    use ratatui::backend::TestBackend;
+    use ratatui::backend::{Backend, TestBackend};
+
+    fn screen_lines(terminal: &Terminal<TestBackend>, width: u16) -> String {
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(usize::from(width))
+            .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 
     fn screen(terminal: &Terminal<TestBackend>) -> String {
         terminal
@@ -499,6 +510,18 @@ mod tests {
         crate::bindings::handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &mut app);
         terminal.draw(|frame| render(frame, &app)).unwrap();
         assert!(screen(&terminal).contains("No file path"));
+        let error = app.status.clone();
+        for _ in 0..3 {
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            assert!(screen(&terminal).contains("No file path"));
+            assert_eq!(app.status, error);
+        }
+        // A message never replaces active input, even if feedback arrives later.
+        app.prompt = Some("w literal ? 界 path".into());
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        assert!(screen(&terminal).contains(":w literal ? 界"));
+        assert!(!screen(&terminal).contains("No file path"));
+        app.prompt = None;
         for (width, height) in [(1, 1), (12, 2), (40, 3)] {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             terminal.draw(|frame| render(frame, &app)).unwrap();
@@ -893,7 +916,11 @@ mod tests {
             for (width, height) in [(20, 3), (12, 2), (6, 1)] {
                 let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
                 terminal.draw(|frame| render(frame, &app)).unwrap();
-                assert!(screen(&terminal).contains(mode));
+                if height >= 3 {
+                    assert!(screen(&terminal).contains(mode));
+                } else {
+                    assert!(!screen(&terminal).contains("? Help"));
+                }
             }
         }
     }
@@ -952,6 +979,72 @@ mod tests {
         terminal.draw(|frame| render(frame, &app)).unwrap();
         let text = screen(&terminal);
         assert!(text.contains("Tab") && text.contains("0/1/2/4"));
+    }
+
+    #[test]
+    fn contextual_status_and_short_layout_keep_essentials() {
+        for mode in [Mode::Normal, Mode::Insert, Mode::Visual] {
+            let mut app = App { mode, ..App::default() };
+            app.handle_command(Command::IncreaseTempo);
+            for width in [24, 40, 80] {
+                for height in 0..=10 {
+                    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                    terminal.draw(|frame| render(frame, &app)).unwrap();
+                    let text = screen_lines(&terminal, width);
+                    if height >= 3 {
+                        assert!(text.contains(mode.label()), "{width}x{height}: {text}");
+                        assert!(text.contains('*'));
+                        assert!(text.contains("T1"));
+                        assert!(text.contains("Stopped") || text.contains("P ■"));
+                    }
+                    if height >= 2 {
+                        assert!(text.contains("00"), "missing editable row at {width}x{height}: {text}");
+                    }
+                    if height >= 4 {
+                        let lines: Vec<_> = text.lines().collect();
+                        assert_eq!(lines.last().unwrap().trim(), "? Help");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn long_literal_prompt_keeps_tail_and_terminal_cursor_without_wrapping() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory
+            .path()
+            .join(format!("{} 界e\u{301} 👩‍💻.json", "long path ".repeat(12)));
+        let mut app = App::default();
+        for ch in format!(":w {}", path.display()).chars() {
+            crate::bindings::handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE), &mut app);
+        }
+        let original = app.prompt.clone();
+        for width in [24, 40, 80] {
+            for height in 1..=10 {
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal.draw(|frame| render(frame, &app)).unwrap();
+                let text = screen_lines(&terminal, width);
+                assert!(text.lines().last().unwrap().trim_end().ends_with("json"));
+                assert!(text.lines().last().unwrap().contains("👩‍💻"));
+                let (x, y) = terminal
+                    .backend_mut()
+                    .get_cursor_position()
+                    .map(|p| (p.x, p.y))
+                    .unwrap();
+                assert_eq!(y, height - 1);
+                assert!(x < width);
+                assert_eq!(app.prompt, original);
+                if height >= 3 {
+                    assert!(text.contains("00"));
+                }
+            }
+        }
+        crate::bindings::handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &mut app);
+        assert!(path.exists());
+        assert!(app.status.contains(&path.display().to_string()));
+        assert!(app.prompt.is_none());
     }
 
     #[test]

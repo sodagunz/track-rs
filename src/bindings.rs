@@ -487,6 +487,7 @@ pub fn resolve(key: KeyEvent, state: &mut App) -> Option<Command> {
     {
         if key.kind == KeyEventKind::Press {
             state.pending_prefix = code.as_char();
+            state.status.clear();
         }
         return None;
     }
@@ -535,7 +536,11 @@ pub fn resolve(key: KeyEvent, state: &mut App) -> Option<Command> {
         return None;
     };
     if let Command::CountDigit(digit) = binding.command {
+        let before = state.pending_count;
         extend_count(state, digit);
+        if state.pending_count != before {
+            state.status.clear();
+        }
         return None;
     }
     let count = state.pending_count.take();
@@ -587,6 +592,7 @@ pub fn handle_key(key: KeyEvent, state: &mut App) {
         match key.code {
             KeyCode::Esc => {
                 state.prompt = None;
+                state.status.clear();
             }
             KeyCode::Enter if key.kind == KeyEventKind::Press => {
                 if let Some(text) = state.prompt.take() {
@@ -595,12 +601,15 @@ pub fn handle_key(key: KeyEvent, state: &mut App) {
             }
             KeyCode::Backspace => {
                 if let Some(text) = &mut state.prompt {
-                    text.pop();
+                    if text.pop().is_some() {
+                        state.status.clear();
+                    }
                 }
             }
             KeyCode::Char(ch) => {
                 if let Some(text) = &mut state.prompt {
                     text.push(ch);
+                    state.status.clear();
                 }
             }
             _ => {}
@@ -916,6 +925,53 @@ mod tests {
             sequence(&mut app, "2s2A2zfr");
             assert_eq!(app.revision(), revision);
         }
+    }
+
+    #[test]
+    fn feedback_lives_until_an_accepted_action_not_ignored_input() {
+        let mut app = App::default();
+        sequence(&mut app, ":w");
+        handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &mut app);
+        assert!(app.status.contains("No file path"));
+        let error = app.status.clone();
+        for event in [
+            KeyEvent::new_with_kind(KeyCode::Char('j'), KeyModifiers::NONE, KeyEventKind::Release),
+            KeyEvent::new_with_kind(KeyCode::Char('i'), KeyModifiers::NONE, KeyEventKind::Repeat),
+            KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL),
+        ] {
+            handle_key(event, &mut app);
+            assert_eq!(app.status, error);
+        }
+        sequence(&mut app, "j");
+        assert_eq!(app.status, "");
+        sequence(&mut app, ":unknown");
+        handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &mut app);
+        assert!(app.status.contains("Unknown command"));
+        sequence(&mut app, "2");
+        assert_eq!(app.status, "");
+        app.status = error.clone();
+        sequence(&mut app, "g");
+        assert_eq!(app.status, "");
+        app.status = error.clone();
+        sequence(&mut app, "z"); // Invalid chord consumes the prefix, not the message.
+        assert_eq!(app.status, error);
+        sequence(&mut app, ":literal ? path");
+        assert!(!app.help_visible);
+        assert_eq!(app.prompt.as_deref(), Some("literal ? path"));
+        escape(&mut app);
+        assert!(app.prompt.is_none());
+        assert_eq!(app.status, "");
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("saved 界 file.json");
+        sequence(&mut app, &format!(":w {}", path.display()));
+        handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &mut app);
+        assert!(app.status.starts_with("Saved "));
+        assert!(app.status.contains(&path.display().to_string()));
+        assert!(!app.is_dirty());
+        sequence(&mut app, "?");
+        assert!(app.help_visible);
+        escape(&mut app);
+        assert!(!app.help_visible);
     }
 
     #[test]

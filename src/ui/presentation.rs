@@ -1,6 +1,9 @@
 use std::fmt::Write as _;
 
-use ratatui::text::Line;
+use ratatui::{
+    style::Style,
+    text::{Line, Span},
+};
 
 use crate::{
     state::{App, Mode, PlaybackMode, PlaybackState},
@@ -169,18 +172,65 @@ impl Presentation<'_> {
     }
 
     pub(super) fn status_line(&self, width: u16) -> Line<'static> {
-        // Preserve mode/input, edit coordinates and transport before optional
-        // note/selection context and tempo. No layout or prompt ownership here.
-        prioritized_line(
-            [
+        let width = usize::from(width);
+        let app = self.0;
+        let dirty = if app.is_dirty() { "*" } else { "" };
+        let mut left = format!("{}{dirty} {}", self.mode(), self.cursor());
+        let mut right = self.transport();
+        if Line::from(format!("{left} {right}")).width() > width {
+            left = format!(
+                "{}{dirty} P{}R{}T{}",
                 self.mode(),
-                self.cursor(),
-                self.transport(),
-                self.context(),
-                format!("BPM: {:.1}", self.0.project.bpm),
-            ],
-            width,
+                app.selected_pattern,
+                row_label(app.cursor_row),
+                track_number(app.cursor_track)
+            );
+            right = format!(
+                "{} {}",
+                if app.playback_mode == PlaybackMode::Song {
+                    "S"
+                } else {
+                    "P"
+                },
+                if matches!(app.playback_state, PlaybackState::Playing) {
+                    "▶"
+                } else {
+                    "■"
+                }
+            );
+        }
+        let compact = right.clone();
+        if matches!(app.playback_state, PlaybackState::Playing) && right != self.transport() {
+            let positioned = format!(
+                "{right} O{} P{} R{}",
+                app.playing_order,
+                app.playing_pattern,
+                row_label(app.playback_row)
+            );
+            if Line::from(format!("{left} {positioned}")).width() <= width {
+                right = positioned;
+            }
+        }
+        if Line::from(format!("{left} {right}")).width() > width {
+            right = compact;
+            left = format!(
+                "{}{dirty}{}{} P{}R{}T{}",
+                &app.mode.label()[..1],
+                app.pending_count.map_or_else(String::new, |count| count.to_string()),
+                app.pending_prefix.map_or_else(String::new, |prefix| prefix.to_string()),
+                app.selected_pattern,
+                row_label(app.cursor_row),
+                track_number(app.cursor_track)
+            );
+        }
+        let budget = width.saturating_sub(Line::from(right.as_str()).width() + 1);
+        left = prioritized_line(
+            [left, self.context(), format!("BPM: {:.1}", app.project.bpm)],
+            u16::try_from(budget).unwrap_or(u16::MAX),
         )
+        .to_string();
+        let gap = width.saturating_sub(Line::from(left.as_str()).width() + Line::from(right.as_str()).width());
+        Line::from(format!("{left}{}{right}", " ".repeat(gap.max(1))))
     }
 
     pub(super) fn buffer_line(&self, width: u16) -> Line<'static> {
@@ -263,8 +313,7 @@ impl Presentation<'_> {
     }
 }
 
-// Keep zero-width combining marks with their preceding character. Width comes
-// from Ratatui, so CJK characters consume columns rather than UTF-8 bytes.
+// Use Ratatui's grapheme iterator for combining marks, flags and ZWJ emoji.
 fn elide(text: &str, width: usize) -> String {
     if Line::from(text).width() <= width {
         return text.to_owned();
@@ -274,16 +323,45 @@ fn elide(text: &str, width: usize) -> String {
     }
     let mut result = String::new();
     let mut used = 0;
-    for ch in text.chars() {
-        let columns = Line::from(ch.to_string()).width();
+    let span = Span::raw(text);
+    for grapheme in span.styled_graphemes(Style::default()) {
+        let columns = Line::from(grapheme.symbol).width();
         if used + columns > width - 1 {
             break;
         }
-        result.push(ch);
+        result.push_str(grapheme.symbol);
         used += columns;
     }
     result.push('…');
     result
+}
+
+// Input is append/backspace-only. Reserve a terminal cell for the insertion
+// cursor and show a grapheme-aligned suffix without changing the literal input.
+pub(super) fn prompt_view(text: &str, width: u16) -> (String, u16) {
+    let full = format!(":{text}");
+    let budget = usize::from(width.saturating_sub(1));
+    if Line::from(full.as_str()).width() <= budget {
+        let cursor = u16::try_from(Line::from(full.as_str()).width()).unwrap_or(0);
+        return (full, cursor);
+    }
+    let span = Span::raw(text);
+    let graphemes: Vec<_> = span.styled_graphemes(Style::default()).collect();
+    let mut used = usize::from(budget > 0);
+    let mut start = graphemes.len();
+    for (index, grapheme) in graphemes.iter().enumerate().rev() {
+        let columns = Line::from(grapheme.symbol).width();
+        if used + columns > budget {
+            break;
+        }
+        used += columns;
+        start = index;
+    }
+    let mut visible = if budget > 0 { "…".to_owned() } else { String::new() };
+    for grapheme in &graphemes[start..] {
+        visible.push_str(grapheme.symbol);
+    }
+    (visible, u16::try_from(used).unwrap_or(0))
 }
 
 #[cfg(test)]
@@ -486,10 +564,58 @@ mod tests {
         assert_eq!(Presentation(&app).transport(), "Song Stopped");
         app.playback_state = PlaybackState::Playing;
         assert_eq!(Presentation(&app).transport(), "Song Playing O3 P1 R16");
-        assert!(Presentation(&app)
-            .status_line(100)
-            .to_string()
-            .contains("P2 R00 T1 Song Playing O3 P1 R16"));
+        let status = Presentation(&app).status_line(100).to_string();
+        assert!(status.contains("P2 R00 T1"));
+        assert!(status.ends_with("Song Playing O3 P1 R16"));
+    }
+
+    #[test]
+    fn status_prioritizes_dirty_cursor_and_right_aligned_transport() {
+        let mut app = App::default();
+        app.handle_command(Command::IncreaseTempo);
+        app.playback_mode = PlaybackMode::Song;
+        app.playback_state = PlaybackState::Playing;
+        app.playing_order = 3;
+        app.playing_pattern = 7;
+        app.playback_row = 19;
+        for mode in [Mode::Normal, Mode::Insert, Mode::Visual] {
+            app.mode = mode;
+            for width in [24, 40, 80] {
+                let line = Presentation(&app).status_line(width);
+                let text = line.to_string();
+                assert_eq!(line.width(), usize::from(width));
+                assert!(text.starts_with(mode.label()));
+                assert!(text.contains('*'));
+                assert!(text.contains("T1"));
+                if width == 24 {
+                    assert!(text.ends_with("S ▶"));
+                } else {
+                    assert!(text.ends_with("O3 P7 R19"));
+                }
+            }
+        }
+        app.playback_state = PlaybackState::Stopped;
+        let text = Presentation(&app).status_line(80).to_string();
+        assert!(text.ends_with("Song Stopped"));
+        assert!(!text.contains("O3"));
+        assert!(!text.contains("P7"));
+        assert!(!text.contains("R19"));
+    }
+
+    #[test]
+    fn prompt_and_basename_clipping_preserve_whole_graphemes() {
+        for text in ["👩‍💻", "🇦🇷", "e\u{301}", "界"] {
+            assert_eq!(elide(&format!("{text}tail"), 1), "…");
+            for width in 0..=12 {
+                let input = format!("long prefix {text}");
+                let (visible, cursor) = prompt_view(&input, width);
+                assert!(Line::from(visible.as_str()).width() <= usize::from(width.saturating_sub(1)));
+                assert_eq!(usize::from(cursor), Line::from(visible.as_str()).width());
+                if visible.len() > '…'.len_utf8() && visible.starts_with('…') {
+                    assert!(visible.ends_with(text));
+                }
+            }
+        }
     }
 
     #[test]

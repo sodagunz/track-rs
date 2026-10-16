@@ -141,6 +141,7 @@ impl App {
     }
 
     pub(crate) fn execute_prompt(&mut self, text: &str) {
+        self.status.clear();
         if let Err(error) = self.execute_file_command(text) {
             self.status = format!("{error:#}");
         }
@@ -163,7 +164,7 @@ impl App {
                 crate::project_file::save(&self.project, &path)?;
                 self.path = Some(path);
                 self.saved_revision = self.revision();
-                self.status = "Saved".into();
+                self.status = format!("Saved {}", self.path.as_ref().unwrap().display());
                 if command == "wq" {
                     self.shutdown = true;
                 }
@@ -193,7 +194,7 @@ impl App {
                 self.playback_state = PlaybackState::Stopped;
                 self.playback_row = 0;
                 self.stop_requested = true;
-                self.status = "Loaded".into();
+                self.status = format!("Loaded {}", self.path.as_ref().unwrap().display());
             }
             "restart" => {
                 anyhow::ensure!(remainder.is_empty(), "Expected :restart");
@@ -221,8 +222,24 @@ impl App {
         })
     }
 
+    fn dismiss_feedback(&mut self, command: Command) {
+        if !self.help_visible
+            || matches!(
+                command,
+                Command::ToggleHelp
+                    | Command::DismissHelp
+                    | Command::ScrollHelpUp
+                    | Command::ScrollHelpDown
+                    | Command::Quit
+            )
+        {
+            self.status.clear();
+        }
+    }
+
     /// Apply an editor action without depending on terminal key events.
     pub fn handle_command(&mut self, command: Command) {
+        self.dismiss_feedback(command);
         self.pending_prefix = None;
         match command {
             Command::ToggleHelp => {
@@ -254,9 +271,7 @@ impl App {
             | Command::Redo => self.handle_arrangement(command),
             Command::AddTrack => self.add_track(),
             Command::OpenPrompt => self.open_prompt(),
-            Command::EnterInsert => {
-                self.enter_insert();
-            }
+            Command::EnterInsert => self.enter_insert(),
             Command::EnterNormal => {
                 self.mode = Mode::Normal;
                 self.selection_anchor = None;
