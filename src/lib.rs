@@ -9,6 +9,8 @@ pub mod history;
 #[cfg(test)]
 mod history_tests;
 pub mod state;
+#[cfg(test)]
+mod track_tests;
 pub mod tracker;
 pub mod transport;
 pub mod ui;

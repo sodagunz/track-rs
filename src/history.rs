@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, VecDeque};
 
 use crate::{
     project::Project,
-    tracker::{Instrument, Note, Pattern},
+    tracker::{Instrument, Note, Pattern, PatternStep, Track},
 };
 
 pub const MAX_TRANSACTIONS: usize = 256;
@@ -15,6 +15,10 @@ pub struct Revision(u64);
 
 #[derive(Clone, Debug)]
 enum Mutation {
+    Track {
+        columns: Vec<Track>,
+        instrument: Instrument,
+    },
     Pattern {
         index: usize,
         value: Pattern,
@@ -42,16 +46,17 @@ enum Mutation {
 }
 
 impl Mutation {
-    const fn weight(&self) -> usize {
+    fn weight(&self) -> usize {
         match self {
             Self::Pattern { value, .. } => value.num_rows * value.tracks.len(),
+            Self::Track { columns, .. } => 1 + columns.iter().map(Vec::len).sum::<usize>(),
             Self::Order { before, after } => before.len() + after.len(),
             _ => 1,
         }
     }
 
     const fn structural(&self) -> bool {
-        matches!(self, Self::Pattern { .. } | Self::Order { .. })
+        matches!(self, Self::Pattern { .. } | Self::Order { .. } | Self::Track { .. })
     }
 
     const fn key(&self) -> (u8, usize, usize, usize) {
@@ -63,6 +68,7 @@ impl Mutation {
             Self::Tempo { .. } => (3, 0, 0, 0),
             Self::Pattern { index, .. } => (0, index, 0, 0),
             Self::Order { .. } => (4, 0, 0, 0),
+            Self::Track { .. } => (5, 0, 0, 0),
         }
     }
 
@@ -72,7 +78,7 @@ impl Mutation {
             Self::Cell { before, after, .. } => before != after,
             Self::Instrument { before, after, .. } => before != after,
             Self::Tempo { before, after } => before != after,
-            Self::Pattern { .. } => true,
+            Self::Pattern { .. } | Self::Track { .. } => true,
             Self::Order { ref before, ref after } => before != after,
         }
     }
@@ -89,6 +95,23 @@ impl Mutation {
 
     fn apply(&self, project: &mut Project, forward: bool) {
         match *self {
+            Self::Track {
+                ref columns,
+                instrument,
+            } => {
+                for (pattern, column) in project.patterns.iter_mut().zip(columns) {
+                    if forward {
+                        pattern.tracks.push(column.clone());
+                    } else {
+                        pattern.tracks.pop();
+                    }
+                }
+                if forward {
+                    project.instruments.push(instrument);
+                } else {
+                    project.instruments.pop();
+                }
+            }
             Self::Cell {
                 pattern,
                 track,
@@ -124,6 +147,25 @@ pub struct Edit<'a> {
 }
 
 impl Edit<'_> {
+    /// Append a shared Pluck track after checking all allocation limits.
+    pub fn append_track(&mut self) {
+        if !self.project.can_append_track() {
+            return;
+        }
+        let columns: Vec<Track> = self
+            .project
+            .patterns
+            .iter()
+            .map(|pattern| vec![PatternStep::default(); pattern.num_rows])
+            .collect();
+        let change = Mutation::Track {
+            columns,
+            instrument: Instrument::Pluck,
+        };
+        change.apply(self.project, true);
+        self.changes.push(change);
+    }
+
     /// Append only after checking the same allocation limits as version 1 files.
     pub fn append_pattern(&mut self, source: usize, duplicate: bool) {
         use crate::project_file::{MAX_CELLS, MAX_PATTERNS, MAX_ROWS, MAX_TRACKS};
@@ -228,7 +270,7 @@ impl History {
         self.revision
     }
 
-    /// Record an edit; return whether the order actually changed, even if the
+    /// Record an edit; return whether tracks or the order actually changed, even if the
     /// transaction exceeds the retention budget. Callers must cancel playback
     /// before the next runtime update when this returns true.
     ///
@@ -240,20 +282,28 @@ impl History {
             changes: Vec::new(),
         };
         operation(&mut edit);
-        let mut combined = BTreeMap::<_, Mutation>::new();
+        // Structural changes are barriers: cells and patterns may only exist on
+        // one side of them. Coalesce value writes without reordering operations.
+        let mut combined = BTreeMap::<_, usize>::new();
+        let mut changes: Vec<Mutation> = Vec::new();
         for change in edit.changes {
-            match combined.entry(change.key()) {
-                std::collections::btree_map::Entry::Occupied(mut entry) => entry.get_mut().merge(change),
-                std::collections::btree_map::Entry::Vacant(entry) => {
-                    entry.insert(change);
-                }
+            if matches!(change, Mutation::Pattern { .. } | Mutation::Track { .. }) {
+                combined.clear();
+                changes.push(change);
+            } else if let Some(&index) = combined.get(&change.key()) {
+                changes[index].merge(change);
+            } else {
+                combined.insert(change.key(), changes.len());
+                changes.push(change);
             }
         }
-        let changes: Vec<_> = combined.into_values().filter(Mutation::changed).collect();
+        changes.retain(Mutation::changed);
         if changes.is_empty() {
             return false;
         }
-        let order_changed = changes.iter().any(|change| matches!(change, Mutation::Order { .. }));
+        let shape_or_order_changed = changes
+            .iter()
+            .any(|change| matches!(change, Mutation::Order { .. } | Mutation::Track { .. }));
         while self.entries.len() > self.position {
             self.mutations -= self.entries.pop_back().expect("redo entry").weight();
         }
@@ -270,7 +320,7 @@ impl History {
             self.mutations -= self.entries.pop_front().expect("over budget").weight();
         }
         self.position = self.entries.len();
-        order_changed
+        shape_or_order_changed
     }
 
     #[must_use]

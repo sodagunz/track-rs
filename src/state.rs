@@ -236,6 +236,16 @@ impl App {
             | Command::ToggleSong
             | Command::Undo
             | Command::Redo => self.handle_arrangement(command),
+            Command::AddTrack => {
+                if self.project.can_append_track() {
+                    self.edit(|edit| {
+                        edit.append_track();
+                    });
+                    self.cursor_track = self.project.instruments().len() - 1;
+                } else {
+                    self.status = "Track/cell limit reached (128 tracks, 1,000,000 cells)".into();
+                }
+            }
             Command::OpenPrompt => self.open_prompt(),
             Command::EnterInsert => {
                 self.mode = Mode::Insert;
@@ -367,6 +377,7 @@ impl App {
                     self.selected_order = self.selected_order.min(self.project.order.len() - 1);
                     self.playing_pattern = self.playing_pattern.min(self.project.patterns.len() - 1);
                     self.playing_order = self.playing_order.min(self.project.order.len() - 1);
+                    self.finish_selection();
                     self.switch_pattern(self.selected_pattern.min(self.project.patterns.len() - 1));
                 }
             }
@@ -581,6 +592,9 @@ impl App {
         if self.history.edit(&mut self.project, operation) {
             self.stop_playback();
             self.selected_order = self.selected_order.min(self.project.order.len() - 1);
+            self.finish_selection();
+            self.pending_count = None;
+            self.offset_cursor(&CursorOffset::None, &CursorOffset::None);
         }
     }
 

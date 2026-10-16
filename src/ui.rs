@@ -555,6 +555,23 @@ mod tests {
     }
 
     #[test]
+    fn added_fifth_track_scrolls_into_view_through_real_key() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::default();
+        crate::bindings::handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL), &mut app);
+        let mut terminal = Terminal::new(TestBackend::new(45, 9)).unwrap();
+        terminal.draw(|f| render(f, &app)).unwrap();
+        assert!(screen(&terminal).contains("5 Pluck"));
+        assert!(!screen(&terminal).contains("1 Pluck"));
+        assert!(terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .any(|cell| cell.bg == Color::Green));
+    }
+
+    #[test]
     fn narrow_viewport_follows_selected_track_and_last_row_not_playback() {
         let mut app = App {
             cursor_row: 63,

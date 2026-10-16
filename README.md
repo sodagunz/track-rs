@@ -5,15 +5,6 @@
 This project is mostly intended as a fidget and a tribute to retro digital
 audio. Sorry Mario, your blazingly fast modern tracker is in another repo.
 
-### AI Disclosure
-
-After letting an initial PoC gather dust for about a year, I came back to it and
-felt like I was doing myself a disservice by attempting to manually tackle
-everything when I rarely got time for hobby projects. Hence most development
-is now AI assisted, and I'll only manually tackle stuff I find interesting.
-
-There's still a human on the driver seat, at least for the time being.
-
 ### Controls
 
 Start in Normal mode. `i` enters Insert, `v` selects a rectangle, `Esc` returns
@@ -35,6 +26,7 @@ instrument. Percussion ignores note pitch.
 In Normal mode:
 
 - PageUp/PageDown switches patterns; Ctrl-n creates one, Ctrl-d duplicates it.
+- Ctrl-t adds a track to every pattern and selects it.
 - Ctrl-Left/Right selects an order entry. Ctrl-a appends the edited pattern,
   Ctrl-x removes an entry, and Ctrl-Up/Down reorders it.
 - `O` toggles Pattern/Song playback, stopping audio; Space starts it again.
@@ -79,3 +71,12 @@ ALSA_CONFIG_PATH="$PWD/.github/ci/alsa.conf" cargo run --locked --example just_a
 ```
 
 It exits after a second. This checks stream setup, not how it sounds.
+
+### AI Disclosure
+
+After letting an initial PoC gather dust for about a year, I came back to it and
+felt like I was doing myself a disservice by attempting to manually tackle
+everything when I rarely got time for hobby projects. Hence most development
+is now AI assisted, and I'll only manually tackle stuff I find interesting.
+
+There's still a human on the driver seat, at least for the time being.

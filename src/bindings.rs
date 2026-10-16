@@ -54,6 +54,16 @@ impl Binding {
 pub const DEFAULT_BINDINGS: &[Binding] = &[
     Binding {
         modes: &[Mode::Normal],
+        modifiers: KeyModifiers::CONTROL,
+        ..Binding::new(
+            KeyCode::Char('t'),
+            Command::AddTrack,
+            "Append track to all patterns",
+            "Arrangement",
+        )
+    },
+    Binding {
+        modes: &[Mode::Normal],
         ..Binding::new(
             KeyCode::PageUp,
             Command::PreviousPattern,
