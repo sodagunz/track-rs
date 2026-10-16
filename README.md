@@ -16,15 +16,47 @@ There's still a human on the driver seat, at least for the time being.
 
 ### Controls
 
-`?` opens help; `?` or `Esc` closes it. `Up`/`Down` scrolls help, `q` or `Q`
-quits. While help is open, editing and playback toggles are blocked, but playback
-keeps running.
+Start in Normal mode. `i` enters Insert, `v` selects a rectangle, `Esc` returns
+to Normal. `hjkl` moves in every mode; Normal/Visual accepts counts like `16j`.
+`?` shows the bindings for each mode. Help blocks editing, not playback.
 
-`-`/`+` adjusts BPM by 1 (20–300). `f`/`r` lowers/raises the selected note
-one semitone (C0–B9); empty cells stay empty. Note-entry octave is unchanged.
+In Insert, `zxcvbnm,` enters notes, `a`/`s` changes octave, and `f`/`r` lowers/raises
+a note one semitone. Tab cycles entry steps of 0/1/2/4 rows.
 
-`[`/`]` cycles the selected track’s instrument: Pluck (default), Sine, Square, Saw,
-Kick, Snare, HiHat. Percussion ignores pitch; new presets play dry.
+Normal `y` copies, `d` cuts, `p` pastes, and `x`/Delete clears. Visual `y`/`d`/`x`
+acts on the rectangle and returns to Normal. Paste includes empty cells and clips
+at pattern edges. `u` undoes; Ctrl-r redoes. Bulk edits undo together.
+
+Space toggles playback, `-`/`+` adjusts BPM (20–300), and `[`/`]` changes the track's
+instrument. Percussion ignores note pitch.
+
+### Patterns and order
+
+In Normal mode:
+
+- PageUp/PageDown switches patterns; Ctrl-n creates one, Ctrl-d duplicates it.
+- Ctrl-Left/Right selects an order entry. Ctrl-a appends the edited pattern,
+  Ctrl-x removes an entry, and Ctrl-Up/Down reorders it.
+- `O` toggles Pattern/Song playback, stopping audio; Space starts it again.
+
+Pattern playback loops the pattern selected at start; Song loops the order.
+Switching the edited pattern doesn't retarget playback. Order edits and
+undo/redo of structural edits stop audio. The order must keep at least one entry.
+
+For A/A/B: write A, Ctrl-a, Ctrl-d, edit B, Ctrl-a, then `O` and Space.
+
+### Project files
+
+In Normal mode, `:w my song.json` saves, `:w` saves again, and `:e my song.json`
+loads. Paths can contain spaces; they're literal, without quotes or shell expansion.
+Esc cancels the prompt. `:wq` saves and quits.
+
+`q`/`:q` and `:e` refuse to discard unsaved edits. Use `:q!` or `:e! path` to force
+it. A failed load leaves your project alone; a successful load stops playback and
+clears undo history. The footer marks unsaved changes with `*`.
+
+The JSON format is experimental and versioned. Unsupported versions are rejected;
+[format limits](src/project_file.rs) keep malformed files from allocating huge projects.
 
 ### Dev
 

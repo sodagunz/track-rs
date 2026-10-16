@@ -3,6 +3,25 @@ use crate::tracker::{Instrument, NotePitch};
 /// User actions, independent of terminal input and the current editor state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
+    PreviousPattern,
+    NextPattern,
+    NewPattern,
+    DuplicatePattern,
+    PreviousOrder,
+    NextOrder,
+    AppendOrder,
+    RemoveOrder,
+    OrderEarlier,
+    OrderLater,
+    ToggleSong,
+    OpenPrompt,
+    Undo,
+    Redo,
+    EnterInsert,
+    ToggleVisual,
+    EnterNormal,
+    CountDigit(u8),
+    MoveCursor { rows: i32, tracks: i32 },
     Quit,
     ToggleHelp,
     DismissHelp,
@@ -15,6 +34,10 @@ pub enum Command {
     MoveCursorRight,
     InsertNote { pitch: NotePitch, octave_offset: u8 },
     DeleteNote,
+    Copy,
+    Cut,
+    Paste,
+    CycleEditStep,
     PreviousInstrument,
     NextInstrument,
     SetInstrument(Instrument),
@@ -30,6 +53,23 @@ impl Command {
     /// Whether holding a key should perform this action repeatedly.
     #[must_use]
     pub const fn allows_repeat(self) -> bool {
-        !matches!(self, Self::Quit | Self::TogglePlayback | Self::ToggleHelp)
+        matches!(
+            self,
+            Self::MoveCursorUp
+                | Self::MoveCursorDown
+                | Self::MoveCursorLeft
+                | Self::MoveCursorRight
+                | Self::MoveCursor { .. }
+                | Self::ScrollHelpUp
+                | Self::ScrollHelpDown
+                | Self::PreviousInstrument
+                | Self::NextInstrument
+                | Self::DecreaseTempo
+                | Self::IncreaseTempo
+                | Self::LowerNote
+                | Self::RaiseNote
+                | Self::DecreaseOctave
+                | Self::IncreaseOctave
+        )
     }
 }

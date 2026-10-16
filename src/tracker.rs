@@ -1,8 +1,9 @@
 use anyhow::anyhow;
 use fundsp::math::midi_hz;
+use serde::{Deserialize, Serialize};
 
 /// Built-in voices. Percussion ignores note pitch and uses fixed drum tuning.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Instrument {
     #[default]
     Pluck,
@@ -45,18 +46,23 @@ impl Instrument {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NotePitch {
     C,
+    #[serde(rename = "C#")]
     Cs,
     D,
+    #[serde(rename = "D#")]
     Ds,
     E,
     F,
+    #[serde(rename = "F#")]
     Fs,
     G,
+    #[serde(rename = "G#")]
     Gs,
     A,
+    #[serde(rename = "A#")]
     As,
     B,
 }
@@ -99,7 +105,8 @@ impl std::fmt::Display for NotePitch {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Note {
     pub pitch: NotePitch,
     pub octave: u8,
@@ -141,18 +148,17 @@ impl Note {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PatternStep {
     pub note: Option<Note>,
 }
 
 pub type Track = Vec<PatternStep>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pattern {
     pub num_rows: usize,
     pub tracks: Vec<Track>,
-    instruments: Vec<Instrument>,
 }
 
 impl Pattern {
@@ -161,21 +167,6 @@ impl Pattern {
         Self {
             num_rows,
             tracks: vec![vec![PatternStep::default(); num_rows]; num_tracks],
-            instruments: vec![Instrument::default(); num_tracks],
-        }
-    }
-
-    /// Tracks appended through the public vector default to Pluck. Assignments follow indices.
-    #[must_use]
-    pub fn instrument(&self, track: usize) -> Instrument {
-        self.instruments.get(track).copied().unwrap_or_default()
-    }
-
-    /// Assign an existing track; invalid track indices are ignored.
-    pub fn set_instrument(&mut self, track: usize, instrument: Instrument) {
-        if track < self.tracks.len() {
-            self.instruments.resize(self.tracks.len(), Instrument::default());
-            self.instruments[track] = instrument;
         }
     }
 

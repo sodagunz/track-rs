@@ -40,25 +40,37 @@ fn main_loop<W: std::io::Write>(
     let mut pending = None;
     loop {
         if let Some(key) = pending.take() {
-            if let Some(command) = bindings::resolve(key) {
-                app_state.handle_command(command);
-            }
+            bindings::handle_key(key, app_state);
         }
         let playing = !app_state.shutdown && matches!(app_state.playback_state, PlaybackState::Playing);
-        if was_playing && !playing {
+        let stop_requested = app_state.take_stop_request();
+        if stop_requested {
+            transport.stop();
+        }
+        if stop_requested || (was_playing && !playing) {
             audio_engine.stop();
         }
         was_playing = playing;
         let now = Instant::now();
-        if let Some(row) = transport.update(
+        if let Some(event) = transport.update_project(
             now,
             playing,
-            app_state.pattern.num_rows,
-            app_state.bpm,
+            &app_state.project,
+            if app_state.playback_mode == track_rs::state::PlaybackMode::Song {
+                track_rs::transport::PlaybackRoute::Song
+            } else {
+                track_rs::transport::PlaybackRoute::Pattern(app_state.playing_pattern)
+            },
             track_rs::transport::DEFAULT_ROWS_PER_BEAT,
         ) {
-            app_state.playback_row = row.row;
-            for event in track_rs::transport::collect_row(&app_state.pattern, row) {
+            app_state.playback_row = event.row.row;
+            app_state.playing_pattern = event.pattern;
+            app_state.playing_order = event.order.unwrap_or(0);
+            for event in track_rs::transport::collect_row(
+                &app_state.project.patterns[event.pattern],
+                app_state.project.instruments(),
+                event.row,
+            ) {
                 audio_engine.play_event(event);
             }
         }
