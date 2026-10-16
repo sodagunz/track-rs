@@ -43,6 +43,7 @@ pub enum PlaybackState {
     reason = "Input repeat suppression, help, shutdown, and transport stop flags are independent."
 )]
 pub struct App {
+    pub arrangement_visible: bool,
     pub(crate) history: History,
     // Track-major owned snapshot; None cells are part of the rectangle.
     pub(crate) clipboard: Vec<Vec<Option<Note>>>,
@@ -83,6 +84,14 @@ pub enum CursorOffset {
 }
 
 impl CursorOffset {
+    const fn from_delta(value: i32) -> Self {
+        if value < 0 {
+            Self::Neg(value.unsigned_abs() as usize)
+        } else {
+            Self::Pos(value.unsigned_abs() as usize)
+        }
+    }
+
     const fn apply_to(&self, position: usize) -> usize {
         match self {
             Self::Pos(delta) => position.saturating_add(*delta),
@@ -97,6 +106,7 @@ impl Default for App {
         let default_rows = 64;
         let default_tracks = 4;
         Self {
+            arrangement_visible: false,
             history: History::default(),
             clipboard: Vec::new(),
             edit_step: 0,
@@ -256,6 +266,11 @@ impl App {
             Command::CountDigit(_) => {}
             _ if self.help_visible => {}
 
+            Command::ShowPattern | Command::ShowArrangement => {
+                self.arrangement_visible = command == Command::ShowArrangement;
+                self.pending_count = None;
+            }
+            _ if self.arrangement_visible && !command.available_in_arrangement() => {}
             Command::PreviousPattern
             | Command::NextPattern
             | Command::NewPattern
@@ -287,14 +302,7 @@ impl App {
                 }
             }
             Command::MoveCursor { rows, tracks } => {
-                let offset = |value: i32| {
-                    if value < 0 {
-                        CursorOffset::Neg(value.unsigned_abs() as usize)
-                    } else {
-                        CursorOffset::Pos(value.unsigned_abs() as usize)
-                    }
-                };
-                self.offset_cursor(&offset(rows), &offset(tracks));
+                self.offset_cursor(&CursorOffset::from_delta(rows), &CursorOffset::from_delta(tracks));
             }
             Command::FirstTrack | Command::FirstRow | Command::LastRow | Command::LastTrack => self.jump(command),
             Command::TogglePlayback => self.toggle_playback(),

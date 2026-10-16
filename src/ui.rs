@@ -69,7 +69,7 @@ impl<W: std::io::Write> TUI<W> {
 fn render(f: &mut Frame, state: &App) {
     let area = f.area();
     let title_rows = u16::from(area.height >= 6);
-    let order_rows = u16::from(area.height >= 7);
+    let order_rows = u16::from(area.height >= 7 && !state.arrangement_visible);
     let hint_rows = u16::from(area.height > 0 && (state.prompt.is_some() || !state.status.is_empty()));
     let status_rows = u16::from(area.height.saturating_sub(hint_rows) >= 3);
     if title_rows > 0 {
@@ -78,7 +78,12 @@ fn render(f: &mut Frame, state: &App) {
     if order_rows > 0 {
         draw_order(f, Rect::new(area.x, area.y + title_rows, area.width, 1), state);
     }
-    draw_pattern_editor(
+    let draw_panel = if state.arrangement_visible {
+        draw_arrangement
+    } else {
+        draw_pattern_editor
+    };
+    draw_panel(
         f,
         Rect::new(
             area.x,
@@ -305,6 +310,51 @@ fn draw_help(f: &mut Frame, state: &App) {
             Rect::new(inner.x, inner.bottom() - footer_rows + row, inner.width, 1),
         );
     }
+}
+
+fn draw_arrangement(f: &mut Frame, area: Rect, state: &App) {
+    if area.height == 0 {
+        return;
+    }
+    f.render_widget(
+        Paragraph::new("Arrangement | F1 Pattern | F2 Order"),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
+    let visible = usize::from(area.height.saturating_sub(1));
+    let start = state.selected_order.saturating_add(1).saturating_sub(visible);
+    let lines: Vec<_> = state
+        .project
+        .order
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(visible)
+        .map(|(index, &pattern)| {
+            let selected = index == state.selected_order;
+            let playing = matches!(state.playback_state, crate::state::PlaybackState::Playing)
+                && state.playback_mode == crate::state::PlaybackMode::Song
+                && index == state.playing_order;
+            Line::styled(
+                format!(
+                    "{}{} O{index} P{pattern}  {} rows",
+                    if selected { "]" } else { " " },
+                    if playing { ">" } else { " " },
+                    state.project.patterns[pattern].num_rows
+                ),
+                if selected {
+                    Style::default().fg(Color::Black).bg(Color::Cyan)
+                } else if playing {
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                },
+            )
+        })
+        .collect();
+    f.render_widget(
+        Paragraph::new(lines),
+        Rect::new(area.x, area.y + 1, area.width, area.height - 1),
+    );
 }
 
 fn draw_order(f: &mut Frame, area: Rect, state: &App) {
@@ -1043,6 +1093,115 @@ mod tests {
         assert!(path.exists());
         assert!(app.status.contains(&path.display().to_string()));
         assert!(app.prompt.is_none());
+    }
+
+    #[test]
+    fn arrangement_keys_preserve_editor_and_transport_and_block_hidden_edits() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+        let mut app = App::default();
+        let press = |app: &mut App, code| {
+            crate::bindings::handle_key(KeyEvent::new(code, KeyModifiers::NONE), app);
+        };
+        app.cursor_row = 17;
+        app.handle_command(Command::TogglePlayback);
+        press(&mut app, KeyCode::Char('2'));
+        press(&mut app, KeyCode::F(2));
+        assert!(app.arrangement_visible);
+        assert!(app.pending_count.is_none());
+        assert!(!app.is_dirty());
+        for code in [
+            KeyCode::Char('i'),
+            KeyCode::Char('v'),
+            KeyCode::Char('j'),
+            KeyCode::Char('x'),
+        ] {
+            press(&mut app, code);
+        }
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.cursor_row, 17);
+        assert!(!app.is_dirty());
+        assert!(matches!(app.playback_state, crate::state::PlaybackState::Playing));
+        press(&mut app, KeyCode::Char('?'));
+        press(&mut app, KeyCode::F(1));
+        assert!(app.arrangement_visible);
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char(':'));
+        press(&mut app, KeyCode::F(1));
+        assert!(app.arrangement_visible);
+        press(&mut app, KeyCode::Esc);
+        let mut repeat = KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE);
+        repeat.kind = KeyEventKind::Repeat;
+        crate::bindings::handle_key(repeat, &mut app);
+        assert!(app.arrangement_visible);
+        press(&mut app, KeyCode::F(1));
+        assert!(!app.arrangement_visible);
+        assert_eq!(app.cursor_row, 17);
+        assert!(!app.is_dirty());
+    }
+
+    #[test]
+    fn arrangement_real_keys_edit_order_and_undo_without_switching_buffers() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::default();
+        let key = |app: &mut App, code, modifiers| {
+            crate::bindings::handle_key(KeyEvent::new(code, modifiers), app);
+        };
+        key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+        key(&mut app, KeyCode::Char('n'), KeyModifiers::CONTROL);
+        assert_eq!(app.selected_pattern, 1);
+        key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        assert_eq!(app.project.order, [0, 1]);
+        key(&mut app, KeyCode::Up, KeyModifiers::CONTROL);
+        assert_eq!(app.project.order, [1, 0]);
+        key(&mut app, KeyCode::Char('u'), KeyModifiers::NONE);
+        assert_eq!(app.project.order, [0, 1]);
+        key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert_eq!(app.project.order, [1, 0]);
+        key(&mut app, KeyCode::Right, KeyModifiers::CONTROL);
+        assert_eq!(app.selected_order, 1);
+        assert_eq!(app.selected_pattern, 1);
+        key(&mut app, KeyCode::Char('x'), KeyModifiers::CONTROL);
+        assert_eq!(app.project.order, [1]);
+        key(&mut app, KeyCode::Char('u'), KeyModifiers::NONE);
+        assert_eq!(app.project.order, [1, 0]);
+        assert!(app.arrangement_visible);
+        key(&mut app, KeyCode::F(1), KeyModifiers::NONE);
+        key(&mut app, KeyCode::Char('u'), KeyModifiers::NONE);
+        assert_eq!(app.project.order, [0, 1]);
+    }
+
+    #[test]
+    fn arrangement_scrolls_selected_entries_and_distinguishes_repeated_playback() {
+        let mut app = App::default();
+        app.handle_command(Command::ShowArrangement);
+        for _ in 0..24 {
+            app.handle_command(Command::AppendOrder);
+        }
+        app.selected_order = 23;
+        app.playing_order = 22;
+        app.playback_mode = crate::state::PlaybackMode::Song;
+        app.playback_state = crate::state::PlaybackState::Playing;
+        for (width, height) in [(80, 24), (24, 6), (20, 4)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|f| render(f, &app)).unwrap();
+            let text = screen(&terminal);
+            assert!(text.contains("]  O23 P0"), "{text}");
+            if height > 4 {
+                assert!(text.contains(" > O22 P0"), "{text}");
+            }
+        }
+        app.handle_command(Command::RemoveOrder);
+        assert_eq!(app.project.order.len(), 24);
+        app.handle_command(Command::Undo);
+        assert_eq!(app.project.order.len(), 25);
+        app.handle_command(Command::Redo);
+        assert_eq!(app.project.order.len(), 24);
+        for width in 0..12 {
+            for height in 0..5 {
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal.draw(|f| render(f, &app)).unwrap();
+            }
+        }
     }
 
     #[test]

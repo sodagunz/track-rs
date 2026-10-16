@@ -31,7 +31,14 @@ Pad, Drone, and Sustain hold pitched notes; OpenHat rings longer than HiHat. Per
 
 ### Patterns and order
 
-In Normal mode:
+Normal `F2` opens the scrolling arrangement view; `F1` returns to the pattern
+editor. The view keeps the selected order entry visible: `]` marks selection,
+`>` marks the playing Song entry. Repeated patterns have separate entries.
+Panel switching doesn't stop playback or change the document. Help and `:` keep
+input priority. Note edits and grid motions are blocked while the grid is hidden.
+F3/F4 panels aren't implemented.
+
+In Normal mode (in either view):
 
 - PageUp/PageDown switches patterns; Ctrl-n creates one, Ctrl-d duplicates it.
 - Ctrl-t adds a track to every pattern and selects it.
