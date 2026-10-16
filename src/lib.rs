@@ -27,3 +27,6 @@ mod project_tests;
 
 #[cfg(test)]
 mod length_tests;
+
+#[cfg(test)]
+mod mixer_tests;

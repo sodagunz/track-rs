@@ -1,4 +1,4 @@
-//! Version 2 JSON with strict version 1 migration. Decode and validate completely before
+//! Version 3 JSON with explicit version 1/2 migration. Decode and validate completely before
 //! installation.
 use std::{
     fs::File,
@@ -23,11 +23,22 @@ pub const MAX_ORDER: usize = 65_536;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Document<N = Note> {
+struct LegacyDocument<N = Note> {
     version: u32,
     bpm: f64,
     instruments: Vec<Instrument>,
     patterns: Vec<StoredPattern<N>>,
+    order: Vec<usize>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Document {
+    version: u32,
+    bpm: f64,
+    instruments: Vec<Instrument>,
+    channels: Vec<crate::project::ChannelSettings>,
+    patterns: Vec<StoredPattern>,
     order: Vec<usize>,
 }
 
@@ -41,7 +52,7 @@ struct StoredPattern<N = Note> {
 
 impl Document {
     fn validate(&self) -> anyhow::Result<()> {
-        ensure!(self.version == 2, "Unsupported project version {}", self.version);
+        ensure!(self.version == 3, "Unsupported project version {}", self.version);
         ensure!(
             self.bpm.is_finite() && (20.0..=300.0).contains(&self.bpm),
             "BPM must be finite and between 20 and 300"
@@ -61,6 +72,10 @@ impl Document {
         ensure!(
             self.order.iter().all(|&index| index < self.patterns.len()),
             "Invalid order reference"
+        );
+        ensure!(
+            self.channels.len() == self.instruments.len() && self.channels.iter().all(|c| c.is_valid()),
+            "Invalid channel settings or dimensions"
         );
         let mut total = 0_usize;
         for pattern in &self.patterns {
@@ -90,6 +105,14 @@ struct Header {
     version: u32,
 }
 
+fn neutral_channels(tracks: usize) -> anyhow::Result<Vec<crate::project::ChannelSettings>> {
+    ensure!(
+        (1..=MAX_TRACKS).contains(&tracks),
+        "Track count must be 1..={MAX_TRACKS}"
+    );
+    Ok(vec![crate::project::ChannelSettings::default(); tracks])
+}
+
 /// Read at most 16 MiB, then validate all dimensions and values.
 ///
 /// # Errors
@@ -99,7 +122,7 @@ pub fn load(path: &Path) -> anyhow::Result<Project> {
     File::open(path)?.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes)?;
     ensure!(bytes.len() as u64 <= MAX_FILE_BYTES, "Project exceeds 16 MiB");
     let header: Header = serde_json::from_slice(&bytes)?;
-    if !matches!(header.version, 1 | 2) {
+    if !matches!(header.version, 1..=3) {
         bail!("Unsupported project version {}", header.version);
     }
     let document = if header.version == 1 {
@@ -109,9 +132,10 @@ pub fn load(path: &Path) -> anyhow::Result<Project> {
             pitch: crate::tracker::NotePitch,
             octave: u8,
         }
-        let legacy: Document<LegacyNote> = serde_json::from_slice(&bytes)?;
+        let legacy: LegacyDocument<LegacyNote> = serde_json::from_slice(&bytes)?;
         Document {
-            version: 2,
+            version: 3,
+            channels: neutral_channels(legacy.instruments.len())?,
             bpm: legacy.bpm,
             instruments: legacy.instruments,
             order: legacy.order,
@@ -140,6 +164,16 @@ pub fn load(path: &Path) -> anyhow::Result<Project> {
                 })
                 .collect(),
         }
+    } else if header.version == 2 {
+        let legacy: LegacyDocument = serde_json::from_slice(&bytes)?;
+        Document {
+            version: 3,
+            channels: neutral_channels(legacy.instruments.len())?,
+            bpm: legacy.bpm,
+            instruments: legacy.instruments,
+            patterns: legacy.patterns,
+            order: legacy.order,
+        }
     } else {
         serde_json::from_slice(&bytes)?
     };
@@ -158,6 +192,7 @@ pub fn load(path: &Path) -> anyhow::Result<Project> {
         })
         .collect();
     Ok(Project {
+        channels: document.channels,
         bpm: document.bpm,
         instruments: document.instruments,
         patterns,
@@ -171,7 +206,8 @@ pub fn load(path: &Path) -> anyhow::Result<Project> {
 /// Returns validation, serialization, or filesystem errors. The target is not truncated.
 pub fn save(project: &Project, path: &Path) -> anyhow::Result<()> {
     let document = Document {
-        version: 2,
+        version: 3,
+        channels: project.channels.clone(),
         bpm: project.bpm,
         instruments: project.instruments.clone(),
         patterns: project

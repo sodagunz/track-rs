@@ -52,7 +52,18 @@ pub(super) struct Presentation<'a>(pub(super) &'a App);
 impl Presentation<'_> {
     pub(super) fn mode(&self) -> String {
         let app = self.0;
-        let mut text = app.mode.label().to_owned();
+        let mut text = match app.view {
+            crate::state::View::Pattern => app.mode.label().to_owned(),
+            view => format!(
+                "{} {}",
+                match view {
+                    crate::state::View::Arrangement => "ARRANGEMENT",
+                    crate::state::View::Mixer => "MIXER",
+                    _ => "INSTRUMENT",
+                },
+                app.mode.label()
+            ),
+        };
         if let Some(count) = app.pending_count {
             let _ = write!(text, " Count:{count}");
         }
@@ -64,6 +75,21 @@ impl Presentation<'_> {
 
     pub(super) fn cursor(&self) -> String {
         let app = self.0;
+        match app.view {
+            crate::state::View::Arrangement => return format!("O{}", app.selected_order),
+            crate::state::View::Instrument => {
+                return format!("T{}", track_number(app.cursor_track));
+            }
+            crate::state::View::Mixer => {
+                return format!(
+                    "T{} {} {}",
+                    track_number(app.cursor_track),
+                    if app.cursor_row == 0 { "Volume" } else { "Pan" },
+                    app.project.channels()[app.cursor_track].label(app.cursor_row)
+                )
+            }
+            crate::state::View::Pattern => {}
+        }
         format!(
             "{} R{} T{}",
             pattern_label(app.selected_pattern),
@@ -91,6 +117,13 @@ impl Presentation<'_> {
 
     pub(super) fn context(&self) -> String {
         let app = self.0;
+        if app.view != crate::state::View::Pattern {
+            return match app.view {
+                crate::state::View::Arrangement => format!("Order {}", app.selected_order),
+                crate::state::View::Mixer => "Stereo balance | boosts can clip".into(),
+                _ => format!("Voice: {}", app.project.instrument(app.cursor_track).label()),
+            };
+        }
         if app.mode == Mode::Visual {
             return self.selection();
         }

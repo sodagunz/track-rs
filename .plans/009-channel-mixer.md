@@ -1,6 +1,8 @@
 # 009 — Channel mixer
 
-Status: planned. F3 currently lists tracks; it doesn't mix them.
+Status: view-local foundation and working volume/pan slice implemented, awaiting
+review. F3 now changes per-track audio. Tone controls and bulk-edit polish remain
+unimplemented.
 
 Build a usable gain/pan mixer first, then add the requested tone controls. No
 parametric EQ, routing graph, sends, automation, or custom effects in this plan.
@@ -136,6 +138,55 @@ can clip and test finite output even when it exceeds the device range.
    grouped repeat undo, scrolling and narrow-terminal tests. Add per-channel stereo
    peak meters and a master clip indicator only after the controls work; meters
    must not allocate or lock the callback and aren't saved or undoable.
+
+### Foundation progress (2026-10-16)
+
+- Views save and restore their own mode, cursor and selection. F1–F4 work from
+  Pattern Normal/Insert/Visual, including pending counts/prefixes; help and prompts
+  retain priority. Playback starts use the preserved pattern cursor.
+- Command availability is shared by resolution, dispatch and registry-derived help.
+  F3/F4 keep working voice edits and counted horizontal navigation without hidden
+  pattern edits. Status reports the active panel/voice rather than hidden notes.
+- Structural edits/history invalidate saved selections; restored cursors clamp to
+  current dimensions. Loading resets saved view state.
+- Deferred to the working gain/pan slice: mixer control rows, Insert adjustment,
+  numeric prompts and resets. Visual bulk edits remain slice 4. No inert controls
+  or new audio behavior are exposed by this foundation.
+- Validation: formatting check, strict all-target Clippy and all-target nextest
+  pass (132 tests, none skipped). Regression coverage includes real keys, saved
+  Insert/Visual state, independent cursors, count/prefix clearing, help/prompt
+  priority, hidden-edit prevention, structural undo and view-specific help/status.
+- Listening and real-terminal readability/navigation review remain pending.
+
+### Volume/pan progress (2026-10-16)
+
+- Per-track validated volume/pan targets, neutral new tracks, value-diff history,
+  no-op/dirty handling and v3 persistence are implemented. Strict v1/v2 decoders
+  migrate to neutral settings; v1 note-length migration is preserved.
+- F3 has only working Volume/Pan rows, horizontally scrolling channels, selected
+  cell/channel cues and parameter labels. Normal navigates; Insert adjusts with
+  counts/arrows, numeric prompts and resets. Numeric errors leave the document
+  and history untouched. View-local state and hidden-note protection are retained.
+- Persistent channel gain processors run after active/retrigger-release sums,
+  before the master sum. Stereo balance preserves centre width and doesn't boost
+  endpoints. Linear 10 ms gain ramps affect held notes, tails and F4 audition.
+  Stop/replacement resets ramp memory to current targets, without losing settings.
+- The main loop synchronizes changed targets before transport/audition triggers,
+  including history, appended tracks and load. Unchanged targets send nothing.
+  No voice rebuilding, filter graphs or mixer allocations were added to the callback.
+- The legacy `AudioEngine::play`/sequencer example deliberately has no track mixer;
+  project playback and F4 audition both use the processed `play_event` path.
+- Validation: strict all-target Clippy and all-target nextest pass (139 tests,
+  none skipped); warning-as-error docs/doctests and the ALSA-null `just_a_note`
+  example pass. Coverage includes real keys, transactional numeric rejection,
+  v3 round trips/v2 migration, append/history/load target ordering, track isolation,
+  held notes/release tails, balance endpoints, neutral processing, finite boosted
+  output, and ramp duration at 8/44.1/48/96 kHz.
+- Remaining: tone controls (slice 3); mixer Visual/bulk edits, grouped held-key
+  undo and meters (slice 4). Mixer Visual isn't exposed. Counted adjustments are
+  atomic; repeat events currently produce separate undo entries. Small-terminal
+  rendering has automated coverage, but listening and real-terminal interaction
+  checks remain pending. Boost can clip; no limiter or click-free claim is added.
 
 Each slice gets a short plan update, focused tests, formatting, strict Clippy and
 all-target nextest before committing/pushing a stacked PR. Run docs and the null

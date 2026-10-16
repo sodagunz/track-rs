@@ -2,7 +2,7 @@
 use std::collections::{BTreeMap, VecDeque};
 
 use crate::{
-    project::Project,
+    project::{ChannelSettings, Project},
     tracker::{Instrument, Note, Pattern, PatternStep, Track},
 };
 
@@ -39,6 +39,11 @@ enum Mutation {
         before: Instrument,
         after: Instrument,
     },
+    Channel {
+        track: usize,
+        before: ChannelSettings,
+        after: ChannelSettings,
+    },
     Tempo {
         before: f64,
         after: f64,
@@ -65,6 +70,7 @@ impl Mutation {
                 pattern, track, row, ..
             } => (1, pattern, track, row),
             Self::Instrument { track, .. } => (2, 0, track, 0),
+            Self::Channel { track, .. } => (6, 0, track, 0),
             Self::Tempo { .. } => (3, 0, 0, 0),
             Self::Pattern { index, .. } => (0, index, 0, 0),
             Self::Order { .. } => (4, 0, 0, 0),
@@ -77,6 +83,7 @@ impl Mutation {
         match *self {
             Self::Cell { before, after, .. } => before != after,
             Self::Instrument { before, after, .. } => before != after,
+            Self::Channel { before, after, .. } => before != after,
             Self::Tempo { before, after } => before != after,
             Self::Pattern { .. } | Self::Track { .. } => true,
             Self::Order { ref before, ref after } => before != after,
@@ -87,6 +94,7 @@ impl Mutation {
         match (self, next) {
             (Self::Cell { after, .. }, Self::Cell { after: value, .. }) => *after = value,
             (Self::Instrument { after, .. }, Self::Instrument { after: value, .. }) => *after = value,
+            (Self::Channel { after, .. }, Self::Channel { after: value, .. }) => *after = value,
             (Self::Tempo { after, .. }, Self::Tempo { after: value, .. }) => *after = value,
             (Self::Order { after, .. }, Self::Order { after: value, .. }) => *after = value,
             _ => unreachable!("same mutation key"),
@@ -108,8 +116,10 @@ impl Mutation {
                 }
                 if forward {
                     project.instruments.push(instrument);
+                    project.channels.push(ChannelSettings::default());
                 } else {
                     project.instruments.pop();
+                    project.channels.pop();
                 }
             }
             Self::Cell {
@@ -126,6 +136,7 @@ impl Mutation {
             Self::Instrument { track, before, after } => {
                 project.set_instrument(track, if forward { after } else { before });
             }
+            Self::Channel { track, before, after } => project.channels[track] = if forward { after } else { before },
             Self::Tempo { before, after } => project.bpm = if forward { after } else { before },
             Self::Pattern { index, ref value } => {
                 if forward {
@@ -147,6 +158,15 @@ pub struct Edit<'a> {
 }
 
 impl Edit<'_> {
+    pub fn set_channel(&mut self, track: usize, after: ChannelSettings) {
+        if let Some(&before) = self.project.channels.get(track) {
+            if after.is_valid() && before != after {
+                self.changes.push(Mutation::Channel { track, before, after });
+                self.project.channels[track] = after;
+            }
+        }
+    }
+
     /// Append a shared Pluck track after checking all allocation limits.
     pub fn append_track(&mut self) {
         if !self.project.can_append_track() {

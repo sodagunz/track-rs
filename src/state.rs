@@ -14,6 +14,14 @@ pub enum View {
     Instrument,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ViewState {
+    mode: Mode,
+    row: usize,
+    track: usize,
+    anchor: Option<(usize, usize)>,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Mode {
     #[default]
@@ -53,6 +61,7 @@ pub enum PlaybackState {
 )]
 pub struct App {
     pub view: View,
+    pub(crate) view_states: [ViewState; 4],
     pub(crate) audition: Option<crate::transport::NoteEvent>,
     pub(crate) audition_active: bool,
     pub(crate) history: History,
@@ -118,6 +127,7 @@ impl Default for App {
         let default_tracks = 4;
         Self {
             view: View::Pattern,
+            view_states: [ViewState::default(); 4],
             audition: None,
             audition_active: false,
             history: History::default(),
@@ -191,7 +201,12 @@ impl App {
 
     pub(crate) fn execute_prompt(&mut self, text: &str) {
         self.status.clear();
-        if let Err(error) = self.execute_file_command(text) {
+        let result = if self.view == View::Mixer && self.mode == Mode::Insert {
+            self.enter_mixer_value(text)
+        } else {
+            self.execute_file_command(text)
+        };
+        if let Err(error) = result {
             self.status = format!("{error:#}");
         }
     }
@@ -237,6 +252,7 @@ impl App {
                 self.history = History::default();
                 self.saved_revision = self.revision();
                 self.clipboard.clear();
+                self.view_states = [ViewState::default(); 4];
                 self.selection_anchor = None;
                 self.cursor_row = 0;
                 self.cursor_track = 0;
@@ -288,14 +304,31 @@ impl App {
         }
     }
 
-    const fn show_view(&mut self, command: Command) {
+    fn show_view(&mut self, command: Command) {
+        self.view_states[self.view as usize] = ViewState {
+            mode: self.mode,
+            row: self.cursor_row,
+            track: self.cursor_track,
+            anchor: self.selection_anchor,
+        };
         self.view = match command {
             Command::ShowArrangement => View::Arrangement,
             Command::ShowMixer => View::Mixer,
             Command::ShowInstrument => View::Instrument,
             _ => View::Pattern,
         };
+        let saved = self.view_states[self.view as usize];
+        self.mode = saved.mode;
+        self.cursor_row = saved.row.min(if self.view == View::Mixer {
+            1
+        } else {
+            self.project.patterns[self.selected_pattern].num_rows - 1
+        });
+        self.cursor_track = saved.track.min(self.project.instruments().len() - 1);
+        self.selection_anchor = saved.anchor;
         self.pending_count = None;
+        self.pending_prefix = None;
+        self.suppressed_repeat = true;
     }
 
     /// Apply an editor action without depending on terminal key events.
@@ -320,8 +353,9 @@ impl App {
             Command::ShowPattern | Command::ShowArrangement | Command::ShowMixer | Command::ShowInstrument => {
                 self.show_view(command);
             }
-            _ if self.view == View::Arrangement && !command.available_in_arrangement() => {}
-            _ if matches!(self.view, View::Mixer | View::Instrument) && !command.available_in_voice_view() => {}
+            _ if !command.available_in_view(self.view) => {}
+            _ if self.view == View::Mixer && self.handle_mixer(command) => {}
+            Command::MixerValue | Command::MixerReset => {}
             Command::AuditionInstrument => self.request_audition(),
             Command::PreviousPattern
             | Command::NextPattern
@@ -401,6 +435,71 @@ impl App {
         }
     }
 
+    fn handle_mixer(&mut self, command: Command) -> bool {
+        match command {
+            Command::MixerValue => {
+                self.prompt = Some(String::new());
+            }
+            Command::MixerReset => {
+                let track = self.cursor_track;
+                let mut setting = self.project.channels()[track];
+                if self.cursor_row == 0 {
+                    setting.volume_db = Some(0.0);
+                } else {
+                    setting.pan = 0.0;
+                }
+                self.edit(|edit| edit.set_channel(track, setting));
+            }
+            Command::MoveCursor { rows, tracks } if self.mode == Mode::Insert => {
+                if tracks != 0 {
+                    let track = self.cursor_track;
+                    let setting = self.project.channels()[track].adjusted(self.cursor_row, tracks);
+                    self.edit(|edit| edit.set_channel(track, setting));
+                }
+                self.offset_cursor(&CursorOffset::from_delta(rows), &CursorOffset::None);
+            }
+            Command::MoveCursorLeft | Command::MoveCursorRight if self.mode == Mode::Insert => {
+                return self.handle_mixer(Command::MoveCursor {
+                    rows: 0,
+                    tracks: if command == Command::MoveCursorLeft { -1 } else { 1 },
+                });
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    fn enter_mixer_value(&mut self, text: &str) -> anyhow::Result<()> {
+        let track = self.cursor_track;
+        let mut setting = self.project.channels()[track];
+        let text = text.trim();
+        if self.cursor_row == 0 && text == "-inf" {
+            setting.volume_db = None;
+        } else {
+            let value: f32 = text.parse().map_err(|_| {
+                anyhow::anyhow!(
+                    "Expected a number{}",
+                    if self.cursor_row == 0 {
+                        " in dB or -inf"
+                    } else {
+                        " (-100 left, 100 right)"
+                    }
+                )
+            })?;
+            if self.cursor_row == 0 {
+                setting.volume_db = Some(value);
+            } else {
+                setting.pan = value;
+            }
+        }
+        anyhow::ensure!(
+            setting.is_valid(),
+            "Expected finite volume -60..+6 dB (or -inf), or pan -100..100"
+        );
+        self.edit(|edit| edit.set_channel(track, setting));
+        Ok(())
+    }
+
     const fn enter_insert(&mut self) {
         self.mode = Mode::Insert;
         self.selection_anchor = None;
@@ -411,7 +510,13 @@ impl App {
         match command {
             Command::FirstTrack => self.cursor_track = 0,
             Command::FirstRow => self.cursor_row = 0,
-            Command::LastRow => self.cursor_row = pattern.num_rows.saturating_sub(1),
+            Command::LastRow => {
+                self.cursor_row = if self.view == View::Mixer {
+                    1
+                } else {
+                    pattern.num_rows.saturating_sub(1)
+                }
+            }
             Command::LastTrack => self.cursor_track = pattern.tracks.len().saturating_sub(1),
             _ => unreachable!(),
         }
@@ -503,6 +608,7 @@ impl App {
                     self.history.undo(&mut self.project);
                 }
                 if structural {
+                    self.invalidate_view_selections();
                     self.selected_order = self.selected_order.min(self.project.order.len() - 1);
                     self.playing_pattern = self.playing_pattern.min(self.project.patterns.len() - 1);
                     self.playing_order = self.playing_order.min(self.project.order.len() - 1);
@@ -515,6 +621,11 @@ impl App {
     }
 
     fn switch_pattern(&mut self, index: usize) {
+        let pattern_state = &mut self.view_states[View::Pattern as usize];
+        pattern_state.anchor = None;
+        if pattern_state.mode == Mode::Visual {
+            pattern_state.mode = Mode::Normal;
+        }
         self.selected_pattern = index;
         self.selection_anchor = None;
         self.pending_count = None;
@@ -673,6 +784,15 @@ impl App {
         self.finish_selection();
     }
 
+    fn invalidate_view_selections(&mut self) {
+        for saved in &mut self.view_states {
+            saved.anchor = None;
+            if saved.mode == Mode::Visual {
+                saved.mode = Mode::Normal;
+            }
+        }
+    }
+
     fn finish_selection(&mut self) {
         if self.mode == Mode::Visual {
             self.mode = Mode::Normal;
@@ -701,7 +821,11 @@ impl App {
     }
 
     pub fn offset_cursor(&mut self, dr: &CursorOffset, dt: &CursorOffset) {
-        let max_rows = self.project.patterns[self.selected_pattern].num_rows;
+        let max_rows = if self.view == View::Mixer {
+            2
+        } else {
+            self.project.patterns[self.selected_pattern].num_rows
+        };
         let max_tracks = self.project.patterns[self.selected_pattern].tracks.len();
 
         self.cursor_row = dr.apply_to(self.cursor_row).clamp(0, max_rows.saturating_sub(1));
@@ -752,13 +876,19 @@ impl App {
         let Some(pattern) = self.project.patterns.get(self.playing_pattern) else {
             return;
         };
-        self.playback_row = if beginning { 0 } else { self.cursor_row }.min(pattern.num_rows.saturating_sub(1));
+        let row = if self.view == View::Pattern {
+            self.cursor_row
+        } else {
+            self.view_states[View::Pattern as usize].row
+        };
+        self.playback_row = if beginning { 0 } else { row }.min(pattern.num_rows.saturating_sub(1));
         self.playback_state = PlaybackState::Playing;
     }
 
     /// Apply one document transaction, including future multi-cell operations.
     pub fn edit(&mut self, operation: impl FnOnce(&mut Edit<'_>)) {
         if self.history.edit(&mut self.project, operation) {
+            self.invalidate_view_selections();
             self.stop_playback();
             self.selected_order = self.selected_order.min(self.project.order.len() - 1);
             self.finish_selection();

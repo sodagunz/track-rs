@@ -47,7 +47,7 @@ fn path_text(path: &Path) -> &str {
 }
 
 #[test]
-fn all_instrument_names_cycle_and_round_trip_in_version_two() {
+fn all_instrument_names_cycle_and_round_trip_in_version_three() {
     let names = [
         "Pluck", "Sine", "Square", "Saw", "Kick", "Snare", "HiHat", "Pad", "Drone", "Sustain", "OpenHat",
     ];
@@ -66,7 +66,7 @@ fn all_instrument_names_cycle_and_round_trip_in_version_two() {
     let path = directory.path().join("all-presets.json");
     project_file::save(&project, &path).unwrap();
     let value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    assert_eq!(value["version"], 2);
+    assert_eq!(value["version"], 3);
     assert_eq!(value["instruments"], json!(names));
     assert_eq!(project_file::load(&path).unwrap(), project);
 }
@@ -85,7 +85,7 @@ fn version_one_fixture_and_multi_pattern_round_trip_preserve_shared_voices() {
     project_file::save(&project, &path).unwrap();
     assert_eq!(project_file::load(&path).unwrap(), project);
     let encoded = fs::read_to_string(path).unwrap();
-    assert!(encoded.contains("\"version\": 2"));
+    assert!(encoded.contains("\"version\": 3"));
     assert!(encoded.contains("\"length_ticks\": 16"));
     assert!(encoded.contains("\"F#\""));
     assert!(encoded.contains("\"HiHat\""));

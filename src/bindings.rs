@@ -25,6 +25,38 @@ pub struct Binding {
 }
 
 impl Binding {
+    pub(crate) const fn available_in_view(&self, view: crate::state::View) -> bool {
+        (!(matches!(self.key, KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down)
+            && matches!(
+                self.command,
+                Command::MoveCursorLeft | Command::MoveCursorRight | Command::MoveCursorUp | Command::MoveCursorDown
+            ))
+            || matches!(view, crate::state::View::Mixer))
+            && self.command.available_in_view(view)
+            && (!matches!(self.command, Command::MixerValue | Command::MixerReset)
+                || matches!(view, crate::state::View::Mixer))
+    }
+
+    pub(crate) const fn description_in_view(&self, view: crate::state::View) -> &'static str {
+        if matches!(view, crate::state::View::Mixer) {
+            match self.command {
+                Command::MoveCursorLeft => return "Previous channel / decrease in Insert",
+                Command::MoveCursorRight => return "Next channel / increase in Insert",
+                Command::MoveCursorUp => return "Previous parameter",
+                Command::MoveCursorDown => return "Next parameter",
+                Command::FirstRow => return "First parameter",
+                Command::LastRow => return "Last parameter",
+                Command::EnterInsert => return "Enter mixer adjustment mode",
+                _ => {}
+            }
+        }
+        self.description
+    }
+
+    fn matches_context(&self, state: &App) -> bool {
+        self.modes.contains(&state.mode) && self.available_in_view(state.view)
+    }
+
     const fn new(key: KeyCode, command: Command, description: &'static str, category: &'static str) -> Self {
         Self {
             key,
@@ -52,6 +84,56 @@ impl Binding {
 
 /// The single source of truth for default controls and their descriptions.
 pub const DEFAULT_BINDINGS: &[Binding] = &[
+    Binding::new(
+        KeyCode::Left,
+        Command::MoveCursorLeft,
+        "Previous channel / decrease in Insert",
+        "Mixer",
+    ),
+    Binding::new(
+        KeyCode::Right,
+        Command::MoveCursorRight,
+        "Next channel / increase in Insert",
+        "Mixer",
+    ),
+    Binding::new(KeyCode::Up, Command::MoveCursorUp, "Previous parameter", "Mixer"),
+    Binding::new(KeyCode::Down, Command::MoveCursorDown, "Next parameter", "Mixer"),
+    Binding {
+        modes: &[Mode::Insert],
+        ..Binding::new(
+            KeyCode::Enter,
+            Command::MixerValue,
+            "Enter volume dB / pan -100..100 (stereo balance, no boost)",
+            "Mixer",
+        )
+    },
+    Binding {
+        modes: &[Mode::Normal],
+        ..Binding::new(
+            KeyCode::Char('d'),
+            Command::MixerReset,
+            "Reset selected mixer cell",
+            "Mixer",
+        )
+    },
+    Binding {
+        modes: &[Mode::Normal],
+        ..Binding::new(
+            KeyCode::Char('x'),
+            Command::MixerReset,
+            "Reset selected mixer cell",
+            "Mixer",
+        )
+    },
+    Binding {
+        modes: &[Mode::Insert],
+        ..Binding::new(
+            KeyCode::Backspace,
+            Command::MixerReset,
+            "Reset selected mixer cell",
+            "Mixer",
+        )
+    },
     Binding {
         modes: &[Mode::Normal],
         ..Binding::new(
@@ -62,11 +144,11 @@ pub const DEFAULT_BINDINGS: &[Binding] = &[
         )
     },
     Binding {
-        modes: &[Mode::Normal],
+        modes: &[Mode::Normal, Mode::Insert, Mode::Visual],
         ..Binding::new(KeyCode::F(1), Command::ShowPattern, "Pattern view", "Application")
     },
     Binding {
-        modes: &[Mode::Normal],
+        modes: &[Mode::Normal, Mode::Insert, Mode::Visual],
         ..Binding::new(
             KeyCode::F(2),
             Command::ShowArrangement,
@@ -75,11 +157,11 @@ pub const DEFAULT_BINDINGS: &[Binding] = &[
         )
     },
     Binding {
-        modes: &[Mode::Normal],
+        modes: &[Mode::Normal, Mode::Insert, Mode::Visual],
         ..Binding::new(KeyCode::F(3), Command::ShowMixer, "Mixer view", "Application")
     },
     Binding {
-        modes: &[Mode::Normal],
+        modes: &[Mode::Normal, Mode::Insert, Mode::Visual],
         ..Binding::new(
             KeyCode::F(4),
             Command::ShowInstrument,
@@ -518,7 +600,7 @@ pub fn resolve(key: KeyEvent, state: &mut App) -> Option<Command> {
         && modifiers.is_empty()
         && DEFAULT_BINDINGS
             .iter()
-            .any(|binding| binding.prefix == Some(code) && binding.modes.contains(&state.mode))
+            .any(|binding| binding.prefix == Some(code) && binding.matches_context(state))
     {
         if key.kind == KeyEventKind::Press {
             state.pending_prefix = code.as_char();
@@ -531,7 +613,7 @@ pub fn resolve(key: KeyEvent, state: &mut App) -> Option<Command> {
     }
     let prefix = state.pending_prefix.take().map(KeyCode::Char);
     let binding = DEFAULT_BINDINGS.iter().find(|binding| {
-        binding.prefix == prefix
+        (binding.prefix == prefix || matches!(code, KeyCode::F(1..=4)))
             && binding.key == code
             && binding.modifiers == modifiers
             && if state.help_visible {
@@ -544,7 +626,7 @@ pub fn resolve(key: KeyEvent, state: &mut App) -> Option<Command> {
                         | Command::ScrollHelpDown
                 )
             } else {
-                binding.modes.contains(&state.mode)
+                binding.matches_context(state)
                     && !matches!(
                         binding.command,
                         Command::DismissHelp | Command::ScrollHelpUp | Command::ScrollHelpDown
@@ -699,6 +781,68 @@ mod tests {
 
     fn escape(app: &mut App) {
         key(app, KeyCode::Esc, KeyModifiers::NONE, KeyEventKind::Press);
+    }
+
+    #[test]
+    fn view_switching_restores_pattern_modes_and_selection_without_hidden_edits() {
+        use crate::state::View;
+        for setup in ["i", "3j2lv2j1h"] {
+            let mut app = App::default();
+            sequence(&mut app, setup);
+            let saved = (app.mode, app.cursor_row, app.cursor_track, app.selection_anchor);
+            let revision = app.revision();
+            sequence(&mut app, "12g");
+            key(&mut app, KeyCode::F(3), KeyModifiers::NONE, KeyEventKind::Press);
+            assert_eq!(app.view, View::Mixer);
+            assert_eq!(app.mode, Mode::Normal);
+            assert_eq!((app.pending_count, app.pending_prefix), (None, None));
+            sequence(&mut app, "avsxdypz{");
+            assert_eq!(app.mode, Mode::Normal);
+            assert_eq!(app.cursor_row, 0);
+            assert_eq!(app.revision(), revision);
+            sequence(&mut app, "3lgh2l");
+            assert_eq!(app.cursor_track, 2);
+            key(&mut app, KeyCode::F(4), KeyModifiers::NONE, KeyEventKind::Press);
+            assert_eq!(app.cursor_track, 0);
+            sequence(&mut app, "l");
+            key(&mut app, KeyCode::F(1), KeyModifiers::NONE, KeyEventKind::Press);
+            assert_eq!(
+                (app.mode, app.cursor_row, app.cursor_track, app.selection_anchor),
+                saved
+            );
+            key(&mut app, KeyCode::F(3), KeyModifiers::NONE, KeyEventKind::Press);
+            assert_eq!(app.cursor_track, 2);
+            sequence(&mut app, " ");
+            assert_eq!(app.playback_row, saved.1);
+            sequence(&mut app, "?");
+            key(&mut app, KeyCode::F(1), KeyModifiers::NONE, KeyEventKind::Press);
+            assert_eq!(app.view, View::Mixer);
+            escape(&mut app);
+            sequence(&mut app, ":");
+            key(&mut app, KeyCode::F(1), KeyModifiers::NONE, KeyEventKind::Press);
+            assert_eq!(app.view, View::Mixer);
+            escape(&mut app);
+            key(&mut app, KeyCode::F(1), KeyModifiers::NONE, KeyEventKind::Press);
+            assert_eq!(
+                (app.mode, app.cursor_row, app.cursor_track, app.selection_anchor),
+                saved
+            );
+        }
+    }
+
+    #[test]
+    fn structural_undo_invalidates_saved_selection_and_clamps_each_view() {
+        let mut app = App::default();
+        key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL, KeyEventKind::Press);
+        sequence(&mut app, "v2j");
+        assert_eq!(app.cursor_track, 4);
+        key(&mut app, KeyCode::F(3), KeyModifiers::NONE, KeyEventKind::Press);
+        sequence(&mut app, "glu");
+        assert_eq!(app.project.instruments().len(), 4);
+        key(&mut app, KeyCode::F(1), KeyModifiers::NONE, KeyEventKind::Press);
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.selection_anchor, None);
+        assert_eq!((app.cursor_row, app.cursor_track), (2, 3));
     }
 
     #[test]
@@ -1016,6 +1160,23 @@ mod tests {
             for mode in binding.modes {
                 let mut app = App {
                     mode: *mode,
+                    view: if matches!(binding.command, Command::MixerValue | Command::MixerReset)
+                        || matches!(
+                            binding.command,
+                            Command::MoveCursorLeft
+                                | Command::MoveCursorRight
+                                | Command::MoveCursorUp
+                                | Command::MoveCursorDown
+                        ) && matches!(
+                            binding.key,
+                            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down
+                        ) {
+                        crate::state::View::Mixer
+                    } else if binding.command == Command::AuditionInstrument {
+                        crate::state::View::Instrument
+                    } else {
+                        crate::state::View::Pattern
+                    },
                     help_visible: matches!(
                         binding.command,
                         Command::DismissHelp | Command::ScrollHelpUp | Command::ScrollHelpDown
@@ -1026,6 +1187,14 @@ mod tests {
                     && other.prefix == binding.prefix
                     && other.modifiers == binding.modifiers
                     && other.modes.contains(mode)
+                    && other.available_in_view(app.view)
+                    && matches!(
+                        other.command,
+                        Command::DismissHelp | Command::ScrollHelpUp | Command::ScrollHelpDown
+                    ) == matches!(
+                        binding.command,
+                        Command::DismissHelp | Command::ScrollHelpUp | Command::ScrollHelpDown
+                    )
                     && !matches!(other.command, Command::EnterNormal)));
                 app.pending_prefix = binding.prefix.as_ref().and_then(KeyCode::as_char);
                 let result = resolve(KeyEvent::new(binding.key, binding.modifiers), &mut app);
