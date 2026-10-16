@@ -6,6 +6,7 @@ pub enum Command {
     ShowPattern,
     ShowArrangement,
     ShowMixer,
+    ShowInstrument,
     PreviousPattern,
     NextPattern,
     NewPattern,
@@ -72,6 +73,7 @@ impl Command {
                 | Self::ShowPattern
                 | Self::ShowArrangement
                 | Self::ShowMixer
+                | Self::ShowInstrument
         )
     }
 

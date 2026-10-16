@@ -34,11 +34,17 @@ Pad, Drone, and Sustain hold pitched notes; OpenHat rings longer than HiHat. Per
 Normal `F2` opens the scrolling arrangement view; `F1` returns to the pattern
 editor. The view keeps the selected order entry visible: `]` marks selection,
 `>` marks the playing Song entry. Repeated patterns have separate entries.
-Panel switching doesn't stop playback or change the document. Help and `:` keep
-input priority. Note edits and grid motions are blocked while the grid is hidden.
-F3/F4 panels aren't implemented.
+Normal `F3` opens a mixer track overview with voice assignments and note counts
+for the edited pattern (not live audio meters). `F4` opens the selected track's
+built-in instrument editor. In both, `h`/`l` selects a track, `[`/`]` changes its
+voice across all patterns, and `u`/Ctrl-r undoes/redoes. Gain, pan, mute/solo and
+custom synth parameters aren't implemented.
 
-In Normal mode (in either view):
+Panel switching doesn't stop playback or change the document. Help and `:` keep
+input priority. Hidden note edits and row motions are blocked; the mixer and
+instrument editor retain horizontal track navigation.
+
+In Normal mode (in the pattern or arrangement view):
 
 - PageUp/PageDown switches patterns; Ctrl-n creates one, Ctrl-d duplicates it.
 - Ctrl-t adds a track to every pattern and selects it.
