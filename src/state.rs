@@ -6,6 +6,14 @@ use crate::{
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum View {
+    #[default]
+    Pattern,
+    Arrangement,
+    Mixer,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Mode {
     #[default]
     Normal,
@@ -43,7 +51,7 @@ pub enum PlaybackState {
     reason = "Input repeat suppression, help, shutdown, and transport stop flags are independent."
 )]
 pub struct App {
-    pub arrangement_visible: bool,
+    pub view: View,
     pub(crate) history: History,
     // Track-major owned snapshot; None cells are part of the rectangle.
     pub(crate) clipboard: Vec<Vec<Option<Note>>>,
@@ -106,7 +114,7 @@ impl Default for App {
         let default_rows = 64;
         let default_tracks = 4;
         Self {
-            arrangement_visible: false,
+            view: View::Pattern,
             history: History::default(),
             clipboard: Vec::new(),
             edit_step: 0,
@@ -247,6 +255,15 @@ impl App {
         }
     }
 
+    const fn show_view(&mut self, command: Command) {
+        self.view = match command {
+            Command::ShowArrangement => View::Arrangement,
+            Command::ShowMixer => View::Mixer,
+            _ => View::Pattern,
+        };
+        self.pending_count = None;
+    }
+
     /// Apply an editor action without depending on terminal key events.
     pub fn handle_command(&mut self, command: Command) {
         self.dismiss_feedback(command);
@@ -266,11 +283,9 @@ impl App {
             Command::CountDigit(_) => {}
             _ if self.help_visible => {}
 
-            Command::ShowPattern | Command::ShowArrangement => {
-                self.arrangement_visible = command == Command::ShowArrangement;
-                self.pending_count = None;
-            }
-            _ if self.arrangement_visible && !command.available_in_arrangement() => {}
+            Command::ShowPattern | Command::ShowArrangement | Command::ShowMixer => self.show_view(command),
+            _ if self.view == View::Arrangement && !command.available_in_arrangement() => {}
+            _ if self.view == View::Mixer && !command.available_in_voice_view() => {}
             Command::PreviousPattern
             | Command::NextPattern
             | Command::NewPattern
