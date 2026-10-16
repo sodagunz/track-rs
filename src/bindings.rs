@@ -30,6 +30,42 @@ impl Binding {
 
 /// The single source of truth for default controls and their descriptions.
 pub const DEFAULT_BINDINGS: &[Binding] = &[
+    Binding::new(
+        KeyCode::Char('['),
+        Command::PreviousInstrument,
+        "Previous instrument",
+        "Instruments",
+    ),
+    Binding::new(
+        KeyCode::Char(']'),
+        Command::NextInstrument,
+        "Next instrument",
+        "Instruments",
+    ),
+    Binding::new(
+        KeyCode::Char('-'),
+        Command::DecreaseTempo,
+        "Decrease BPM by 1",
+        "Playback",
+    ),
+    Binding::new(
+        KeyCode::Char('+'),
+        Command::IncreaseTempo,
+        "Increase BPM by 1",
+        "Playback",
+    ),
+    Binding::new(
+        KeyCode::Char('f'),
+        Command::LowerNote,
+        "Lower note one semitone",
+        "Notes",
+    ),
+    Binding::new(
+        KeyCode::Char('r'),
+        Command::RaiseNote,
+        "Raise note one semitone",
+        "Notes",
+    ),
     Binding::new(KeyCode::Char('?'), Command::ToggleHelp, "Toggle help", "Application"),
     Binding::new(KeyCode::Esc, Command::DismissHelp, "Close help", "Application"),
     Binding::new(KeyCode::Up, Command::ScrollHelpUp, "Scroll help up", "Help"),
@@ -173,6 +209,44 @@ pub fn handle(rx: &Receiver<KeyEvent>, state: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adjustment_keys_normalize_shift_repeat_and_reject_modifiers() {
+        for (key, command) in [
+            ('[', Command::PreviousInstrument),
+            (']', Command::NextInstrument),
+            ('-', Command::DecreaseTempo),
+            ('+', Command::IncreaseTempo),
+            ('f', Command::LowerNote),
+            ('r', Command::RaiseNote),
+        ] {
+            for modifiers in [KeyModifiers::NONE, KeyModifiers::SHIFT] {
+                for kind in [KeyEventKind::Press, KeyEventKind::Repeat] {
+                    assert_eq!(
+                        resolve(KeyEvent::new_with_kind(KeyCode::Char(key), modifiers, kind)),
+                        Some(command)
+                    );
+                }
+                assert_eq!(
+                    resolve(KeyEvent::new_with_kind(
+                        KeyCode::Char(key),
+                        modifiers,
+                        KeyEventKind::Release
+                    )),
+                    None
+                );
+            }
+            for modifiers in [
+                KeyModifiers::CONTROL,
+                KeyModifiers::ALT,
+                KeyModifiers::SHIFT | KeyModifiers::CONTROL,
+                KeyModifiers::SHIFT | KeyModifiers::ALT,
+            ] {
+                assert_eq!(resolve(KeyEvent::new(KeyCode::Char(key), modifiers)), None);
+            }
+        }
+        assert_eq!(resolve(KeyEvent::new(KeyCode::Char('='), KeyModifiers::NONE)), None);
+    }
 
     #[test]
     fn resolves_default_keys_and_shifted_quit() {

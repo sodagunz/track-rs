@@ -9,7 +9,7 @@
   };
 
   packages = with pkgs;
-    [ pkg-config bacon cargo-audit cargo-deny ]
+    [ pkg-config bacon cargo-audit cargo-deny cargo-nextest actionlint ]
     ++ lib.optionals stdenv.hostPlatform.isLinux [ alsa-lib udev ];
 
   env.RUST_BACKTRACE = "1";

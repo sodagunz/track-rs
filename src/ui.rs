@@ -3,11 +3,11 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::Rect,
     prelude::CrosstermBackend,
     style::{Color, Style},
-    text::Line,
-    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, Wrap},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
     Frame, Terminal,
 };
 
@@ -18,6 +18,11 @@ pub struct TUI<W: std::io::Write> {
 }
 
 impl<W: std::io::Write> TUI<W> {
+    /// Enter raw mode and initialize the alternate-screen terminal.
+    ///
+    /// # Errors
+    /// Returns an error if enabling raw mode, entering the alternate screen,
+    /// or initializing the terminal fails.
     pub fn new(writer: W) -> anyhow::Result<Self> {
         enable_raw_mode()?;
         let mut w = writer;
@@ -26,9 +31,14 @@ impl<W: std::io::Write> TUI<W> {
         let backend = CrosstermBackend::new(w);
         let terminal = Terminal::new(backend)?;
 
-        Ok(TUI { terminal })
+        Ok(Self { terminal })
     }
 
+    /// Restore normal terminal mode and show the cursor.
+    ///
+    /// # Errors
+    /// Returns an error if disabling raw mode, leaving the alternate screen,
+    /// or showing the cursor fails.
     pub fn destroy(&mut self) -> anyhow::Result<()> {
         disable_raw_mode()?;
         execute!(self.terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -37,24 +47,42 @@ impl<W: std::io::Write> TUI<W> {
         Ok(())
     }
 
+    /// Render the current application state.
+    ///
+    /// # Panics
+    /// Panics if drawing to the terminal fails or the pattern's track lengths
+    /// are inconsistent with its row count.
     pub fn draw(&mut self, state: &App) {
         self.terminal.draw(|f| render(f, state)).unwrap();
     }
 }
 
 fn render(f: &mut Frame, state: &App) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .margin(1)
-        .constraints([Constraint::Length(2), Constraint::Min(0), Constraint::Length(3)].as_ref())
-        .split(f.area());
-
-    draw_title_bar(f, chunks[0], state);
-    draw_pattern_editor(f, chunks[1], state);
-    draw_status_bar(f, chunks[2], state);
-    // Reserve a screen-edge hint even when the normal status layout cannot fit.
     let area = f.area();
-    if area.height > 0 {
+    let title_rows = u16::from(area.height >= 6);
+    let status_rows = u16::from(area.height >= 3);
+    let hint_rows = u16::from(area.height > 0);
+    if title_rows > 0 {
+        draw_title_bar(f, Rect::new(area.x, area.y, area.width, title_rows), state);
+    }
+    draw_pattern_editor(
+        f,
+        Rect::new(
+            area.x,
+            area.y + title_rows,
+            area.width,
+            area.height.saturating_sub(title_rows + status_rows + hint_rows),
+        ),
+        state,
+    );
+    if status_rows > 0 {
+        draw_status_bar(
+            f,
+            Rect::new(area.x, area.bottom() - hint_rows - status_rows, area.width, status_rows),
+            state,
+        );
+    }
+    if hint_rows > 0 {
         f.render_widget(
             Paragraph::new(format!("{} Help", command_keys(Command::ToggleHelp))),
             Rect::new(area.x, area.bottom() - 1, area.width, 1),
@@ -162,70 +190,104 @@ fn draw_title_bar(f: &mut Frame, area: Rect, _: &App) {
     f.render_widget(block, area);
 }
 
-fn draw_pattern_editor(f: &mut Frame, area: Rect, app_state: &App) {
-    let pattern = &app_state.pattern;
-    let num_tracks = pattern.tracks.len();
-    let header_cells =
-        (0..num_tracks).map(|i| Cell::from(format!("Track {}", i + 1)).style(Style::default().fg(Color::Green)));
-    let header = Row::new(header_cells).height(1).bottom_margin(1);
-
-    let mut rows = vec![];
-    for row_idx in 0..pattern.num_rows {
-        let mut row_cells = vec![];
-        for track_idx in 0..num_tracks {
-            let step = pattern
-                .get_step(track_idx, row_idx)
-                .copied()
-                .expect("Should be able to clone a step");
-            let cell_str = format_step(step); // TODO: Trait "drawable" or whatever, impl on
-                                              // patternstep
-
-            // Highlighting
-            let mut style = Style::default();
-            if row_idx == app_state.cursor_row && track_idx == app_state.cursor_track {
-                style = style.bg(Color::Green).fg(Color::Black); // Highlight cursor
-            }
-
-            if let crate::state::PlaybackState::Playing = app_state.playback_state {
-                if row_idx == app_state.playback_row {
-                    style = style.bg(Color::DarkGray); // Highlight playback caret
-                }
-            }
-
-            row_cells.push(Cell::from(cell_str).style(style));
-        }
-        rows.push(Row::new(row_cells));
+fn draw_pattern_editor(f: &mut Frame, area: Rect, state: &App) {
+    const GUTTER: u16 = 5;
+    const TRACK_WIDTH: u16 = 10;
+    if area.is_empty() {
+        return;
     }
-
-    let track_width = 10; // FIXME: fixed width is not guaranteed
-    let constraints = std::iter::repeat_n(Constraint::Length(track_width), num_tracks).collect::<Vec<_>>();
-
-    let table = Table::new(rows, &constraints)
-        .header(header)
-        .block(Block::default().borders(Borders::ALL).title("Pattern Editor"));
-
-    f.render_widget(table, area);
+    let pattern = &state.pattern;
+    let visible_tracks = usize::from(area.width.saturating_sub(GUTTER) / TRACK_WIDTH)
+        .max(usize::from(area.width > GUTTER))
+        .min(pattern.tracks.len());
+    let first_track = state
+        .cursor_track
+        .saturating_add(1)
+        .saturating_sub(visible_tracks)
+        .min(pattern.tracks.len().saturating_sub(visible_tracks));
+    let header_rows = u16::from(area.height >= 2);
+    let visible_rows = usize::from(area.height - header_rows);
+    let first_row = state
+        .cursor_row
+        .saturating_add(1)
+        .saturating_sub(visible_rows)
+        .min(pattern.num_rows.saturating_sub(visible_rows));
+    if header_rows > 0 {
+        let mut header = vec![Span::raw("Row  ")];
+        for track in first_track..first_track + visible_tracks {
+            header.push(Span::styled(
+                format!("{:<10}", format!("{} {}", track + 1, pattern.instrument(track).label())),
+                Style::default().fg(Color::Green),
+            ));
+        }
+        f.render_widget(
+            Paragraph::new(Line::from(header)),
+            Rect::new(area.x, area.y, area.width, 1),
+        );
+    }
+    for (offset, row) in (first_row..pattern.num_rows).take(visible_rows).enumerate() {
+        let playing = matches!(state.playback_state, crate::state::PlaybackState::Playing) && row == state.playback_row;
+        let background = if playing {
+            Color::DarkGray
+        } else if row % 2 == 0 {
+            Color::Reset
+        } else {
+            Color::Black
+        };
+        let foreground = if background == Color::Reset {
+            Color::Reset
+        } else {
+            Color::Gray
+        };
+        // Boundaries use absolute rows and consume no extra viewport height.
+        let (boundary, color) = if row % 16 == 0 {
+            ("━", Color::Gray)
+        } else if row % 4 == 0 {
+            ("─", Color::DarkGray)
+        } else {
+            (" ", Color::DarkGray)
+        };
+        let mut spans = vec![Span::styled(
+            format!("{}{:02}{} ", if playing { "▶" } else { " " }, row, boundary),
+            Style::default().fg(if playing { Color::Cyan } else { color }),
+        )];
+        for track in first_track..first_track + visible_tracks {
+            let step = pattern.get_step(track, row).copied().expect("Pattern row must exist");
+            let style = if row == state.cursor_row && track == state.cursor_track {
+                Style::default().bg(Color::Green).fg(Color::Black)
+            } else if playing {
+                Style::default().bg(Color::DarkGray)
+            } else {
+                Style::default()
+            };
+            spans.push(Span::styled(format_step(step), style));
+            spans.push(Span::raw("       "));
+        }
+        f.render_widget(
+            Paragraph::new(Line::from(spans)).style(Style::default().fg(foreground).bg(background)),
+            Rect::new(
+                area.x,
+                area.y + header_rows + u16::try_from(offset).unwrap_or(0),
+                area.width,
+                1,
+            ),
+        );
+    }
 }
 
-fn draw_status_bar(f: &mut Frame, area: Rect, app_state: &App) {
-    let status_text = format!(
-        "State: {:?} | Pos: {:02},{:02} | Playback Row: {:02} | BPM: {:.1} | Octave {:02}",
-        app_state.playback_state,
-        app_state.cursor_row,
-        app_state.cursor_track,
-        app_state.playback_row,
-        app_state.bpm,
-        app_state.octave
+fn draw_status_bar(f: &mut Frame, area: Rect, state: &App) {
+    let status = format!(
+        "BPM: {:.1} Oct:{} {:?} P:{:02} Pos:{:02},{:02}",
+        state.bpm, state.octave, state.playback_state, state.playback_row, state.cursor_row, state.cursor_track,
     );
-    let paragraph = Paragraph::new(status_text).block(Block::default().borders(Borders::ALL).title("Status"));
-    f.render_widget(paragraph, area);
+    f.render_widget(Paragraph::new(status), area);
 }
 
 fn format_step(step: PatternStep) -> String {
-    match step.note {
-        Some(note) => format!("{:?}{:1}", note.pitch, note.octave),
-        None => " . ".to_string(),
-    }
+    step.note.map_or_else(
+        || " . ".to_string(),
+        |note| format!("{:<3}", format!("{}{}", note.pitch, note.octave)),
+    )
 }
 
 #[cfg(test)]
@@ -242,6 +304,129 @@ mod tests {
             .iter()
             .map(ratatui::buffer::Cell::symbol)
             .collect()
+    }
+
+    #[test]
+    fn instrument_headers_fit_existing_columns_without_moving_highlights() {
+        use crate::tracker::Instrument;
+        for instrument in Instrument::ALL {
+            let mut app = App::default();
+            app.pattern.set_instrument(1, instrument);
+            app.cursor_track = 1;
+            app.playback_row = 1;
+            app.handle_command(Command::TogglePlayback);
+            app.playback_row = 1;
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            let text = screen(&terminal);
+            assert!(text.contains(&format!("2 {}", instrument.label())));
+            assert!(text.contains("1 Pluck"));
+            assert!(format!("2 {}", instrument.label()).len() <= 10);
+            let buffer = terminal.backend().buffer();
+            assert_eq!(buffer[(15, 2)].bg, Color::Green);
+            assert_eq!(buffer[(15, 3)].bg, Color::DarkGray);
+        }
+    }
+
+    #[test]
+    fn absolute_gutters_and_boundaries_survive_scrolling() {
+        for (cursor, first) in [(0, 0), (20, 13), (63, 56)] {
+            let app = App {
+                cursor_row: cursor,
+                ..App::default()
+            };
+            let mut terminal = Terminal::new(TestBackend::new(45, 9)).unwrap();
+            terminal.draw(|f| draw_pattern_editor(f, f.area(), &app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            for offset in 0..8_u16 {
+                let row = first + usize::from(offset);
+                let y = offset + 1;
+                let gutter: String = (0..5).map(|x| buffer[(x, y)].symbol()).collect();
+                let (mark, color) = if row % 16 == 0 {
+                    ("━", Color::Gray)
+                } else if row % 4 == 0 {
+                    ("─", Color::DarkGray)
+                } else {
+                    (" ", Color::DarkGray)
+                };
+                assert_eq!(gutter, format!(" {row:02}{mark} "));
+                assert_eq!(buffer[(3, y)].fg, color);
+            }
+            let y = u16::try_from(cursor - first + 1).unwrap();
+            assert_eq!(buffer[(5, y)].bg, Color::Green);
+        }
+    }
+
+    #[test]
+    fn cursor_wins_playback_and_unselected_notes_remain_visible() {
+        let mut app = App {
+            playback_state: crate::state::PlaybackState::Playing,
+            ..App::default()
+        };
+        for (track, pitch) in [(0, NotePitch::C), (1, NotePitch::Cs), (2, NotePitch::D)] {
+            app.pattern.set_step(track, 0, Some(Note { pitch, octave: 4 })).unwrap();
+        }
+        let mut terminal = Terminal::new(TestBackend::new(45, 4)).unwrap();
+        terminal.draw(|f| draw_pattern_editor(f, f.area(), &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 1)].symbol(), "▶");
+        assert_eq!(buffer[(0, 1)].fg, Color::Cyan);
+        assert_eq!(buffer[(5, 1)].bg, Color::Green);
+        assert_eq!(buffer[(5, 1)].fg, Color::Black);
+        for (x, expected) in [(5, "C4 "), (15, "C#4"), (25, "D4 ")] {
+            let text: String = (x..x + 3).map(|x| buffer[(x, 1)].symbol()).collect();
+            assert_eq!(text, expected);
+        }
+        assert_eq!(buffer[(15, 1)].bg, Color::DarkGray);
+        assert_ne!(buffer[(15, 1)].fg, Color::Black);
+        assert_eq!(buffer[(15, 2)].bg, Color::Black);
+        assert_eq!(buffer[(44, 1)].bg, Color::DarkGray);
+    }
+
+    #[test]
+    fn alternating_backgrounds_cover_the_row_and_stay_anchored_when_scrolling() {
+        for (cursor, first) in [(0, 0), (20, 13), (63, 56)] {
+            let app = App {
+                cursor_row: cursor,
+                ..App::default()
+            };
+            let mut terminal = Terminal::new(TestBackend::new(48, 9)).unwrap();
+            terminal.draw(|f| draw_pattern_editor(f, f.area(), &app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            for offset in 0..8_u16 {
+                let row = first + usize::from(offset);
+                let background = if row % 2 == 0 { Color::Reset } else { Color::Black };
+                for x in [0, 4, 8, 15, 44, 47] {
+                    assert_eq!(buffer[(x, offset + 1)].bg, background, "row {row}, x {x}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn narrow_viewport_follows_selected_track_and_last_row_not_playback() {
+        let mut app = App {
+            cursor_row: 63,
+            cursor_track: 3,
+            playback_state: crate::state::PlaybackState::Playing,
+            ..App::default()
+        };
+        app.pattern.set_instrument(3, crate::tracker::Instrument::HiHat);
+        let mut terminal = Terminal::new(TestBackend::new(15, 6)).unwrap();
+        terminal.draw(|f| render(f, &app)).unwrap();
+        assert!(screen(&terminal).contains("4 HiHat"));
+        assert!(screen(&terminal).contains("63"));
+        assert!(screen(&terminal).contains("? Help"));
+        assert_eq!(terminal.backend().buffer()[(5, 3)].bg, Color::Green);
+        for width in 0..16 {
+            for height in 0..4 {
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal.draw(|f| render(f, &app)).unwrap();
+                app.help_visible = true;
+                terminal.draw(|f| render(f, &app)).unwrap();
+                app.help_visible = false;
+            }
+        }
     }
 
     #[test]
@@ -316,7 +501,9 @@ mod tests {
             octave: 4,
         }));
 
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        app.handle_command(Command::RaiseNote);
+        app.handle_command(Command::IncreaseTempo);
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
         terminal.draw(|frame| render(frame, &app)).unwrap();
 
         let screen: String = terminal
@@ -328,8 +515,8 @@ mod tests {
             .collect();
         assert!(screen.contains("? Help"));
         assert!(screen.contains("track-rs"));
-        assert!(screen.contains("Track 1"));
-        assert!(screen.contains("C4"));
-        assert!(screen.contains("BPM: 120.0"));
+        assert!(screen.contains("1 Pluck"));
+        assert!(screen.contains("C#4"));
+        assert!(screen.contains("BPM: 121.0"));
     }
 }
