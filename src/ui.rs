@@ -18,6 +18,10 @@ use crate::{
     tracker::PatternStep,
 };
 
+mod presentation;
+
+use presentation::{pattern_label, row_label, track_number, Presentation};
+
 pub struct TUI<W: std::io::Write> {
     pub terminal: Terminal<CrosstermBackend<W>>,
 }
@@ -319,7 +323,7 @@ fn draw_order(f: &mut Frame, area: Rect, state: &App) {
     ))];
     for (index, pattern) in state.project.order.iter().enumerate().skip(start).take(visible) {
         spans.push(Span::styled(
-            format!(" {index}:P{pattern} "),
+            format!(" {index}:{} ", pattern_label(*pattern)),
             if index == state.selected_order {
                 Style::default().bg(Color::Green).fg(Color::Black)
             } else {
@@ -331,18 +335,9 @@ fn draw_order(f: &mut Frame, area: Rect, state: &App) {
 }
 
 fn draw_title_bar(f: &mut Frame, area: Rect, state: &App) {
-    let block = Block::default().borders(Borders::BOTTOM).title(Line::from(format!(
-        "track-rs  Edit:P{}  {} Play:O{} P{} Row:{}",
-        state.selected_pattern,
-        if state.playback_mode == crate::state::PlaybackMode::Song {
-            "Song"
-        } else {
-            "Pattern"
-        },
-        state.playing_order,
-        state.playing_pattern,
-        state.playback_row
-    )));
+    let block = Block::default()
+        .borders(Borders::BOTTOM)
+        .title(Presentation(state).title_line(area.width));
     f.render_widget(block, area);
 }
 
@@ -374,7 +369,7 @@ fn draw_pattern_editor(f: &mut Frame, area: Rect, state: &App) {
             header.push(Span::styled(
                 format!(
                     "{:<10}",
-                    format!("{} {}", track + 1, state.project.instrument(track).label())
+                    format!("{} {}", track_number(track), state.project.instrument(track).label())
                 ),
                 Style::default().fg(Color::Green),
             ));
@@ -409,7 +404,7 @@ fn draw_pattern_editor(f: &mut Frame, area: Rect, state: &App) {
             (" ", Color::DarkGray)
         };
         let mut spans = vec![Span::styled(
-            format!("{}{:02}{} ", if playing { "▶" } else { " " }, row, boundary),
+            format!("{}{}{} ", if playing { "▶" } else { " " }, row_label(row), boundary),
             Style::default().fg(if playing { Color::Cyan } else { color }),
         )];
         for track in first_track..first_track + visible_tracks {
@@ -441,32 +436,7 @@ fn draw_pattern_editor(f: &mut Frame, area: Rect, state: &App) {
 }
 
 fn draw_status_bar(f: &mut Frame, area: Rect, state: &App) {
-    let status = format!(
-        "{}{}{} BPM: {:.1} Oct:{} Step:{} Len:{} {:?} P:{:02} Pos:{:02},{:02}",
-        state.mode.label(),
-        state
-            .pending_count
-            .map_or_else(String::new, |count| format!(" Count:{count}")),
-        state.selection_anchor.map_or_else(String::new, |(row, track)| format!(
-            " Sel:{},{}–{},{}",
-            row.min(state.cursor_row),
-            track.min(state.cursor_track),
-            row.max(state.cursor_row),
-            track.max(state.cursor_track)
-        )),
-        state.project.bpm,
-        state.octave,
-        state.edit_step,
-        state.project.patterns[state.selected_pattern]
-            .get_step(state.cursor_track, state.cursor_row)
-            .and_then(|step| step.note)
-            .map_or_else(|| "-".to_owned(), |note| format!("{}t", note.length_ticks.ticks())),
-        state.playback_state,
-        state.playback_row,
-        state.cursor_row,
-        state.cursor_track,
-    );
-    f.render_widget(Paragraph::new(status), area);
+    f.render_widget(Paragraph::new(Presentation(state).status_line(area.width)), area);
 }
 
 fn format_step(step: PatternStep) -> String {
@@ -540,7 +510,7 @@ mod tests {
         terminal.draw(|frame| render(frame, &app)).unwrap();
         let text = screen(&terminal);
         assert!(text.contains("Edit:P0"));
-        assert!(text.contains("Pattern Play:O0 P1 Row:0"));
+        assert!(text.contains("Pattern Playing O0 P1 R00"));
         assert!(text.contains("99:P0"));
         let buffer = terminal.backend().buffer();
         assert_eq!(buffer[(0, 3)].symbol(), " ");
@@ -862,7 +832,8 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(80, 8)).unwrap();
         terminal.draw(|frame| render(frame, &app)).unwrap();
         let text = screen(&terminal);
-        assert!(text.contains("VISUAL Count:12 Sel:13,1–16,2"));
+        assert!(text.contains("VISUAL Count:12 P0 R13 T2"));
+        assert!(text.contains("Sel:4r × 2t Empty"));
         let buffer = terminal.backend().buffer();
         // Cursor follows scrolling; selected cells take precedence over playback.
         assert_eq!(buffer[(15, 5)].bg, Color::Green);
@@ -910,10 +881,10 @@ mod tests {
         }
         app.cursor_track = 2;
         terminal.draw(|f| draw_status_bar(f, f.area(), &app)).unwrap();
-        assert!(screen(&terminal).contains("Step:0 Len:4096t"));
+        assert!(screen(&terminal).contains("C#4 Len:4096t/256r"));
         app.cursor_track = 3;
         terminal.draw(|f| draw_status_bar(f, f.area(), &app)).unwrap();
-        assert!(screen(&terminal).contains("Len:-"));
+        assert!(screen(&terminal).contains("Empty"));
     }
 
     #[test]
@@ -924,7 +895,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
         for step in [0, 1, 2, 4] {
             terminal.draw(|frame| render(frame, &app)).unwrap();
-            assert!(screen(&terminal).contains(&format!("Step:{step}")));
+            assert!(screen(&terminal).contains(&format!("Step:{step}r")));
             crate::bindings::handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &mut app);
         }
         app.handle_command(Command::ToggleHelp);
