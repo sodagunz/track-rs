@@ -54,12 +54,13 @@ impl GatedVoice {
         unit.set_sample_rate(sample_rate);
         unit.allocate();
         let duration = event.duration.as_secs_f64();
+        let (attack, release) = envelope_times(event.instrument, duration);
         Self {
             renderer: BlockRateAdapter::new(unit),
             elapsed: 0.0,
             duration,
-            attack: attack_time(event.instrument).min(duration * 0.25),
-            release: DEFAULT_FADE_OUT.min(duration * 0.25),
+            attack,
+            release,
             sample_period: sample_rate.recip(),
         }
     }
@@ -311,27 +312,36 @@ fn schedule_voice(
     seed: u64,
 ) {
     let seconds = duration.as_secs_f64();
-    let attack = attack_time(instrument);
+    let (attack, release) = envelope_times(instrument, seconds);
     if seconds > 0.0 {
         sequencer.push_relative(
             0.0,
             seconds,
             Fade::Smooth,
-            attack.min(seconds * 0.25),
-            DEFAULT_FADE_OUT.min(seconds * 0.25),
+            attack,
+            release,
             voice(note, instrument, dry, seed),
         );
     }
 }
 
-const fn attack_time(instrument: Instrument) -> f64 {
-    match instrument {
-        Instrument::Kick | Instrument::Snare | Instrument::HiHat => PERCUSSION_ATTACK,
-        _ => DEFAULT_FADE_IN,
-    }
+// Both scheduling paths budget fades inside the total gate, leaving at least
+// half of even a short note for its body.
+fn envelope_times(instrument: Instrument, duration: f64) -> (f64, f64) {
+    let (attack, release) = match instrument {
+        Instrument::Pad => (0.35, 0.6),
+        Instrument::Drone => (0.2, 0.45),
+        Instrument::Sustain => (0.008, 0.04),
+        Instrument::OpenHat => (PERCUSSION_ATTACK, 0.08),
+        Instrument::Kick | Instrument::Snare | Instrument::HiHat => (PERCUSSION_ATTACK, DEFAULT_FADE_OUT),
+        Instrument::Pluck | Instrument::Sine | Instrument::Square | Instrument::Saw => {
+            (DEFAULT_FADE_IN, DEFAULT_FADE_OUT)
+        }
+    };
+    (attack.min(duration * 0.25), release.min(duration * 0.25))
 }
 
-/// Construct a seeded stereo voice. The sequencer supplies the gate's attack/release.
+/// Construct a seeded stereo voice. The caller supplies the gate's attack/release.
 /// Kick sweeps 150 to 45 Hz; snare uses 180 Hz plus noise; hi-hat uses high-passed
 /// noise. All percussion ignores note pitch. Only Pluck uses the legacy chorus.
 fn voice(note: Note, instrument: Instrument, dry: bool, seed: u64) -> Box<dyn AudioUnit> {
@@ -350,6 +360,20 @@ fn voice(note: Note, instrument: Instrument, dry: bool, seed: u64) -> Box<dyn Au
         Instrument::Sine => Net::wrap(Box::new(sine_hz(hz) * 0.18)),
         Instrument::Square => Net::wrap(Box::new(square_hz(hz) * 0.12)),
         Instrument::Saw => Net::wrap(Box::new(saw_hz(hz) * 0.16)),
+        Instrument::Pad => Net::wrap(Box::new(
+            (sine_hz(hz * 0.997) + sine_hz(hz * 1.003) + sine_hz(hz * 2.0) * 0.2)
+                * lfo(|t: f32| 0.065 * (0.12_f32.mul_add(cos_hz(0.17, t), 1.0))),
+        )),
+        Instrument::Drone => Net::wrap(Box::new(
+            (sine_hz(hz)
+                + sine_hz(hz * 2.0) * lfo(|t: f32| 0.1_f32.mul_add(cos_hz(0.11, t), 0.25))
+                + sine_hz(hz * 3.0) * 0.1)
+                * 0.12,
+        )),
+        Instrument::Sustain => Net::wrap(Box::new((sine_hz(hz) + sine_hz(hz * 2.0) * 0.15) * 0.15)),
+        Instrument::OpenHat => Net::wrap(Box::new(
+            (noise() >> highpass_hz(7000.0, 0.7)) * lfo(|t: f32| HIHAT_GAIN * (-t * 8.0).exp()),
+        )),
         Instrument::Kick => Net::wrap(Box::new(
             (lfo(|t: f32| 105.0_f32.mul_add((-t * 35.0).exp(), 45.0)) >> sine())
                 * lfo(|t: f32| KICK_GAIN * (-t * 16.0).exp()),
@@ -654,6 +678,190 @@ mod tests {
         assert_eq!(voice.duration, 2.0);
     }
 
+    fn render_output(instruments: &[Instrument], rate: u32, event: NoteEvent) -> Vec<(f32, f32)> {
+        let (_, renderer) = prepare(f64::from(rate));
+        let (sender, receiver) = mpsc::channel();
+        let (retired, _retired_rx) = mpsc::channel();
+        let mut output = Output::new(renderer, receiver, retired);
+        for (track, &instrument) in instruments.iter().enumerate() {
+            sender
+                .send(OutputCommand::Trigger {
+                    track,
+                    voice: GatedVoice::new(
+                        NoteEvent {
+                            track,
+                            instrument,
+                            ..event
+                        },
+                        f64::from(rate),
+                        false,
+                        42,
+                    ),
+                })
+                .unwrap();
+        }
+        let count =
+            usize::try_from((event.duration + Duration::from_millis(20)).as_nanos() * u128::from(rate) / 1_000_000_000)
+                .unwrap();
+        let samples = (0..count).map(|_| output.sample()).collect();
+        assert!(output
+            .tracks
+            .iter()
+            .all(|track| track.active.is_none() && track.releasing.is_none()));
+        samples
+    }
+
+    fn rms(samples: &[(f32, f32)]) -> f64 {
+        (samples.iter().map(|(l, r)| f64::from(l * l + r * r) / 2.0).sum::<f64>()
+            / f64::from(u32::try_from(samples.len()).unwrap()))
+        .sqrt()
+    }
+
+    #[test]
+    fn sustained_production_gates_hold_energy_follow_pitch_and_release() {
+        for rate in [8_000_u32, 44_100, 48_000] {
+            for bpm in [20_u32, 120, 300] {
+                for octave in [2, 4, 5] {
+                    let event = NoteEvent {
+                        note: Note {
+                            octave,
+                            ..sine_event(0, Duration::ZERO).note
+                        },
+                        ..sine_event(0, Duration::from_secs_f64(240.0 / f64::from(bpm)))
+                    };
+                    for instrument in [Instrument::Pad, Instrument::Drone, Instrument::Sustain] {
+                        let samples = render_output(&[instrument], rate, event);
+                        assert_eq!(samples, render_output(&[instrument], rate, event));
+                        let end =
+                            usize::try_from(event.duration.as_nanos() * u128::from(rate) / 1_000_000_000).unwrap();
+                        let early = rms(&samples[end / 4..end / 2]);
+                        let late = rms(&samples[end / 2..end * 3 / 4]);
+                        assert!((0.015..0.13).contains(&early), "{instrument:?}: {early}");
+                        assert!(late > early * 0.25, "{instrument:?} died early: {early}, {late}");
+                        assert_eq!(samples[0], (0.0, 0.0));
+                        assert!(
+                            samples.windows(2).all(|s| (s[1].0 - s[0].0).abs() < 0.15),
+                            "{instrument:?} discontinuity at {rate} Hz"
+                        );
+                        assert!(samples.iter().all(|(l, r)| l.is_finite() && r.is_finite()));
+                        assert!(samples[end - 1].0.abs() < 0.0001);
+                        assert!(samples[end + 2..].iter().all(|s| *s == (0.0, 0.0)));
+                        let (attack, release) = envelope_times(instrument, event.duration.as_secs_f64());
+                        assert!(attack <= event.duration.as_secs_f64() * 0.25);
+                        assert!(release <= event.duration.as_secs_f64() * 0.25);
+                        let release_samples = usize::try_from(
+                            Duration::from_secs_f64(release).as_nanos() * u128::from(rate) / 1_000_000_000,
+                        )
+                        .unwrap();
+                        assert!(rms(&samples[end - release_samples / 8..end]) < late * 0.03);
+                        // Spectral projection tolerates Pad's beating, unlike zero crossings.
+                        let window = &samples[end / 4..end * 3 / 4];
+                        let power = |ratio: f64| {
+                            let mut real = 0.0;
+                            let mut imaginary = 0.0;
+                            for (index, sample) in window.iter().enumerate().step_by(8) {
+                                let phase = std::f64::consts::TAU
+                                    * event.note.freq()
+                                    * ratio
+                                    * f64::from(u32::try_from(index).unwrap())
+                                    / f64::from(rate);
+                                real = f64::from(sample.0).mul_add(phase.cos(), real);
+                                imaginary = f64::from(sample.0).mul_add(phase.sin(), imaginary);
+                            }
+                            real.mul_add(real, imaginary * imaginary)
+                        };
+                        let fundamental = [0.997, 1.0, 1.003].into_iter().map(power).fold(0.0_f64, f64::max);
+                        assert!(
+                            fundamental > power(0.7) * 20.0 && fundamental > power(1.3) * 20.0,
+                            "{instrument:?} does not follow {} Hz",
+                            event.note.freq()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn production_short_gates_scale_every_preset_fade_inside_the_gate() {
+        for rate in [44_100_u32, 48_000] {
+            for micros in [3125, 7813, 46875] {
+                let event = sine_event(0, Duration::from_micros(micros));
+                for instrument in Instrument::ALL {
+                    let samples = render_output(&[instrument], rate, event);
+                    let end = usize::try_from(event.duration.as_nanos() * u128::from(rate) / 1_000_000_000).unwrap();
+                    assert_eq!(samples[0], (0.0, 0.0));
+                    assert!(rms(&samples[..end]) > 0.0001, "{instrument:?} at {rate} Hz");
+                    assert!(samples.iter().all(|(l, r)| l.is_finite() && r.is_finite()));
+                    assert!(samples[end + 2..].iter().all(|s| *s == (0.0, 0.0)));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn production_open_hat_has_a_longer_normalized_tail_and_balanced_attack() {
+        for rate in [44_100_u32, 48_000] {
+            let event = sine_event(0, Duration::from_secs(1));
+            let closed = render_output(&[Instrument::HiHat], rate, event);
+            let open = render_output(&[Instrument::OpenHat], rate, event);
+            let index = |ms: usize| usize::try_from(rate).unwrap() * ms / 1000;
+            let onset = |s: &[(f32, f32)]| rms(&s[..index(5)]);
+            let tail = |s: &[(f32, f32)]| rms(&s[index(100)..index(200)]) / onset(s);
+            assert!(onset(&open) > 0.03 && onset(&open) < 0.15);
+            assert!((0.8..1.5).contains(&(onset(&open) / onset(&closed))));
+            assert!(tail(&open) > tail(&closed) * 20.0);
+            assert!(tail(&open) > 0.1);
+        }
+    }
+
+    #[test]
+    fn production_four_track_sustained_mix_has_headroom_and_bounded_retriggers() {
+        let instruments = [
+            Instrument::Pad,
+            Instrument::Drone,
+            Instrument::Sustain,
+            Instrument::OpenHat,
+        ];
+        let samples = render_output(&instruments, 48_000, sine_event(0, Duration::from_secs(4)));
+        assert!(samples.iter().all(|(l, r)| l.abs() < 1.0 && r.abs() < 1.0));
+        assert!(rms(&samples[48_000..96_000]) > 0.025);
+        let (_, renderer) = prepare(48_000.0);
+        let (sender, receiver) = mpsc::channel();
+        let (retired, retired_rx) = mpsc::channel();
+        let mut output = Output::new(renderer, receiver, retired);
+        for _ in 0..100 {
+            for (track, instrument) in instruments.into_iter().enumerate() {
+                sender
+                    .send(OutputCommand::Trigger {
+                        track,
+                        voice: GatedVoice::new(
+                            NoteEvent {
+                                instrument,
+                                ..sine_event(track, Duration::from_secs(10))
+                            },
+                            48_000.0,
+                            false,
+                            42,
+                        ),
+                    })
+                    .unwrap();
+            }
+            for _ in 0..480 {
+                let (l, r) = output.sample();
+                assert!(l.abs() < 1.0 && r.abs() < 1.0);
+            }
+            assert_eq!(output.tracks.iter().filter(|t| t.active.is_some()).count(), 4);
+            assert!(output.tracks.iter().all(|t| t.releasing.is_none()));
+        }
+        assert!(retired_rx.try_iter().count() >= 396);
+        let (_, renderer) = prepare(48_000.0);
+        sender.send(OutputCommand::Replace(renderer)).unwrap();
+        for _ in 0..1000 {
+            assert_eq!(output.sample(), (0.0, 0.0));
+        }
+    }
+
     fn render_presets(instruments: &[Instrument], dry: bool, duration: Duration) -> Vec<(f32, f32)> {
         let (mut seq, mut renderer) = prepare(48_000.0);
         for instrument in instruments {
@@ -746,7 +954,12 @@ mod tests {
                 );
             }
         }
-        for instrument in [Instrument::Kick, Instrument::Snare, Instrument::HiHat] {
+        for instrument in [
+            Instrument::Kick,
+            Instrument::Snare,
+            Instrument::HiHat,
+            Instrument::OpenHat,
+        ] {
             let mut low = voice(
                 Note {
                     length_ticks: crate::tracker::NoteLength::default(),

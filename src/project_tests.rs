@@ -47,6 +47,31 @@ fn path_text(path: &Path) -> &str {
 }
 
 #[test]
+fn all_instrument_names_cycle_and_round_trip_in_version_two() {
+    let names = [
+        "Pluck", "Sine", "Square", "Saw", "Kick", "Snare", "HiHat", "Pad", "Drone", "Sustain", "OpenHat",
+    ];
+    let mut project = Project::new(1, names.len());
+    let mut app = App::default();
+    for (index, instrument) in Instrument::ALL.into_iter().enumerate() {
+        assert_eq!(instrument.label(), names[index]);
+        assert_eq!(serde_json::to_value(instrument).unwrap(), json!(names[index]));
+        assert_eq!(instrument.cycle(true).cycle(false), instrument);
+        assert_eq!(app.project.instrument(0), instrument);
+        press(&mut app, KeyCode::Char(']'));
+        project.set_instrument(index, instrument);
+    }
+    assert_eq!(app.project.instrument(0), Instrument::Pluck);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("all-presets.json");
+    project_file::save(&project, &path).unwrap();
+    let value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(value["version"], 2);
+    assert_eq!(value["instruments"], json!(names));
+    assert_eq!(project_file::load(&path).unwrap(), project);
+}
+
+#[test]
 fn version_one_fixture_and_multi_pattern_round_trip_preserve_shared_voices() {
     let project = project_file::load(&fixture()).unwrap();
     assert_eq!(project.bpm, 137.5);

@@ -13,10 +13,14 @@ pub enum Instrument {
     Kick,
     Snare,
     HiHat,
+    Pad,
+    Drone,
+    Sustain,
+    OpenHat,
 }
 
 impl Instrument {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 11] = [
         Self::Pluck,
         Self::Sine,
         Self::Square,
@@ -24,6 +28,10 @@ impl Instrument {
         Self::Kick,
         Self::Snare,
         Self::HiHat,
+        Self::Pad,
+        Self::Drone,
+        Self::Sustain,
+        Self::OpenHat,
     ];
 
     #[must_use]
@@ -36,6 +44,10 @@ impl Instrument {
             Self::Kick => "Kick",
             Self::Snare => "Snare",
             Self::HiHat => "HiHat",
+            Self::Pad => "Pad",
+            Self::Drone => "Drone",
+            Self::Sustain => "Sustain",
+            Self::OpenHat => "OpenHat",
         }
     }
 

@@ -23,7 +23,7 @@ Space stops playback, or starts from the cursor: the edited pattern in Pattern
 mode, the selected order entry in Song mode (row clamped to its pattern).
 Ctrl-Space restarts from the beginning; Normal `:restart` is the fallback.
 `-`/`+` adjusts BPM (20–300), and `[`/`]` changes the track's instrument.
-Percussion ignores note pitch.
+Pad, Drone, and Sustain hold pitched notes; OpenHat rings longer than HiHat. Percussion ignores note pitch.
 
 ### Patterns and order
 
