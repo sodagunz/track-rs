@@ -374,7 +374,11 @@ impl App {
             }
             _ if !command.available_in_view(self.view) => {}
             _ if self.view == View::Mixer && self.handle_mixer(command) => {}
-            Command::MixerValue | Command::MixerReset | Command::MixerAdjust(_) => {}
+            Command::MixerValue
+            | Command::MixerReset
+            | Command::MixerAdjust(_)
+            | Command::MixerMute
+            | Command::MixerSolo => {}
             Command::AuditionInstrument => self.request_audition(),
             Command::PreviousPattern
             | Command::NextPattern
@@ -453,6 +457,18 @@ impl App {
 
     fn handle_mixer(&mut self, command: Command) -> bool {
         match command {
+            Command::MixerMute | Command::MixerSolo => {
+                if self.mode == Mode::Normal {
+                    let track = self.cursor_track;
+                    let mut setting = self.project.channels()[track];
+                    if command == Command::MixerMute {
+                        setting.muted = !setting.muted;
+                    } else {
+                        setting.solo = !setting.solo;
+                    }
+                    self.edit(|edit| edit.set_channel(track, setting));
+                }
+            }
             Command::MixerValue => {
                 self.prompt = Some(String::new());
             }

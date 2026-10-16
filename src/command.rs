@@ -6,6 +6,8 @@ pub enum Command {
     MixerAdjust(i32),
     MixerValue,
     MixerReset,
+    MixerMute,
+    MixerSolo,
     ShowPattern,
     ShowArrangement,
     ShowMixer,
@@ -89,7 +91,12 @@ impl Command {
         match view {
             View::Pattern => !matches!(
                 self,
-                Self::AuditionInstrument | Self::MixerValue | Self::MixerReset | Self::MixerAdjust(_)
+                Self::AuditionInstrument
+                    | Self::MixerValue
+                    | Self::MixerReset
+                    | Self::MixerAdjust(_)
+                    | Self::MixerMute
+                    | Self::MixerSolo
             ),
             View::Arrangement => self.available_in_arrangement(),
             View::Mixer => {
@@ -113,6 +120,8 @@ impl Command {
                             | Self::FirstRow
                             | Self::LastRow
                             | Self::MixerAdjust(_)
+                            | Self::MixerMute
+                            | Self::MixerSolo
                             | Self::MixerValue
                             | Self::MixerReset
                     )

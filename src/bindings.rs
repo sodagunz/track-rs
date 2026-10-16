@@ -342,6 +342,14 @@ pub const DEFAULT_BINDINGS: &[Binding] = &[
     Binding::new(KeyCode::Up, Command::MoveCursorUp, "Previous parameter", "Navigation"),
     Binding::new(KeyCode::Down, Command::MoveCursorDown, "Next parameter", "Navigation"),
     Binding {
+        modes: &[Mode::Normal],
+        ..Binding::new(KeyCode::Char('m'), Command::MixerMute, "Toggle channel mute", "Mixer")
+    },
+    Binding {
+        modes: &[Mode::Normal],
+        ..Binding::new(KeyCode::Char('M'), Command::MixerSolo, "Toggle channel solo", "Mixer")
+    },
+    Binding {
         modes: &[Mode::Insert, Mode::Audition],
         ..Binding::new(
             KeyCode::Enter,
