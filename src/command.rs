@@ -6,6 +6,7 @@ pub enum Command {
     PreviousPattern,
     NextPattern,
     NewPattern,
+    AddTrack,
     DuplicatePattern,
     PreviousOrder,
     NextOrder,
