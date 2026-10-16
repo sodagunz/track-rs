@@ -1,7 +1,35 @@
 use crate::{
     command::Command,
-    tracker::{Note, Pattern},
+    history::{Edit, History, Revision},
+    project::Project,
+    tracker::Note,
 };
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Mode {
+    #[default]
+    Normal,
+    Insert,
+    Visual,
+}
+
+impl Mode {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Normal => "NORMAL",
+            Self::Insert => "INSERT",
+            Self::Visual => "VISUAL",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PlaybackMode {
+    #[default]
+    Pattern,
+    Song,
+}
 
 #[derive(Clone, Copy, Debug)]
 pub enum PlaybackState {
@@ -11,14 +39,30 @@ pub enum PlaybackState {
 
 #[derive(Clone, Debug)]
 pub struct App {
-    pub pattern: Pattern,
+    pub(crate) history: History,
+    // Track-major owned snapshot; None cells are part of the rectangle.
+    pub(crate) clipboard: Vec<Vec<Option<Note>>>,
+    pub edit_step: usize,
+    pub mode: Mode,
+    pub selection_anchor: Option<(usize, usize)>,
+    pub pending_count: Option<u16>,
+    pub project: Project,
+    pub selected_pattern: usize,
+    pub selected_order: usize,
+    pub playback_mode: PlaybackMode,
+    pub playing_pattern: usize,
+    pub playing_order: usize,
+    pub prompt: Option<String>,
+    pub status: String,
+    pub path: Option<std::path::PathBuf>,
+    pub(crate) saved_revision: Revision,
+    pub(crate) stop_requested: bool,
     pub cursor_row: usize,
     pub cursor_track: usize,
     /// UI mirror of the transport row; the runtime transport owns advancement.
     pub playback_row: usize,
     pub playback_state: PlaybackState,
     pub octave: u8,
-    pub bpm: f64,
     pub shutdown: bool,
     pub help_visible: bool,
     /// Index of the first binding shown; independent of terminal dimensions.
@@ -32,10 +76,10 @@ pub enum CursorOffset {
 }
 
 impl CursorOffset {
-    fn apply_to(&self, position: usize) -> usize {
+    const fn apply_to(&self, position: usize) -> usize {
         match self {
-            Self::Pos(delta) => position.checked_add(*delta).unwrap_or(position),
-            Self::Neg(delta) => position.checked_sub(*delta).unwrap_or(position),
+            Self::Pos(delta) => position.saturating_add(*delta),
+            Self::Neg(delta) => position.saturating_sub(*delta),
             Self::None => position,
         }
     }
@@ -46,13 +90,28 @@ impl Default for App {
         let default_rows = 64;
         let default_tracks = 4;
         Self {
-            pattern: Pattern::new(default_rows, default_tracks),
+            history: History::default(),
+            clipboard: Vec::new(),
+            edit_step: 0,
+            mode: Mode::Normal,
+            selection_anchor: None,
+            pending_count: None,
+            project: Project::new(default_rows, default_tracks),
+            selected_pattern: 0,
+            selected_order: 0,
+            playback_mode: PlaybackMode::Pattern,
+            playing_pattern: 0,
+            playing_order: 0,
+            prompt: None,
+            status: String::new(),
+            path: None,
+            saved_revision: Revision::default(),
+            stop_requested: false,
             cursor_row: 0,
             cursor_track: 0,
             octave: 4,
             playback_row: 0,
             playback_state: PlaybackState::Stopped,
-            bpm: 120.0,
             shutdown: false,
             help_visible: false,
             help_scroll: 0,
@@ -61,106 +120,489 @@ impl Default for App {
 }
 
 impl App {
+    #[must_use]
+    pub fn is_dirty(&self) -> bool {
+        self.revision() != self.saved_revision
+    }
+
+    /// Consume a stop transition even if a caller restarted playback before the next tick.
+    pub fn take_stop_request(&mut self) -> bool {
+        std::mem::take(&mut self.stop_requested)
+    }
+
+    pub(crate) fn execute_prompt(&mut self, text: &str) {
+        if let Err(error) = self.execute_file_command(text) {
+            self.status = format!("{error:#}");
+        }
+    }
+
+    fn execute_file_command(&mut self, text: &str) -> anyhow::Result<()> {
+        let text = text.trim_start();
+        let (command, remainder) = text
+            .find(char::is_whitespace)
+            .map_or((text, ""), |index| (&text[..index], text[index..].trim_start()));
+        match command {
+            "w" | "wq" => {
+                let path = if remainder.is_empty() {
+                    self.path
+                        .clone()
+                        .ok_or_else(|| anyhow::anyhow!("No file path; use :w <path>"))?
+                } else {
+                    std::path::PathBuf::from(remainder)
+                };
+                crate::project_file::save(&self.project, &path)?;
+                self.path = Some(path);
+                self.saved_revision = self.revision();
+                self.status = "Saved".into();
+                if command == "wq" {
+                    self.shutdown = true;
+                }
+            }
+            "e" | "e!" => {
+                anyhow::ensure!(!remainder.is_empty(), "Expected :e[!] <path>");
+                anyhow::ensure!(
+                    command == "e!" || !self.is_dirty(),
+                    "Unsaved changes; use :w or :e! <path>"
+                );
+                let path = std::path::PathBuf::from(remainder);
+                let project = crate::project_file::load(&path)?;
+                self.project = project;
+                self.path = Some(path);
+                self.selected_pattern = 0;
+                self.selected_order = 0;
+                self.playing_pattern = 0;
+                self.playing_order = 0;
+                self.history = History::default();
+                self.saved_revision = self.revision();
+                self.clipboard.clear();
+                self.selection_anchor = None;
+                self.cursor_row = 0;
+                self.cursor_track = 0;
+                self.pending_count = None;
+                self.mode = Mode::Normal;
+                self.playback_state = PlaybackState::Stopped;
+                self.playback_row = 0;
+                self.stop_requested = true;
+                self.status = "Loaded".into();
+            }
+            "q" | "q!" => {
+                anyhow::ensure!(remainder.is_empty(), "Expected :q or :q!");
+                if command == "q!" {
+                    self.shutdown = true;
+                } else {
+                    self.shutdown();
+                }
+            }
+            _ => anyhow::bail!("Unknown command; use :w [path], :e[!] <path>, :q[!], :wq"),
+        }
+        Ok(())
+    }
+
+    /// Whether a cell lies in the inclusive Visual rectangle.
+    #[must_use]
+    pub fn is_selected(&self, row: usize, track: usize) -> bool {
+        self.selection_anchor.is_some_and(|(anchor_row, anchor_track)| {
+            (anchor_row.min(self.cursor_row)..=anchor_row.max(self.cursor_row)).contains(&row)
+                && (anchor_track.min(self.cursor_track)..=anchor_track.max(self.cursor_track)).contains(&track)
+        })
+    }
+
     /// Apply an editor action without depending on terminal key events.
     pub fn handle_command(&mut self, command: Command) {
         match command {
             Command::ToggleHelp => {
+                self.pending_count = None;
                 self.help_visible = !self.help_visible;
                 self.help_scroll = 0;
             }
             Command::DismissHelp => {
+                self.pending_count = None;
                 self.help_visible = false;
             }
-            Command::ScrollHelpUp | Command::ScrollHelpDown => {
-                if self.help_visible {
-                    self.help_scroll = if command == Command::ScrollHelpUp {
-                        self.help_scroll.saturating_sub(1)
-                    } else {
-                        self.help_scroll
-                            .saturating_add(1)
-                            .min(crate::bindings::DEFAULT_BINDINGS.len().saturating_sub(1))
-                    };
-                }
-            }
+            Command::ScrollHelpUp | Command::ScrollHelpDown => self.scroll_help(command == Command::ScrollHelpDown),
             Command::Quit => self.shutdown(),
             _ if self.help_visible => {}
+
+            Command::PreviousPattern
+            | Command::NextPattern
+            | Command::NewPattern
+            | Command::DuplicatePattern
+            | Command::PreviousOrder
+            | Command::NextOrder
+            | Command::AppendOrder
+            | Command::RemoveOrder
+            | Command::OrderEarlier
+            | Command::OrderLater
+            | Command::ToggleSong
+            | Command::Undo
+            | Command::Redo => self.handle_arrangement(command),
+            Command::OpenPrompt => self.open_prompt(),
+            Command::EnterInsert => {
+                self.mode = Mode::Insert;
+                self.selection_anchor = None;
+            }
+            Command::EnterNormal => {
+                self.mode = Mode::Normal;
+                self.selection_anchor = None;
+                self.pending_count = None;
+            }
+            Command::ToggleVisual => {
+                if self.mode == Mode::Visual {
+                    self.mode = Mode::Normal;
+                    self.selection_anchor = None;
+                } else {
+                    self.mode = Mode::Visual;
+                    self.selection_anchor = Some((self.cursor_row, self.cursor_track));
+                }
+            }
+            Command::CountDigit(_) => {}
+            Command::MoveCursor { rows, tracks } => {
+                let offset = |value: i32| {
+                    if value < 0 {
+                        CursorOffset::Neg(value.unsigned_abs() as usize)
+                    } else {
+                        CursorOffset::Pos(value.unsigned_abs() as usize)
+                    }
+                };
+                self.offset_cursor(&offset(rows), &offset(tracks));
+            }
             Command::TogglePlayback => self.toggle_playback(),
             Command::MoveCursorUp => self.offset_cursor(&CursorOffset::Neg(1), &CursorOffset::None),
             Command::MoveCursorDown => self.offset_cursor(&CursorOffset::Pos(1), &CursorOffset::None),
             Command::MoveCursorLeft => self.offset_cursor(&CursorOffset::None, &CursorOffset::Neg(1)),
             Command::MoveCursorRight => self.offset_cursor(&CursorOffset::None, &CursorOffset::Pos(1)),
-            Command::InsertNote { pitch, octave_offset } => self.insert_note_under_cursor(Some(Note {
+            Command::InsertNote { pitch, octave_offset } => self.enter_note(Note {
                 pitch,
                 octave: self.octave.saturating_add(octave_offset).min(9),
-            })),
-            Command::SetInstrument(instrument) => self.pattern.set_instrument(self.cursor_track, instrument),
+            }),
+            Command::CycleEditStep => self.cycle_edit_step(),
+            Command::Copy | Command::Cut => self.copy_or_cut(command == Command::Cut),
+            Command::Paste => self.paste(),
+            Command::SetInstrument(instrument) => {
+                let track = self.cursor_track;
+                self.edit(|edit| edit.set_instrument(track, instrument));
+            }
             Command::PreviousInstrument | Command::NextInstrument => {
                 let instrument = self
-                    .pattern
+                    .project
                     .instrument(self.cursor_track)
                     .cycle(command == Command::NextInstrument);
-                self.pattern.set_instrument(self.cursor_track, instrument);
+                let track = self.cursor_track;
+                self.edit(|edit| edit.set_instrument(track, instrument));
             }
-            Command::DecreaseTempo => self.bpm = (self.bpm - 1.0).clamp(20.0, 300.0),
-            Command::IncreaseTempo => self.bpm = (self.bpm + 1.0).clamp(20.0, 300.0),
-            Command::LowerNote | Command::RaiseNote => {
-                if let Some(note) = self
-                    .pattern
-                    .get_step(self.cursor_track, self.cursor_row)
-                    .and_then(|step| step.note)
-                {
-                    self.insert_note_under_cursor(Some(note.transpose(if command == Command::RaiseNote {
-                        1
-                    } else {
-                        -1
-                    })));
-                }
+            Command::DecreaseTempo | Command::IncreaseTempo => {
+                let bpm =
+                    (self.project.bpm + if command == Command::IncreaseTempo { 1.0 } else { -1.0 }).clamp(20.0, 300.0);
+                self.edit(|edit| edit.set_tempo(bpm));
             }
-            Command::DeleteNote => self.insert_note_under_cursor(None),
+            Command::LowerNote | Command::RaiseNote => self.transpose_note(command == Command::RaiseNote),
+            Command::DeleteNote => self.clear_selection(),
             Command::DecreaseOctave => self.octave = self.octave.saturating_sub(1).min(9),
             Command::IncreaseOctave => self.octave = self.octave.saturating_add(1).min(9),
         }
     }
 
+    fn transpose_note(&mut self, raise: bool) {
+        if let Some(note) = self.project.patterns[self.selected_pattern]
+            .get_step(self.cursor_track, self.cursor_row)
+            .and_then(|step| step.note)
+        {
+            self.insert_note_under_cursor(Some(note.transpose(if raise { 1 } else { -1 })));
+        }
+    }
+
+    fn scroll_help(&mut self, down: bool) {
+        if self.help_visible {
+            self.help_scroll = if down {
+                self.help_scroll
+                    .saturating_add(1)
+                    .min(crate::bindings::DEFAULT_BINDINGS.len().saturating_sub(1))
+            } else {
+                self.help_scroll.saturating_sub(1)
+            };
+        }
+    }
+
+    fn handle_arrangement(&mut self, command: Command) {
+        match command {
+            Command::PreviousPattern => self.switch_pattern(self.selected_pattern.saturating_sub(1)),
+            Command::NextPattern => {
+                self.switch_pattern((self.selected_pattern + 1).min(self.project.patterns.len() - 1));
+            }
+            Command::NewPattern | Command::DuplicatePattern => {
+                let source = self.selected_pattern;
+                let count = self.project.patterns.len();
+                self.edit(|edit| edit.append_pattern(source, command == Command::DuplicatePattern));
+                if self.project.patterns.len() > count {
+                    self.switch_pattern(count);
+                } else {
+                    self.status = "Pattern/cell limit reached".into();
+                }
+            }
+            Command::PreviousOrder => self.selected_order = self.selected_order.saturating_sub(1),
+            Command::NextOrder => self.selected_order = (self.selected_order + 1).min(self.project.order.len() - 1),
+            Command::AppendOrder | Command::RemoveOrder | Command::OrderEarlier | Command::OrderLater => {
+                self.arrange(command);
+            }
+            Command::ToggleSong => {
+                self.stop_playback();
+                self.playback_mode = if self.playback_mode == PlaybackMode::Song {
+                    PlaybackMode::Pattern
+                } else {
+                    PlaybackMode::Song
+                };
+            }
+            Command::Undo | Command::Redo => {
+                let redo = command == Command::Redo;
+                let structural = self.history.structural_next(redo);
+                if structural {
+                    self.stop_playback();
+                }
+                if redo {
+                    self.history.redo(&mut self.project);
+                } else {
+                    self.history.undo(&mut self.project);
+                }
+                if structural {
+                    self.selected_order = self.selected_order.min(self.project.order.len() - 1);
+                    self.playing_pattern = self.playing_pattern.min(self.project.patterns.len() - 1);
+                    self.playing_order = self.playing_order.min(self.project.order.len() - 1);
+                    self.switch_pattern(self.selected_pattern.min(self.project.patterns.len() - 1));
+                }
+            }
+            _ => unreachable!("arrangement command"),
+        }
+    }
+
+    fn switch_pattern(&mut self, index: usize) {
+        self.selected_pattern = index;
+        self.selection_anchor = None;
+        self.pending_count = None;
+        self.offset_cursor(&CursorOffset::None, &CursorOffset::None);
+    }
+
+    const fn stop_playback(&mut self) {
+        self.playback_state = PlaybackState::Stopped;
+        self.stop_requested = true;
+    }
+
+    fn arrange(&mut self, command: Command) {
+        let index = self.selected_order;
+        // Reject no-ops and limits before allocating an order snapshot or stopping.
+        match command {
+            Command::AppendOrder if self.project.order.len() >= crate::project_file::MAX_ORDER => {
+                self.status = "Order limit reached".into();
+                return;
+            }
+            Command::RemoveOrder if self.project.order.len() == 1 => return,
+            Command::OrderEarlier if index == 0 || self.project.order[index] == self.project.order[index - 1] => return,
+            Command::OrderLater
+                if index + 1 == self.project.order.len()
+                    || self.project.order[index] == self.project.order[index + 1] =>
+            {
+                return
+            }
+            _ => {}
+        }
+        self.stop_playback();
+        let mut order = self.project.order.clone();
+        match command {
+            Command::AppendOrder => {
+                order.push(self.selected_pattern);
+                self.selected_order = order.len() - 1;
+            }
+            Command::RemoveOrder => {
+                order.remove(index);
+                self.selected_order = index.min(order.len() - 1);
+            }
+            Command::OrderEarlier => {
+                order.swap(index, index - 1);
+                self.selected_order -= 1;
+            }
+            Command::OrderLater => {
+                order.swap(index, index + 1);
+                self.selected_order += 1;
+            }
+            _ => unreachable!(),
+        }
+        self.edit(|edit| edit.set_order(order));
+    }
+
+    fn open_prompt(&mut self) {
+        self.pending_count = None;
+        self.prompt = Some(String::new());
+        self.status.clear();
+    }
+
+    const fn cycle_edit_step(&mut self) {
+        self.edit_step = match self.edit_step {
+            0 => 1,
+            1 => 2,
+            2 => 4,
+            _ => 0,
+        };
+    }
+
+    fn enter_note(&mut self, note: Note) {
+        if self.project.patterns[self.selected_pattern]
+            .get_step(self.cursor_track, self.cursor_row)
+            .is_some()
+        {
+            self.insert_note_under_cursor(Some(note));
+            if self.mode == Mode::Insert {
+                self.offset_cursor(&CursorOffset::Pos(self.edit_step), &CursorOffset::None);
+            }
+        }
+    }
+
+    fn copy_or_cut(&mut self, cut: bool) {
+        self.copy_rectangle();
+        if cut {
+            self.clear_rectangle();
+        }
+        self.finish_selection();
+    }
+
+    fn rectangle(&self) -> (usize, usize, usize, usize) {
+        let (row, track) = if self.mode == Mode::Visual {
+            self.selection_anchor.unwrap_or((self.cursor_row, self.cursor_track))
+        } else {
+            (self.cursor_row, self.cursor_track)
+        };
+        (
+            row.min(self.cursor_row),
+            row.max(self.cursor_row)
+                .min(self.project.patterns[self.selected_pattern].num_rows.saturating_sub(1)),
+            track.min(self.cursor_track),
+            track.max(self.cursor_track).min(
+                self.project.patterns[self.selected_pattern]
+                    .tracks
+                    .len()
+                    .saturating_sub(1),
+            ),
+        )
+    }
+
+    fn copy_rectangle(&mut self) {
+        let (first_row, last_row, first_track, last_track) = self.rectangle();
+        self.clipboard = (first_track..=last_track)
+            .map(|track| {
+                (first_row..=last_row)
+                    .map(|row| {
+                        self.project.patterns[self.selected_pattern]
+                            .get_step(track, row)
+                            .and_then(|step| step.note)
+                    })
+                    .collect()
+            })
+            .collect();
+    }
+
+    fn clear_rectangle(&mut self) {
+        let (first_row, last_row, first_track, last_track) = self.rectangle();
+        let pattern = self.selected_pattern;
+        self.edit(|edit| {
+            for track in first_track..=last_track {
+                for row in first_row..=last_row {
+                    edit.set_cell(pattern, track, row, None);
+                }
+            }
+        });
+    }
+
+    fn clear_selection(&mut self) {
+        self.clear_rectangle();
+        self.finish_selection();
+    }
+
+    fn finish_selection(&mut self) {
+        if self.mode == Mode::Visual {
+            self.mode = Mode::Normal;
+        }
+        self.selection_anchor = None;
+    }
+
+    fn paste(&mut self) {
+        let (track, row) = (self.cursor_track, self.cursor_row);
+        let tracks = self.project.patterns[self.selected_pattern]
+            .tracks
+            .len()
+            .saturating_sub(track);
+        let rows = self.project.patterns[self.selected_pattern]
+            .num_rows
+            .saturating_sub(row);
+        let clipboard = self.clipboard.clone();
+        let pattern = self.selected_pattern;
+        self.edit(|edit| {
+            for (dt, cells) in clipboard.iter().take(tracks).enumerate() {
+                for (dr, note) in cells.iter().take(rows).enumerate() {
+                    edit.set_cell(pattern, track + dt, row + dr, *note);
+                }
+            }
+        });
+    }
+
     pub fn offset_cursor(&mut self, dr: &CursorOffset, dt: &CursorOffset) {
-        let max_rows = self.pattern.num_rows;
-        let max_tracks = self.pattern.tracks.len();
+        let max_rows = self.project.patterns[self.selected_pattern].num_rows;
+        let max_tracks = self.project.patterns[self.selected_pattern].tracks.len();
 
         self.cursor_row = dr.apply_to(self.cursor_row).clamp(0, max_rows.saturating_sub(1));
         self.cursor_track = dt.apply_to(self.cursor_track).clamp(0, max_tracks.saturating_sub(1));
     }
 
-    pub const fn shutdown(&mut self) {
-        self.shutdown = true;
+    pub fn shutdown(&mut self) {
+        if self.is_dirty() {
+            self.status = "Unsaved changes; use :w or :q!".into();
+        } else {
+            self.shutdown = true;
+        }
     }
 
-    pub const fn toggle_playback(&mut self) {
+    pub fn toggle_playback(&mut self) {
         match self.playback_state {
             PlaybackState::Stopped => {
                 self.playback_state = PlaybackState::Playing;
+                self.playing_order = 0;
+                self.playing_pattern = if self.playback_mode == PlaybackMode::Song {
+                    self.project.order[0]
+                } else {
+                    self.selected_pattern
+                };
                 self.playback_row = 0; // TODO: feat(Loop) loop_start_cursor/playback_start_cursor
             }
             PlaybackState::Playing => {
-                self.playback_state = PlaybackState::Stopped;
-                // The runtime observes this transition and cancels audio.
+                self.stop_playback();
             }
         }
     }
 
-    /// Replace the note at the cursor position.
-    ///
-    /// # Panics
-    /// Panics if the cursor is outside the pattern's tracks or rows.
+    /// Apply one document transaction, including future multi-cell operations.
+    pub fn edit(&mut self, operation: impl FnOnce(&mut Edit<'_>)) {
+        if self.history.edit(&mut self.project, operation) {
+            self.stop_playback();
+            self.selected_order = self.selected_order.min(self.project.order.len() - 1);
+        }
+    }
+
+    /// Stable identity for future saved-revision comparisons, even after eviction.
+    #[must_use]
+    pub const fn revision(&self) -> Revision {
+        self.history.revision()
+    }
+
+    /// Replace the note at the cursor; invalid positions are ignored.
     pub fn insert_note_under_cursor(&mut self, note: Option<Note>) {
-        self.pattern
-            .set_step(self.cursor_track, self.cursor_row, note)
-            .expect("Cursor should be whitin bounds");
+        let (track, row) = (self.cursor_track, self.cursor_row);
+        let pattern = self.selected_pattern;
+        self.edit(|edit| edit.set_cell(pattern, track, row, note));
     }
 
     /// Legacy standalone editor helper; the runtime uses `Transport` instead.
-    pub const fn advance_playback_row(&mut self) {
-        if matches!(self.playback_state, PlaybackState::Playing) && self.pattern.num_rows > 0 {
-            self.playback_row = (self.playback_row + 1) % self.pattern.num_rows;
+    pub fn advance_playback_row(&mut self) {
+        if matches!(self.playback_state, PlaybackState::Playing)
+            && self.project.patterns[self.playing_pattern].num_rows > 0
+        {
+            self.playback_row = (self.playback_row + 1) % self.project.patterns[self.playing_pattern].num_rows;
         }
     }
 }
@@ -181,13 +623,13 @@ mod tests {
             ..App::default()
         };
         app.handle_command(Command::PreviousInstrument);
-        assert_eq!(app.pattern.instrument(2), Instrument::HiHat);
+        assert_eq!(app.project.instrument(2), Instrument::HiHat);
         app.handle_command(Command::NextInstrument);
-        assert_eq!(app.pattern.instrument(2), Instrument::Pluck);
+        assert_eq!(app.project.instrument(2), Instrument::Pluck);
         for expected in Instrument::ALL.into_iter().cycle().skip(1).take(14) {
             app.handle_command(Command::NextInstrument);
-            assert_eq!(app.pattern.instrument(2), expected);
-            assert_eq!(app.pattern.instrument(0), Instrument::Pluck);
+            assert_eq!(app.project.instrument(2), expected);
+            assert_eq!(app.project.instrument(0), Instrument::Pluck);
             assert_eq!((app.cursor_track, app.cursor_row, app.playback_row), (2, 7, 3));
             assert!(matches!(app.playback_state, PlaybackState::Playing));
         }
@@ -199,14 +641,14 @@ mod tests {
             Command::SetInstrument(Instrument::Sine),
         ] {
             app.handle_command(command);
-            assert_eq!(app.pattern.instrument(2), Instrument::Snare);
+            assert_eq!(app.project.instrument(2), Instrument::Snare);
         }
-        app.pattern.tracks.push(vec![]);
-        assert_eq!(app.pattern.instrument(4), Instrument::Pluck);
-        app.pattern.set_instrument(4, Instrument::Kick);
-        assert_eq!(app.pattern.instrument(4), Instrument::Kick);
-        app.pattern.set_instrument(usize::MAX, Instrument::Kick);
-        assert_eq!(app.pattern.instrument(usize::MAX), Instrument::Pluck);
+        app.project.instruments.push(Instrument::Pluck);
+        assert_eq!(app.project.instrument(4), Instrument::Pluck);
+        app.project.set_instrument(4, Instrument::Kick);
+        assert_eq!(app.project.instrument(4), Instrument::Kick);
+        app.project.set_instrument(usize::MAX, Instrument::Kick);
+        assert_eq!(app.project.instrument(usize::MAX), Instrument::Pluck);
     }
 
     #[test]
@@ -221,15 +663,15 @@ mod tests {
             for _ in 0..400 {
                 app.handle_command(Command::DecreaseTempo);
             }
-            assert_eq!(app.bpm, 20.0);
+            assert_eq!(app.project.bpm, 20.0);
             app.handle_command(Command::IncreaseTempo);
-            assert_eq!(app.bpm, 21.0);
+            assert_eq!(app.project.bpm, 21.0);
             for _ in 0..400 {
                 app.handle_command(Command::IncreaseTempo);
             }
-            assert_eq!(app.bpm, 300.0);
+            assert_eq!(app.project.bpm, 300.0);
             app.handle_command(Command::DecreaseTempo);
-            assert_eq!(app.bpm, 299.0);
+            assert_eq!(app.project.bpm, 299.0);
             assert_eq!(matches!(app.playback_state, PlaybackState::Playing), playing);
             assert_eq!(
                 (app.playback_row, app.cursor_row, app.cursor_track, app.octave),
@@ -243,13 +685,17 @@ mod tests {
         use NotePitch::{As, Cs, Ds, Fs, Gs, A, B, C, D, E, F, G};
         let pitches = [C, Cs, D, Ds, E, F, Fs, G, Gs, A, As, B];
         let mut app = App {
+            mode: Mode::Insert,
             cursor_row: 3,
             cursor_track: 2,
             ..App::default()
         };
         for command in [Command::LowerNote, Command::RaiseNote] {
             app.handle_command(command);
-            assert_eq!(app.pattern.get_step(2, 3).unwrap().note, None);
+            assert_eq!(
+                app.project.patterns[app.selected_pattern].get_step(2, 3).unwrap().note,
+                None
+            );
             for index in 0..120_usize {
                 let note = Note {
                     pitch: pitches[index % 12],
@@ -263,14 +709,17 @@ mod tests {
                     index.saturating_sub(1)
                 };
                 assert_eq!(
-                    app.pattern.get_step(2, 3).unwrap().note,
+                    app.project.patterns[app.selected_pattern].get_step(2, 3).unwrap().note,
                     Some(Note {
                         pitch: pitches[expected % 12],
                         octave: u8::try_from(expected / 12).unwrap()
                     })
                 );
                 assert_eq!(app.octave, 4);
-                assert_eq!(app.pattern.get_step(0, 0).unwrap().note, None);
+                assert_eq!(
+                    app.project.patterns[app.selected_pattern].get_step(0, 0).unwrap().note,
+                    None
+                );
             }
             app.insert_note_under_cursor(None);
         }
@@ -278,7 +727,10 @@ mod tests {
 
     #[test]
     fn help_is_modal_bounded_and_does_not_pause_playback() {
-        let mut app = App::default();
+        let mut app = App {
+            mode: Mode::Insert,
+            ..App::default()
+        };
         app.handle_command(Command::DismissHelp);
         assert!(!app.shutdown);
         app.handle_command(Command::TogglePlayback);
@@ -286,7 +738,7 @@ mod tests {
             pitch: NotePitch::C,
             octave_offset: 0,
         });
-        let note = app.pattern.get_step(0, 0).unwrap().note;
+        let note = app.project.patterns[app.selected_pattern].get_step(0, 0).unwrap().note;
         app.handle_command(Command::ToggleHelp);
         for binding in crate::bindings::DEFAULT_BINDINGS {
             if !matches!(
@@ -298,9 +750,12 @@ mod tests {
                     | Command::ScrollHelpDown
             ) {
                 app.handle_command(binding.command);
-                assert_eq!(app.bpm, 120.0, "{:?}", binding.command);
+                assert_eq!(app.project.bpm, 120.0, "{:?}", binding.command);
                 assert_eq!((app.cursor_row, app.cursor_track, app.octave), (0, 0, 4));
-                assert_eq!(app.pattern.get_step(0, 0).unwrap().note, note);
+                assert_eq!(
+                    app.project.patterns[app.selected_pattern].get_step(0, 0).unwrap().note,
+                    note
+                );
                 assert!(matches!(app.playback_state, PlaybackState::Playing));
             }
         }
@@ -321,12 +776,16 @@ mod tests {
         assert!(!app.help_visible);
         app.handle_command(Command::ToggleHelp);
         app.handle_command(Command::Quit);
-        assert!(app.shutdown);
+        assert!(!app.shutdown);
+        assert!(app.status.contains("Unsaved changes"));
     }
 
     #[test]
     fn commands_move_edit_and_delete_at_the_selected_cell() {
-        let mut app = App::default();
+        let mut app = App {
+            mode: Mode::Insert,
+            ..App::default()
+        };
         app.handle_command(Command::MoveCursorDown);
         app.handle_command(Command::MoveCursorRight);
         app.handle_command(Command::InsertNote {
@@ -334,14 +793,17 @@ mod tests {
             octave_offset: 1,
         });
         assert_eq!(
-            app.pattern.get_step(1, 1).unwrap().note,
+            app.project.patterns[app.selected_pattern].get_step(1, 1).unwrap().note,
             Some(Note {
                 pitch: NotePitch::D,
                 octave: 5
             })
         );
         app.handle_command(Command::DeleteNote);
-        assert_eq!(app.pattern.get_step(1, 1).unwrap().note, None);
+        assert_eq!(
+            app.project.patterns[app.selected_pattern].get_step(1, 1).unwrap().note,
+            None
+        );
         app.handle_command(Command::MoveCursorUp);
         app.handle_command(Command::MoveCursorLeft);
         app.handle_command(Command::MoveCursorUp);
@@ -356,7 +818,10 @@ mod tests {
 
     #[test]
     fn octave_commands_and_upper_c_stay_in_range() {
-        let mut app = App::default();
+        let mut app = App {
+            mode: Mode::Insert,
+            ..App::default()
+        };
         for _ in 0..20 {
             app.handle_command(Command::IncreaseOctave);
         }
@@ -365,7 +830,15 @@ mod tests {
             pitch: NotePitch::C,
             octave_offset: 1,
         });
-        assert_eq!(app.pattern.get_step(0, 0).unwrap().note.unwrap().octave, 9);
+        assert_eq!(
+            app.project.patterns[app.selected_pattern]
+                .get_step(0, 0)
+                .unwrap()
+                .note
+                .unwrap()
+                .octave,
+            9
+        );
         for _ in 0..20 {
             app.handle_command(Command::DecreaseOctave);
         }

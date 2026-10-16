@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "bpm": 137.5,
+  "instruments": ["Kick", "HiHat", "Sine"],
+  "patterns": [
+    {
+      "rows": 2,
+      "tracks": 3,
+      "cells": [
+        [{"pitch": "C", "octave": 0}, null],
+        [null, {"pitch": "F#", "octave": 4}],
+        [{"pitch": "B", "octave": 9}, null]
+      ]
+    },
+    {
+      "rows": 3,
+      "tracks": 3,
+      "cells": [
+        [null, null, {"pitch": "D#", "octave": 3}],
+        [null, null, null],
+        [{"pitch": "A#", "octave": 5}, null, null]
+      ]
+    }
+  ],
+  "order": [0, 0, 1]
+}
