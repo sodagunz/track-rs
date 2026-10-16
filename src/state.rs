@@ -682,10 +682,15 @@ mod tests {
             ..App::default()
         };
         app.handle_command(Command::PreviousInstrument);
-        assert_eq!(app.project.instrument(2), Instrument::HiHat);
+        assert_eq!(app.project.instrument(2), Instrument::OpenHat);
         app.handle_command(Command::NextInstrument);
         assert_eq!(app.project.instrument(2), Instrument::Pluck);
-        for expected in Instrument::ALL.into_iter().cycle().skip(1).take(14) {
+        for expected in Instrument::ALL
+            .into_iter()
+            .cycle()
+            .skip(1)
+            .take(Instrument::ALL.len() * 2)
+        {
             app.handle_command(Command::NextInstrument);
             assert_eq!(app.project.instrument(2), expected);
             assert_eq!(app.project.instrument(0), Instrument::Pluck);

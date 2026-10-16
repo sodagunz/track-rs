@@ -3,7 +3,9 @@
 Status: Phase 1 implemented and validated on `feat/add-tracks`, based on develop
 `f0a7ea7` after the earlier stacks merged. Phase 2 implemented on
 `feat/cursor-playback`, stacked on `feat/add-tracks` (PR #17). Phase 3 implemented
-on `feat/note-lengths`, stacked on `feat/cursor-playback` (PR #18). Phases 4–5 pending.
+on `feat/note-lengths`, stacked on `feat/cursor-playback` (PR #18). Phase 4's
+implementation and automated checks are complete on `feat/sustained-presets`, stacked
+on `feat/note-lengths` (PR #19); listening is pending. Phase 5 is pending.
 
 One phase per PR. Preserve the existing modal editor, history, and project
 files. No mixer, arbitrary synth editor, or track removal in this pass.
@@ -126,27 +128,40 @@ and clean quit using ALSA null output.
 
 Touches: instrument definitions, voice factory, preset selection, audio tests.
 
-- [ ] Add Pad, Drone, Sustain, and OpenHat alongside the existing presets. Keep
+- [x] Add Pad, Drone, Sustain, and OpenHat alongside the existing presets. Keep
   Pluck and existing instrument names/defaults intact. OpenHat is noise-based and
   ignores pitch like the other percussion; the new pitched voices follow notes.
-- [ ] Pad: softly detuned oscillators with a gentle attack/release. Drone: a low,
+- [x] Pad: softly detuned oscillators with a gentle attack/release. Drone: a low,
   slowly moving sustained tone. Sustain: a plain stable pitched voice with a short
   attack/release. Keep these small fixed presets, not a parameter editor.
-- [ ] OpenHat uses a slower-decaying filtered noise envelope than HiHat. The gate
+- [x] OpenHat uses a slower-decaying filtered noise envelope than HiHat. The gate
   still bounds the sound; use longer note lengths to let the open tail ring.
-- [ ] Give presets their own attack/release defaults rather than one global fade.
+- [x] Give presets their own attack/release defaults rather than one global fade.
   Scale fades for short gates; long pitched gates hold instead of decaying to
   silence early. Retain short percussion attacks and measured level checks.
-- [ ] Budget release inside the note's total gate length for predictable timing.
+- [x] Budget release inside the note's total gate length for predictable timing.
   Retrigger, stop, restart, and structural cancellation must all honor per-track
   voice ownership without resurrecting old notes or leaving tails running.
-- [ ] Add seeded offline tests for finite/non-silent output, held-note energy,
+- [x] Add seeded offline tests for finite/non-silent output, held-note energy,
   onset/release continuity, open/closed-hat decay difference, mixed-level headroom,
   and no voice growth under repeated triggering. Test loaded v2 instrument names.
 - [ ] Do a listening pass for sound identity, bass audibility, relative levels,
   clicks, and long holds. Automated RMS/peak checks don't replace that pass.
 
-Done: choose a pad or drone, hold it across a bar, and mix it with an open hat.
+Implementation and automation done; listening not reviewed. Choose a pad or drone,
+hold it across a bar, and mix it with an open hat.
+
+Evidence: 96 nextest tests pass (91 baseline + 5 new), with no skipped tests,
+in a fresh tracked-files-only build without ignored demos or development-shell
+files. Production `OutputCommand`/`GatedVoice` tests cover deterministic holds,
+pitch, onset/release continuity, and held energy at 20/120/300 BPM and
+8,000/44,100/48,000 Hz. Hat comparisons and short gates use 44,100/48,000 Hz
+(the hats retain the existing 7 kHz filter). Normal four-track mixes and repeated
+triggers stay below clipping; this is not a limiter or a 128-track headroom claim.
+Both envelope paths share preset fade settings. Existing percussion attack-level
+checks and v1 fixtures remain intact; all instrument names cycle and round-trip
+in v2. Full CI checks and the unchanged null-audio example pass; cargo-deny retains
+existing duplicate-dependency warnings. Listening remains unchecked above.
 
 ## 5. Glanceable, mode-first help
 
