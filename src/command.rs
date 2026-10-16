@@ -47,6 +47,12 @@ pub enum Command {
     SetInstrument(Instrument),
     DecreaseTempo,
     IncreaseTempo,
+    FirstTrack,
+    FirstRow,
+    LastRow,
+    LastTrack,
+    LowerOctave,
+    RaiseOctave,
     LowerNote,
     RaiseNote,
     DecreaseOctave,
@@ -70,6 +76,8 @@ impl Command {
                 | Self::NextInstrument
                 | Self::DecreaseTempo
                 | Self::IncreaseTempo
+                | Self::LowerOctave
+                | Self::RaiseOctave
                 | Self::LowerNote
                 | Self::RaiseNote
                 | Self::DecreaseOctave

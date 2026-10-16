@@ -16,6 +16,7 @@ use crate::{
 #[derive(Clone, Copy, Debug)]
 pub struct Binding {
     pub key: KeyCode,
+    pub prefix: Option<KeyCode>,
     pub modifiers: KeyModifiers,
     pub modes: &'static [Mode],
     pub command: Command,
@@ -27,22 +28,19 @@ impl Binding {
     const fn new(key: KeyCode, command: Command, description: &'static str, category: &'static str) -> Self {
         Self {
             key,
+            prefix: None,
             modifiers: KeyModifiers::NONE,
             modes: match command {
                 Command::InsertNote { .. }
                 | Command::HalveLength
                 | Command::DoubleLength
                 | Command::CycleEditStep
-                | Command::LowerNote
-                | Command::RaiseNote
                 | Command::DecreaseOctave
                 | Command::IncreaseOctave => &[Mode::Insert],
                 Command::OpenPrompt | Command::Undo | Command::Redo | Command::Paste => &[Mode::Normal],
-                Command::Copy
-                | Command::Cut
-                | Command::EnterInsert
-                | Command::ToggleVisual
-                | Command::CountDigit(_) => &[Mode::Normal, Mode::Visual],
+                Command::Copy | Command::Cut | Command::EnterInsert | Command::ToggleVisual => {
+                    &[Mode::Normal, Mode::Visual]
+                }
                 _ => &[Mode::Normal, Mode::Insert, Mode::Visual],
             },
             command,
@@ -54,6 +52,22 @@ impl Binding {
 
 /// The single source of truth for default controls and their descriptions.
 pub const DEFAULT_BINDINGS: &[Binding] = &[
+    Binding {
+        prefix: Some(KeyCode::Char('g')),
+        ..Binding::new(KeyCode::Char('h'), Command::FirstTrack, "First track", "Navigation")
+    },
+    Binding {
+        prefix: Some(KeyCode::Char('g')),
+        ..Binding::new(KeyCode::Char('j'), Command::FirstRow, "First row", "Navigation")
+    },
+    Binding {
+        prefix: Some(KeyCode::Char('g')),
+        ..Binding::new(KeyCode::Char('k'), Command::LastRow, "Last row", "Navigation")
+    },
+    Binding {
+        prefix: Some(KeyCode::Char('g')),
+        ..Binding::new(KeyCode::Char('l'), Command::LastTrack, "Last track", "Navigation")
+    },
     Binding::new(KeyCode::Char('{'), Command::HalveLength, "Halve note length", "Editing"),
     Binding::new(
         KeyCode::Char('}'),
@@ -324,13 +338,13 @@ pub const DEFAULT_BINDINGS: &[Binding] = &[
         "Playback",
     ),
     Binding::new(
-        KeyCode::Char('f'),
+        KeyCode::Char('A'),
         Command::LowerNote,
         "Lower note one semitone",
         "Notes",
     ),
     Binding::new(
-        KeyCode::Char('r'),
+        KeyCode::Char('S'),
         Command::RaiseNote,
         "Raise note one semitone",
         "Notes",
@@ -429,8 +443,18 @@ pub const DEFAULT_BINDINGS: &[Binding] = &[
         "Clear cell/rectangle without copying",
         "Notes",
     ),
-    Binding::new(KeyCode::Char('a'), Command::DecreaseOctave, "Decrease octave", "Notes"),
-    Binding::new(KeyCode::Char('s'), Command::IncreaseOctave, "Increase octave", "Notes"),
+    Binding::new(
+        KeyCode::Char('a'),
+        Command::LowerOctave,
+        "Lower notes one octave",
+        "Notes",
+    ),
+    Binding::new(
+        KeyCode::Char('s'),
+        Command::RaiseOctave,
+        "Raise notes one octave",
+        "Notes",
+    ),
 ];
 
 /// Resolve terminal input using editor mode and pending-count state.
@@ -445,12 +469,34 @@ pub fn resolve(key: KeyEvent, state: &mut App) -> Option<Command> {
     } else {
         key.code
     };
+    if key.kind == KeyEventKind::Repeat && state.suppressed_repeat {
+        return None;
+    }
+    if key.kind == KeyEventKind::Press {
+        state.suppressed_repeat = false;
+    }
     let mut modifiers = key.modifiers;
     if matches!(code, KeyCode::Char(ch) if ch != ' ') {
         modifiers.remove(KeyModifiers::SHIFT);
     }
+    if !state.help_visible
+        && modifiers.is_empty()
+        && DEFAULT_BINDINGS
+            .iter()
+            .any(|binding| binding.prefix == Some(code) && binding.modes.contains(&state.mode))
+    {
+        if key.kind == KeyEventKind::Press {
+            state.pending_prefix = code.as_char();
+        }
+        return None;
+    }
+    if state.pending_prefix.is_some() && key.kind == KeyEventKind::Repeat {
+        return None;
+    }
+    let prefix = state.pending_prefix.take().map(KeyCode::Char);
     let binding = DEFAULT_BINDINGS.iter().find(|binding| {
-        binding.key == code
+        binding.prefix == prefix
+            && binding.key == code
             && binding.modifiers == modifiers
             && if state.help_visible {
                 matches!(
@@ -469,6 +515,15 @@ pub fn resolve(key: KeyEvent, state: &mut App) -> Option<Command> {
                     )
             }
     });
+    if prefix.is_some() {
+        state.suppressed_repeat = true;
+        state.pending_count = None;
+        return binding.map(|binding| binding.command).or_else(|| match code {
+            KeyCode::Esc => Some(Command::EnterNormal),
+            KeyCode::Char('?') if modifiers.is_empty() => Some(Command::ToggleHelp),
+            _ => None,
+        });
+    }
     if key.kind == KeyEventKind::Repeat {
         // Repeated digits never extend a count; toggles and note entry are press-only.
         if binding.is_some_and(|binding| !binding.command.allows_repeat()) {
@@ -480,16 +535,7 @@ pub fn resolve(key: KeyEvent, state: &mut App) -> Option<Command> {
         return None;
     };
     if let Command::CountDigit(digit) = binding.command {
-        if digit != 0 || state.pending_count.is_some() {
-            state.pending_count = Some(
-                state
-                    .pending_count
-                    .unwrap_or(0)
-                    .saturating_mul(10)
-                    .saturating_add(u16::from(digit))
-                    .min(9999),
-            );
-        }
+        extend_count(state, digit);
         return None;
     }
     let count = state.pending_count.take();
@@ -513,9 +559,24 @@ pub fn resolve(key: KeyEvent, state: &mut App) -> Option<Command> {
     })
 }
 
+fn extend_count(state: &mut App, digit: u8) {
+    if digit != 0 || state.pending_count.is_some() {
+        state.pending_count = Some(
+            state
+                .pending_count
+                .unwrap_or(0)
+                .saturating_mul(10)
+                .saturating_add(u16::from(digit))
+                .min(9999),
+        );
+    }
+}
+
 /// Dispatch one real key through the shared resolver.
 pub fn handle_key(key: KeyEvent, state: &mut App) {
     if state.prompt.is_some() {
+        state.pending_prefix = None;
+        state.pending_count = None;
         if key.kind == KeyEventKind::Release
             || key
                 .modifiers
@@ -616,17 +677,17 @@ mod tests {
                 .pitch,
             NotePitch::F
         );
-        sequence(&mut app, "2j"); // Insert digits don't count.
-        assert_eq!(app.cursor_row, 1);
+        sequence(&mut app, "2j");
+        assert_eq!(app.cursor_row, 2);
         escape(&mut app);
         sequence(&mut app, "16j2lv3k1h");
-        assert_eq!((app.cursor_row, app.cursor_track), (14, 1));
-        assert_eq!(app.selection_anchor, Some((17, 2)));
+        assert_eq!((app.cursor_row, app.cursor_track), (15, 1));
+        assert_eq!(app.selection_anchor, Some((18, 2)));
         for row in 0..64 {
             for track in 0..4 {
                 assert_eq!(
                     app.is_selected(row, track),
-                    (14..=17).contains(&row) && (1..=2).contains(&track)
+                    (15..=18).contains(&row) && (1..=2).contains(&track)
                 );
             }
         }
@@ -725,10 +786,10 @@ mod tests {
         assert_eq!(app.cursor_row, 17);
         sequence(&mut app, "i");
         for (ch, command) in [
-            ('f', Command::LowerNote),
-            ('r', Command::RaiseNote),
-            ('a', Command::DecreaseOctave),
-            ('s', Command::IncreaseOctave),
+            ('A', Command::LowerNote),
+            ('S', Command::RaiseNote),
+            ('a', Command::LowerOctave),
+            ('s', Command::RaiseOctave),
             ('+', Command::IncreaseTempo),
             (']', Command::NextInstrument),
         ] {
@@ -773,15 +834,15 @@ mod tests {
             );
         }
         let mut app = App::default();
-        sequence(&mut app, "izsr");
+        sequence(&mut app, "izsS");
         let note = app.project.patterns[app.selected_pattern]
             .get_step(0, 0)
             .unwrap()
             .note
             .unwrap();
         assert_eq!(note.pitch, NotePitch::Cs);
-        assert_eq!(note.octave, 4);
-        assert_eq!(app.octave, 5);
+        assert_eq!(note.octave, 5);
+        assert_eq!(app.octave, 4);
         escape(&mut app);
         sequence(&mut app, "xfrzas");
         key(&mut app, KeyCode::Delete, KeyModifiers::NONE, KeyEventKind::Press);
@@ -789,13 +850,72 @@ mod tests {
             app.project.patterns[app.selected_pattern].get_step(0, 0).unwrap().note,
             None
         );
-        assert_eq!(app.octave, 5);
+        assert_eq!(app.octave, 4);
         sequence(&mut app, "i");
         key(&mut app, KeyCode::Delete, KeyModifiers::NONE, KeyEventKind::Press);
         assert_eq!(
             app.project.patterns[app.selected_pattern].get_step(0, 0).unwrap().note,
             None
         );
+    }
+
+    #[test]
+    fn jumps_consume_counts_cancel_invalid_and_ignore_repeats_in_all_modes() {
+        for mode in [Mode::Normal, Mode::Insert, Mode::Visual] {
+            let mut app = App { mode, ..App::default() };
+            sequence(&mut app, "12gk");
+            assert_eq!(app.cursor_row, 63);
+            assert_eq!(app.pending_count, None);
+            key(&mut app, KeyCode::Char('k'), KeyModifiers::NONE, KeyEventKind::Repeat);
+            assert_eq!(app.cursor_row, 63);
+            sequence(&mut app, "glgjgh");
+            assert_eq!((app.cursor_row, app.cursor_track), (0, 0));
+            let revision = app.revision();
+            sequence(&mut app, "gz");
+            key(&mut app, KeyCode::Char('z'), KeyModifiers::NONE, KeyEventKind::Repeat);
+            key(&mut app, KeyCode::Char('s'), KeyModifiers::NONE, KeyEventKind::Repeat);
+            assert!(app.suppressed_repeat);
+            assert_eq!(app.revision(), revision);
+            sequence(&mut app, "j");
+            assert!(!app.suppressed_repeat);
+            assert_eq!(app.cursor_row, 1);
+            assert_eq!(app.pending_prefix, None);
+            sequence(&mut app, "g?");
+            assert!(app.help_visible);
+            assert_eq!(app.pending_prefix, None);
+            escape(&mut app);
+            sequence(&mut app, "g");
+            escape(&mut app);
+            assert_eq!(app.pending_prefix, None);
+        }
+    }
+
+    #[test]
+    fn transpose_rectangle_preserves_selection_lengths_and_undoes_atomically() {
+        let mut app = App::default();
+        sequence(&mut app, "iz}jlx");
+        escape(&mut app);
+        let before = app.project.clone();
+        sequence(&mut app, "vkh");
+        let anchor = app.selection_anchor;
+        sequence(&mut app, "s");
+        for (track, row) in [(0, 0), (1, 1)] {
+            let old = before.patterns[0].get_step(track, row).unwrap().note.unwrap();
+            let new = app.project.patterns[0].get_step(track, row).unwrap().note.unwrap();
+            assert_eq!(new, old.transpose(12));
+            assert_eq!(new.length_ticks, old.length_ticks);
+        }
+        assert_eq!(app.mode, Mode::Visual);
+        assert_eq!(app.selection_anchor, anchor);
+        assert_eq!((app.cursor_row, app.cursor_track, app.octave), (0, 0, 4));
+        app.handle_command(Command::Undo);
+        assert_eq!(app.project, before);
+        for mode in [Mode::Normal, Mode::Insert, Mode::Visual] {
+            app.mode = mode;
+            let revision = app.revision();
+            sequence(&mut app, "2s2A2zfr");
+            assert_eq!(app.revision(), revision);
+        }
     }
 
     #[test]
@@ -812,9 +932,11 @@ mod tests {
                     ..App::default()
                 };
                 assert!(!DEFAULT_BINDINGS[..index].iter().any(|other| other.key == binding.key
+                    && other.prefix == binding.prefix
                     && other.modifiers == binding.modifiers
                     && other.modes.contains(mode)
                     && !matches!(other.command, Command::EnterNormal)));
+                app.pending_prefix = binding.prefix.as_ref().and_then(KeyCode::as_char);
                 let result = resolve(KeyEvent::new(binding.key, binding.modifiers), &mut app);
                 if matches!(binding.command, Command::CountDigit(_)) {
                     assert_eq!(result, None);

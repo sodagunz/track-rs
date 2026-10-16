@@ -10,7 +10,7 @@ keywords=["audio", "daw", "tracker", "production", "music"]
 categories=["multimedia", "multimedia::audio", "command-line-interface"]
 
 [dependencies]
-ratatui = { version = "0.30.2", features = ["crossterm"] }
+ratatui = { version = "0.30.2", features = ["crossterm", "unstable-rendered-line-info"] }
 crossterm = "0.29.0"
 anyhow = "1.0.104"
 fundsp = "0.23.0"

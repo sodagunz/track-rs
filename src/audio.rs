@@ -66,10 +66,11 @@ impl GatedVoice {
     }
 
     fn sample(&mut self) -> Option<(f32, f32)> {
-        if self.elapsed >= self.duration {
+        if self.duration == 0.0 || self.elapsed >= self.duration + self.release {
             return None;
         }
-        let gain = smooth_gain(self.elapsed / self.attack) * smooth_gain((self.duration - self.elapsed) / self.release);
+        let gain = smooth_gain(self.elapsed / self.attack)
+            * smooth_gain((self.duration + self.release - self.elapsed) / self.release);
         let (l, r) = self.renderer.get_stereo();
         self.elapsed += self.sample_period;
         Some((l * gain, r * gain))
@@ -316,7 +317,7 @@ fn schedule_voice(
     if seconds > 0.0 {
         sequencer.push_relative(
             0.0,
-            seconds,
+            seconds + release,
             Fade::Smooth,
             attack,
             release,
@@ -325,8 +326,8 @@ fn schedule_voice(
     }
 }
 
-// Both scheduling paths budget fades inside the total gate, leaving at least
-// half of even a short note for its body.
+// Duration is the note-off time, not the end of the release tail.
+// Keep a short gate's attack brief without truncating the preset's release.
 fn envelope_times(instrument: Instrument, duration: f64) -> (f64, f64) {
     let (attack, release) = match instrument {
         Instrument::Pad => (0.35, 0.6),
@@ -338,7 +339,7 @@ fn envelope_times(instrument: Instrument, duration: f64) -> (f64, f64) {
             (DEFAULT_FADE_IN, DEFAULT_FADE_OUT)
         }
     };
-    (attack.min(duration * 0.25), release.min(duration * 0.25))
+    (attack.min(duration * 0.25), release)
 }
 
 /// Construct a seeded stereo voice. The caller supplies the gate's attack/release.
@@ -459,6 +460,129 @@ mod tests {
     }
 
     #[test]
+    fn transport_512_tick_gates_hold_until_noteoff_then_release_in_both_paths() {
+        let rate = 48_000_u32;
+        let mut pattern = crate::tracker::Pattern::new(32, 1);
+        let mut note = sine_event(0, Duration::ZERO).note;
+        note.length_ticks = crate::tracker::NoteLength::try_from(512).unwrap();
+        pattern.set_step(0, 0, Some(note)).unwrap();
+        for instrument in [Instrument::Pad, Instrument::Drone, Instrument::Sustain] {
+            let event = crate::transport::collect_row(
+                &pattern,
+                &[instrument],
+                crate::transport::RowEvent {
+                    row: 0,
+                    beats: 0.25,
+                    duration: Duration::from_millis(125),
+                },
+            )[0];
+            assert_eq!(event.duration, Duration::from_secs(4));
+            let release = match instrument {
+                Instrument::Pad => 0.6,
+                Instrument::Drone => 0.45,
+                Instrument::Sustain => 0.04,
+                _ => unreachable!(),
+            };
+            for legacy in [false, true] {
+                let (mut seq, renderer) = prepare(f64::from(rate));
+                let (sender, receiver) = mpsc::channel();
+                let (retired, _retired_rx) = mpsc::channel();
+                if legacy {
+                    schedule_voice(&mut seq, note, instrument, event.duration, false, 42);
+                } else {
+                    sender
+                        .send(OutputCommand::Trigger {
+                            track: 0,
+                            voice: GatedVoice::new(event, f64::from(rate), false, 42),
+                        })
+                        .unwrap();
+                }
+                let mut output = Output::new(renderer, receiver, retired);
+                let mut raw = voice(note, instrument, false, 42);
+                raw.set_sample_rate(f64::from(rate));
+                raw.allocate();
+                let mut reference = BlockRateAdapter::new(raw);
+                let (mut reference_seq, mut legacy_reference) = prepare(f64::from(rate));
+                if legacy {
+                    schedule_voice(&mut reference_seq, note, instrument, Duration::from_secs(10), false, 42);
+                }
+                let end = 192_000;
+                let tail =
+                    usize::try_from(Duration::from_secs_f64(release).as_nanos() * u128::from(rate) / 1_000_000_000)
+                        .unwrap();
+                let mut early_energy = 0.0_f64;
+                let mut late_energy = 0.0_f64;
+                let mut reference_early = 0.0_f64;
+                let mut reference_late = 0.0_f64;
+                for i in 0..end + tail + 100 {
+                    let actual = output.sample();
+                    let expected = if legacy {
+                        legacy_reference.get_stereo()
+                    } else {
+                        reference.get_stereo()
+                    };
+                    if (168_000..end).contains(&i) {
+                        assert!(
+                            (actual.0 - expected.0).abs() < 0.00001,
+                            "{instrument:?}, legacy={legacy}: pre-noteoff sample {i}: {} != {}",
+                            actual.0,
+                            expected.0
+                        );
+                    }
+                    if (end..end + tail / 4).contains(&i) {
+                        early_energy += f64::from(actual.0 * actual.0);
+                        reference_early += f64::from(expected.0 * expected.0);
+                    }
+                    if (end + tail * 3 / 4..end + tail).contains(&i) {
+                        late_energy += f64::from(actual.0 * actual.0);
+                        reference_late += f64::from(expected.0 * expected.0);
+                    }
+                    if i >= end + tail + 2 {
+                        assert_eq!(actual, (0.0, 0.0));
+                    }
+                }
+                assert!(
+                    early_energy / reference_early > 0.8,
+                    "{instrument:?}: missing release after noteoff, legacy={legacy}"
+                );
+                assert!(
+                    late_energy / reference_late < 0.02,
+                    "{instrument:?}: release did not decline, legacy={legacy}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn zero_gates_are_silent_and_subsample_gates_remain_finite() {
+        for instrument in Instrument::ALL {
+            for duration in [Duration::ZERO, Duration::from_nanos(1)] {
+                let event = NoteEvent {
+                    instrument,
+                    ..sine_event(0, duration)
+                };
+                let mut gated = GatedVoice::new(event, 48_000.0, false, 42);
+                let (mut seq, mut renderer) = prepare(48_000.0);
+                schedule_voice(&mut seq, event.note, instrument, duration, false, 42);
+                for _ in 0..30000 {
+                    let sample = gated.sample().unwrap_or((0.0, 0.0));
+                    let legacy = renderer.get_stereo();
+                    assert!(
+                        [sample.0, sample.1, legacy.0, legacy.1].into_iter().all(f32::is_finite),
+                        "{instrument:?} {duration:?}: gated={sample:?}, legacy={legacy:?}"
+                    );
+                    if duration.is_zero() {
+                        assert_eq!(sample, (0.0, 0.0));
+                        assert_eq!(legacy, (0.0, 0.0));
+                    }
+                }
+                assert!(gated.sample().is_none());
+                assert_eq!(renderer.get_stereo(), (0.0, 0.0));
+            }
+        }
+    }
+
+    #[test]
     fn gates_render_onset_hold_and_release_at_multiple_rates_and_row_periods() {
         for rate in [8_000_u32, 44_100, 48_000] {
             for milliseconds in [50, 125, 750] {
@@ -491,7 +615,8 @@ mod tests {
                     }
                     let rendered = Duration::from_secs_f64(f64::from(u32::try_from(count).unwrap()) / f64::from(rate));
                     assert!(
-                        rendered.abs_diff(event.duration) <= Duration::from_secs_f64(2.0 / f64::from(rate)),
+                        rendered.abs_diff(event.duration + Duration::from_secs_f64(voice.release))
+                            <= Duration::from_secs_f64(2.0 / f64::from(rate)),
                         "{rate} Hz, {milliseconds} ms row, {ticks} ticks: {rendered:?}"
                     );
                     assert!(energy > 0.001);
@@ -632,7 +757,7 @@ mod tests {
             })
             .unwrap();
         let mut reference = GatedVoice::new(restart, 48_000.0, true, 43);
-        for _ in 0..3000 {
+        for _ in 0..13000 {
             assert_eq!(output.sample(), reference.sample().unwrap_or((0.0, 0.0)));
         }
         assert!(output.tracks[0].active.is_none());
@@ -700,9 +825,15 @@ mod tests {
                 })
                 .unwrap();
         }
-        let count =
-            usize::try_from((event.duration + Duration::from_millis(20)).as_nanos() * u128::from(rate) / 1_000_000_000)
-                .unwrap();
+        let tail = instruments
+            .iter()
+            .map(|&instrument| envelope_times(instrument, event.duration.as_secs_f64()).1)
+            .fold(0.0_f64, f64::max);
+        let count = usize::try_from(
+            (event.duration + Duration::from_secs_f64(tail) + Duration::from_millis(20)).as_nanos() * u128::from(rate)
+                / 1_000_000_000,
+        )
+        .unwrap();
         let samples = (0..count).map(|_| output.sample()).collect();
         assert!(output
             .tracks
@@ -744,16 +875,19 @@ mod tests {
                             "{instrument:?} discontinuity at {rate} Hz"
                         );
                         assert!(samples.iter().all(|(l, r)| l.is_finite() && r.is_finite()));
-                        assert!(samples[end - 1].0.abs() < 0.0001);
-                        assert!(samples[end + 2..].iter().all(|s| *s == (0.0, 0.0)));
+                        assert!(rms(&samples[end - end / 16..end]) > 0.001);
                         let (attack, release) = envelope_times(instrument, event.duration.as_secs_f64());
                         assert!(attack <= event.duration.as_secs_f64() * 0.25);
-                        assert!(release <= event.duration.as_secs_f64() * 0.25);
+                        assert!(release > 0.0);
                         let release_samples = usize::try_from(
                             Duration::from_secs_f64(release).as_nanos() * u128::from(rate) / 1_000_000_000,
                         )
                         .unwrap();
-                        assert!(rms(&samples[end - release_samples / 8..end]) < late * 0.03);
+                        let total_end = end + release_samples;
+                        assert!(rms(&samples[end..end + release_samples / 4]) > 0.001);
+                        assert!(rms(&samples[total_end - release_samples / 8..total_end]) < late * 0.03);
+                        assert!(samples[total_end - 1].0.abs() < 0.0001);
+                        assert!(samples[total_end + 2..].iter().all(|s| *s == (0.0, 0.0)));
                         // Spectral projection tolerates Pad's beating, unlike zero crossings.
                         let window = &samples[end / 4..end * 3 / 4];
                         let power = |ratio: f64| {
@@ -783,7 +917,7 @@ mod tests {
     }
 
     #[test]
-    fn production_short_gates_scale_every_preset_fade_inside_the_gate() {
+    fn production_short_gates_keep_full_preset_release_after_noteoff() {
         for rate in [44_100_u32, 48_000] {
             for micros in [3125, 7813, 46875] {
                 let event = sine_event(0, Duration::from_micros(micros));
@@ -793,7 +927,14 @@ mod tests {
                     assert_eq!(samples[0], (0.0, 0.0));
                     assert!(rms(&samples[..end]) > 0.0001, "{instrument:?} at {rate} Hz");
                     assert!(samples.iter().all(|(l, r)| l.is_finite() && r.is_finite()));
-                    assert!(samples[end + 2..].iter().all(|s| *s == (0.0, 0.0)));
+                    assert!(rms(&samples[end..end + 32]) > 0.00001, "{instrument:?}: missing tail");
+                    let release = envelope_times(instrument, event.duration.as_secs_f64()).1;
+                    let total_end = end
+                        + usize::try_from(
+                            Duration::from_secs_f64(release).as_nanos() * u128::from(rate) / 1_000_000_000,
+                        )
+                        .unwrap();
+                    assert!(samples[total_end + 2..].iter().all(|s| *s == (0.0, 0.0)));
                 }
             }
         }
@@ -878,7 +1019,16 @@ mod tests {
                 42,
             );
         }
-        (0..48_000).map(|_| renderer.get_stereo()).collect()
+        let release = instruments
+            .iter()
+            .map(|&instrument| envelope_times(instrument, duration.as_secs_f64()).1)
+            .fold(0.0_f64, f64::max);
+        let count = usize::try_from(
+            (duration + Duration::from_secs_f64(release) + Duration::from_millis(20)).as_nanos() * 48_000
+                / 1_000_000_000,
+        )
+        .unwrap();
+        (0..count).map(|_| renderer.get_stereo()).collect()
     }
 
     #[test]
@@ -921,7 +1071,11 @@ mod tests {
                     assert_eq!(samples, render_presets(&[instrument], dry, duration));
                     assert!(samples.iter().all(|(l, r)| l.is_finite() && r.is_finite()));
                     assert!(samples.iter().any(|(l, r)| l.abs() + r.abs() > 1e-4), "{instrument:?}");
-                    let end = usize::try_from(millis * 48).unwrap();
+                    let release = envelope_times(instrument, duration.as_secs_f64()).1;
+                    let end = usize::try_from(
+                        (duration + Duration::from_secs_f64(release)).as_nanos() * 48_000 / 1_000_000_000,
+                    )
+                    .unwrap();
                     assert!(
                         samples[end..].iter().all(|sample| *sample == (0.0, 0.0)),
                         "{instrument:?}"
@@ -941,7 +1095,7 @@ mod tests {
             .iter()
             .all(|(l, r)| l.is_finite() && r.is_finite() && l.abs() < 1.0 && r.abs() < 1.0));
         assert!(samples.iter().any(|(l, r)| l.abs() + r.abs() > 0.01));
-        assert!(samples[6000..].iter().all(|sample| *sample == (0.0, 0.0)));
+        assert!(samples[34800..].iter().all(|sample| *sample == (0.0, 0.0)));
     }
 
     #[test]

@@ -5,7 +5,9 @@ Status: Phase 1 implemented and validated on `feat/add-tracks`, based on develop
 `feat/cursor-playback`, stacked on `feat/add-tracks` (PR #17). Phase 3 implemented
 on `feat/note-lengths`, stacked on `feat/cursor-playback` (PR #18). Phase 4's
 implementation and automated checks are complete on `feat/sustained-presets`, stacked
-on `feat/note-lengths` (PR #19); listening is pending. Phase 5 is pending.
+on `feat/note-lengths` (PR #19); listening is pending. Phase 5's implementation
+and automated checks are complete on `feat/mode-first-help`, stacked on
+`feat/sustained-presets` (PR #20); subjective UI review is pending.
 
 One phase per PR. Preserve the existing modal editor, history, and project
 files. No mixer, arbitrary synth editor, or track removal in this pass.
@@ -167,20 +169,29 @@ existing duplicate-dependency warnings. Listening remains unchecked above.
 
 Touches: binding metadata and help rendering; no second handwritten key table.
 
-- [ ] Group by applicability first: Shared, Normal, Insert, Visual. Keep shared
+- [x] Group by applicability first: Shared, Normal, Insert, Visual. Keep shared
   bindings once, rather than duplicating them in every mode. Emphasize the active
   mode; category ordering within each section is secondary.
-- [ ] Use aligned key/action columns, short section headings, and consistent
+- [x] Use aligned key/action columns, short section headings, and consistent
   spacing. Merge aliases and digit ranges where they share meaning. Show modifiers
   explicitly; don't repeat category/mode labels on every binding row.
-- [ ] Use terminal palette/default colors. Keep close/scroll hints visible. Adapt
+- [x] Use terminal palette/default colors. Keep close/scroll hints visible. Adapt
   to narrow screens with wrapped descriptions and section-aware scrolling, so all
   controls remain reachable even when headings consume space.
-- [ ] Preserve editing mode, selection, and playback state while help is open;
+- [x] Preserve editing mode, selection, and playback state while help is open;
   clear pending counts as before. Closing help must not edit, start, or stop playback.
-- [ ] Test every registered binding appears in the right section with no missing
+- [x] Test every registered binding appears in the right section with no missing
   aliases, stable mode-first ordering, active-mode emphasis, wrapping, scrolling,
-  and small terminals. Check a real terminal for scanability.
+  and small terminals.
+- [ ] Subjective UI review: check a real terminal for scanability.
+
+Evidence: 98 nextest tests pass (96 baseline, two help tests replaced and two
+added), with no skipped tests. Actual TestBackend renders cover every wrapped
+content row at 80×30, 32×8, and 24×6, active-mode bold styling, held-Down bounds,
+resize clamping, and overlay focus. Full CI checks and the null-audio example
+pass; cargo-deny retains existing duplicate-dependency warnings. An ALSA-null
+PTY passed 24×6 help, 450 Down events, Up, resize to 80×24, Insert help,
+close, and clean quit. This is runtime evidence, not subjective UI review.
 
 Done: find a Normal editing key or Insert note-length key without reading the
 whole help screen.

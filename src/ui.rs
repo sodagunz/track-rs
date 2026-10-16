@@ -5,13 +5,18 @@ use crossterm::{
 use ratatui::{
     layout::Rect,
     prelude::CrosstermBackend,
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
     Frame, Terminal,
 };
 
-use crate::{bindings::DEFAULT_BINDINGS, command::Command, state::App, tracker::PatternStep};
+use crate::{
+    bindings::DEFAULT_BINDINGS,
+    command::Command,
+    state::{App, Mode},
+    tracker::PatternStep,
+};
 
 pub struct TUI<W: std::io::Write> {
     pub terminal: Terminal<CrosstermBackend<W>>,
@@ -128,11 +133,20 @@ fn key_label(key: crossterm::event::KeyCode) -> String {
 }
 
 fn binding_label(binding: &crate::bindings::Binding) -> String {
-    let prefix = if binding.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
-        "Ctrl-"
-    } else {
-        ""
-    };
+    let mut prefix = String::new();
+    for (modifier, label) in [
+        (crossterm::event::KeyModifiers::CONTROL, "Ctrl-"),
+        (crossterm::event::KeyModifiers::ALT, "Alt-"),
+        (crossterm::event::KeyModifiers::SHIFT, "Shift-"),
+        (crossterm::event::KeyModifiers::SUPER, "Super-"),
+    ] {
+        if binding.modifiers.contains(modifier) {
+            prefix.push_str(label);
+        }
+    }
+    if let Some(key) = binding.prefix {
+        prefix.push_str(&key_label(key));
+    }
     format!("{prefix}{}", key_label(binding.key))
 }
 
@@ -145,11 +159,99 @@ fn command_keys(command: Command) -> String {
         .join("/")
 }
 
-fn help_bindings() -> Vec<&'static crate::bindings::Binding> {
-    let mut bindings: Vec<_> = DEFAULT_BINDINGS.iter().collect();
-    // Stable sorting keeps aliases and controls in registry order within each category.
+/// Group aliases only when their action and presentation metadata agree.
+fn help_groups(mode: Option<Mode>) -> Vec<Vec<&'static crate::bindings::Binding>> {
+    let mut bindings: Vec<_> = DEFAULT_BINDINGS
+        .iter()
+        .filter(|binding| {
+            let shared = [Mode::Normal, Mode::Insert, Mode::Visual]
+                .iter()
+                .all(|mode| binding.modes.contains(mode));
+            mode.map_or(shared, |mode| !shared && binding.modes.contains(&mode))
+        })
+        .collect();
     bindings.sort_by_key(|binding| binding.category);
-    bindings
+    let mut groups: Vec<Vec<&crate::bindings::Binding>> = Vec::new();
+    for binding in bindings {
+        if let Some(group) = groups.iter_mut().find(|group| {
+            let first = group[0];
+            first.category == binding.category
+                && first.description == binding.description
+                && (first.command == binding.command
+                    || matches!(
+                        (first.command, binding.command),
+                        (Command::CountDigit(_), Command::CountDigit(_))
+                    ))
+        }) {
+            group.push(binding);
+        } else {
+            groups.push(vec![binding]);
+        }
+    }
+    groups
+}
+
+fn group_keys(group: &[&crate::bindings::Binding]) -> String {
+    if group.len() == 10
+        && group
+            .iter()
+            .all(|binding| matches!(binding.command, Command::CountDigit(_)))
+    {
+        "1–9/0".into()
+    } else {
+        group
+            .iter()
+            .map(|binding| binding_label(binding))
+            .collect::<Vec<_>>()
+            .join("/")
+    }
+}
+
+fn help_lines(mode: Mode, width: u16) -> Vec<Line<'static>> {
+    let sections = [
+        (None, "Shared"),
+        (Some(Mode::Normal), "Normal"),
+        (Some(Mode::Insert), "Insert"),
+        (Some(Mode::Visual), "Visual"),
+    ];
+    let key_width = sections
+        .iter()
+        .flat_map(|(mode, _)| help_groups(*mode))
+        .map(|group| Line::from(group_keys(&group)).width())
+        .max()
+        .unwrap_or(0);
+    let mut lines = Vec::new();
+    for (section, label) in sections {
+        let active = section == Some(mode);
+        lines.push(Line::styled(
+            if active {
+                format!("{label} (active)")
+            } else {
+                label.into()
+            },
+            Style::default().add_modifier(if active { Modifier::BOLD } else { Modifier::empty() }),
+        ));
+        let mut category = "";
+        for group in help_groups(section) {
+            if category != group[0].category {
+                category = group[0].category;
+                lines.push(Line::styled(category, Style::default().add_modifier(Modifier::DIM)));
+            }
+            let keys = group_keys(&group);
+            let padding = " ".repeat(key_width.saturating_sub(Line::from(keys.clone()).width()) + 2);
+            if usize::from(width) >= key_width + 18 {
+                lines.push(Line::from(vec![
+                    Span::raw(keys),
+                    Span::raw(padding),
+                    Span::raw(group[0].description),
+                ]));
+            } else {
+                lines.push(Line::from(keys));
+                lines.push(Line::from(format!("  {}", group[0].description)));
+            }
+        }
+    }
+    lines
 }
 
 fn draw_help(f: &mut Frame, state: &App) {
@@ -163,58 +265,46 @@ fn draw_help(f: &mut Frame, state: &App) {
         height,
     );
     f.render_widget(Clear, area);
-    // On small screens omit borders rather than spending scarce content rows.
     let bordered = width >= 40 && height >= 8;
-    let block = Block::default()
-        .title("Keybindings")
-        .borders(if bordered { Borders::ALL } else { Borders::NONE });
+    let block = Block::default().borders(if bordered { Borders::ALL } else { Borders::NONE });
     let inner = block.inner(area);
     f.render_widget(block, area);
-    if inner.height == 0 {
+    if inner.height == 0 || inner.width == 0 {
         return;
     }
-    let close = format!(
-        "{}/{} close",
-        command_keys(Command::ToggleHelp),
-        command_keys(Command::DismissHelp)
-    );
-    f.render_widget(Paragraph::new(close), Rect::new(inner.x, inner.y, inner.width, 1));
-    if inner.height < 2 {
-        return;
-    }
-    let bindings = help_bindings();
-    let start = state.help_scroll.min(bindings.len().saturating_sub(1));
-    let mut lines = Vec::new();
-    for binding in &bindings[start..] {
-        lines.push(Line::from(format!(
-            "[{}] {}: {} ({})",
-            binding.category,
-            binding_label(binding),
-            binding.description,
-            binding
-                .modes
-                .iter()
-                .map(|mode| mode.label())
-                .collect::<Vec<_>>()
-                .join("/")
-        )));
-    }
-    let footer_rows = u16::from(inner.height >= 4);
     f.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }),
-        Rect::new(inner.x, inner.y + 1, inner.width, inner.height - 1 - footer_rows),
+        Paragraph::new(Line::styled(
+            format!("Help · {}", state.mode.label()),
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Rect::new(inner.x, inner.y, inner.width, 1),
     );
-    if footer_rows > 0 {
-        let footer = format!(
-            "{}/{} scroll  {}/{}",
+    let footer_rows = inner.height.saturating_sub(1).min(2);
+    let content = Rect::new(inner.x, inner.y + 1, inner.width, inner.height - 1 - footer_rows);
+    let paragraph = Paragraph::new(help_lines(state.mode, content.width)).wrap(Wrap { trim: false });
+    let max = paragraph
+        .line_count(content.width)
+        .saturating_sub(usize::from(content.height));
+    state.help_scroll_max.set(max);
+    let start = state.help_scroll.get().min(max);
+    state.help_scroll.set(start);
+    f.render_widget(paragraph.scroll((u16::try_from(start).unwrap_or(u16::MAX), 0)), content);
+    let hints = [
+        format!(
+            "{}/{} close",
+            command_keys(Command::ToggleHelp),
+            command_keys(Command::DismissHelp)
+        ),
+        format!(
+            "{}/{} scroll",
             command_keys(Command::ScrollHelpUp),
-            command_keys(Command::ScrollHelpDown),
-            start + 1,
-            DEFAULT_BINDINGS.len()
-        );
+            command_keys(Command::ScrollHelpDown)
+        ),
+    ];
+    for row in 0..footer_rows {
         f.render_widget(
-            Paragraph::new(footer),
-            Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
+            Paragraph::new(hints[usize::from(row)].clone()),
+            Rect::new(inner.x, inner.bottom() - footer_rows + row, inner.width, 1),
         );
     }
 }
@@ -618,64 +708,145 @@ mod tests {
     }
 
     #[test]
-    fn help_groups_categories_stably_without_losing_aliases() {
-        let bindings = help_bindings();
-        assert_eq!(bindings.len(), DEFAULT_BINDINGS.len());
-        assert!(bindings.windows(2).all(|pair| pair[0].category <= pair[1].category));
-        for binding in DEFAULT_BINDINGS {
-            assert_eq!(
-                bindings
+    fn help_sections_cover_every_registry_binding_and_alias() {
+        for section in [None, Some(Mode::Normal), Some(Mode::Insert), Some(Mode::Visual)] {
+            let groups = help_groups(section);
+            assert!(groups.windows(2).all(|pair| pair[0][0].category <= pair[1][0].category));
+            for binding in DEFAULT_BINDINGS {
+                let shared = [Mode::Normal, Mode::Insert, Mode::Visual]
                     .iter()
-                    .filter(|entry| entry.key == binding.key
-                        && entry.command == binding.command
-                        && entry.modifiers == binding.modifiers
-                        && entry.modes == binding.modes)
-                    .count(),
-                1
-            );
+                    .all(|mode| binding.modes.contains(mode));
+                let expected = section.map_or(shared, |mode| !shared && binding.modes.contains(&mode));
+                assert_eq!(
+                    groups
+                        .iter()
+                        .flatten()
+                        .filter(|entry| entry.key == binding.key
+                            && entry.modifiers == binding.modifiers
+                            && entry.command == binding.command
+                            && entry.modes == binding.modes)
+                        .count(),
+                    usize::from(expected)
+                );
+            }
         }
-        for category in bindings.iter().map(|binding| binding.category) {
-            let displayed: Vec<_> = bindings
+        let lines = help_lines(Mode::Insert, 62);
+        let text = lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+        let positions: Vec<_> = ["Shared", "Normal", "Insert (active)", "Visual"]
+            .iter()
+            .map(|label| text.find(label).unwrap())
+            .collect();
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(text.contains("q/Q") && text.contains("1–9/0") && text.contains("0 only trailing"));
+        assert!(text.contains("Ctrl-Space") && text.contains(":restart") && !text.contains("Null"));
+        let active = lines.iter().find(|line| line.to_string() == "Insert (active)").unwrap();
+        assert!(active.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn help_active_mode_uses_palette_bold_in_rendered_buffer() {
+        for mode in [Mode::Normal, Mode::Insert, Mode::Visual] {
+            let app = App {
+                mode,
+                help_visible: true,
+                ..App::default()
+            };
+            let mut terminal = Terminal::new(TestBackend::new(24, 6)).unwrap();
+            terminal.draw(|f| render(f, &app)).unwrap();
+            assert!(terminal.backend().buffer()[(0, 0)].modifier.contains(Modifier::BOLD));
+            let lines = help_lines(mode, 24);
+            let index = lines
                 .iter()
-                .filter(|binding| binding.category == category)
-                .map(|binding| binding.key)
-                .collect();
-            let registered: Vec<_> = DEFAULT_BINDINGS
-                .iter()
-                .filter(|binding| binding.category == category)
-                .map(|binding| binding.key)
-                .collect();
-            assert_eq!(displayed, registered);
+                .position(|line| line.to_string().ends_with("(active)"))
+                .unwrap();
+            app.help_scroll.set(
+                Paragraph::new(lines[..index].to_vec())
+                    .wrap(Wrap { trim: false })
+                    .line_count(24),
+            );
+            terminal.draw(|f| render(f, &app)).unwrap();
+            assert!(terminal.backend().buffer()[(0, 1)].modifier.contains(Modifier::BOLD));
+            assert_eq!(terminal.backend().buffer()[(0, 1)].fg, Color::Reset);
         }
     }
 
     #[test]
-    fn help_scrolls_to_every_binding_and_displays_close_controls() {
+    fn help_open_close_keeps_clipboard_dirty_revision_and_playback() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        for mode in [Mode::Normal, Mode::Insert, Mode::Visual] {
+            let mut app = App::default();
+            app.handle_command(Command::EnterInsert);
+            app.handle_command(Command::InsertNote {
+                pitch: NotePitch::C,
+                octave_offset: 0,
+            });
+            app.handle_command(Command::EnterNormal);
+            app.handle_command(Command::Copy);
+            assert!(!app.clipboard.is_empty() && app.is_dirty());
+            app.mode = mode;
+            app.selection_anchor = Some((0, 0));
+            app.pending_count = Some(12);
+            app.handle_command(Command::TogglePlayback);
+            let clipboard = app.clipboard.clone();
+            let project = app.project.clone();
+            let dirty = app.is_dirty();
+            for ch in "?z :iv{}?".chars() {
+                crate::bindings::handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE), &mut app);
+            }
+            assert!(!app.help_visible && !app.shutdown);
+            assert_eq!(app.mode, mode);
+            assert_eq!(app.selection_anchor, Some((0, 0)));
+            assert_eq!(app.clipboard, clipboard);
+            assert_eq!(app.project, project);
+            assert_eq!(app.is_dirty(), dirty);
+            assert!(app.prompt.is_none());
+            assert_eq!(app.pending_count, None);
+            assert!(matches!(app.playback_state, crate::state::PlaybackState::Playing));
+        }
+    }
+
+    #[test]
+    fn help_scrolls_every_wrapped_line_on_actual_small_terminals() {
         for (width, height) in [(80, 30), (32, 8), (24, 6)] {
             let mut app = App::default();
             app.handle_command(Command::ToggleHelp);
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-            for binding in help_bindings() {
+            let inner_width = width.min(64) - if width >= 40 { 2 } else { 0 };
+            let content_height = height.min(24) - if width >= 40 { 5 } else { 3 };
+            let paragraph = Paragraph::new(help_lines(app.mode, inner_width)).wrap(Wrap { trim: false });
+            let count = paragraph.line_count(inner_width);
+            let mut reference = Terminal::new(TestBackend::new(inner_width, u16::try_from(count).unwrap())).unwrap();
+            reference.draw(|f| f.render_widget(paragraph, f.area())).unwrap();
+            let mut seen = Vec::new();
+            for offset in 0..=count - usize::from(content_height) {
                 terminal.draw(|frame| render(frame, &app)).unwrap();
+                assert_eq!(app.help_scroll.get(), offset);
                 let text = screen(&terminal);
-                assert!(text.contains("?/Esc close"));
-                // Wrapping may insert padding between words.
-                let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-                let expected: String = format!(
-                    "[{}] {}: {}",
-                    binding.category,
-                    binding_label(binding),
-                    binding.description
-                )
-                .chars()
-                .filter(|c| !c.is_whitespace())
-                .collect();
-                assert!(
-                    compact.contains(&expected),
-                    "missing {expected} at {width}x{height}: {text}"
-                );
+                assert!(text.contains("?/Esc close") && text.contains("Up/Down scroll"));
+                assert!(text.contains("Help · NORMAL"));
+                let x = (width - width.min(64)) / 2 + u16::from(width >= 40);
+                let y = (height - height.min(24)) / 2 + u16::from(width >= 40) + 1;
+                for row in 0..content_height {
+                    let actual: String = (0..inner_width)
+                        .map(|col| terminal.backend().buffer()[(x + col, y + row)].symbol())
+                        .collect();
+                    let expected: String = (0..inner_width)
+                        .map(|col| reference.backend().buffer()[(col, u16::try_from(offset).unwrap() + row)].symbol())
+                        .collect();
+                    assert_eq!(actual, expected, "offset {offset}, row {row}, {width}x{height}");
+                    seen.push(offset + usize::from(row));
+                }
                 app.handle_command(Command::ScrollHelpDown);
             }
+            assert!((0..count).all(|row| seen.contains(&row)));
+            let end = app.help_scroll.get();
+            for _ in 0..10000 {
+                app.handle_command(Command::ScrollHelpDown);
+            }
+            assert_eq!(app.help_scroll.get(), end);
+            terminal.resize(Rect::new(0, 0, 100, 40)).unwrap();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            assert_eq!(app.help_scroll.get(), app.help_scroll_max.get());
         }
     }
 
@@ -757,10 +928,15 @@ mod tests {
             crate::bindings::handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &mut app);
         }
         app.handle_command(Command::ToggleHelp);
-        app.help_scroll = help_bindings()
+        let lines = help_lines(app.mode, 62);
+        let index = lines
             .iter()
-            .position(|binding| binding.command == Command::CycleEditStep)
+            .position(|line| line.to_string().contains("0/1/2/4"))
             .unwrap();
+        let offset = Paragraph::new(lines[..index].to_vec())
+            .wrap(Wrap { trim: false })
+            .line_count(62);
+        app.help_scroll.set(offset);
         terminal.draw(|frame| render(frame, &app)).unwrap();
         let text = screen(&terminal);
         assert!(text.contains("Tab") && text.contains("0/1/2/4"));
