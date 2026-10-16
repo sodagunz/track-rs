@@ -278,9 +278,11 @@ impl App {
             Command::MoveCursorLeft => self.offset_cursor(&CursorOffset::None, &CursorOffset::Neg(1)),
             Command::MoveCursorRight => self.offset_cursor(&CursorOffset::None, &CursorOffset::Pos(1)),
             Command::InsertNote { pitch, octave_offset } => self.enter_note(Note {
+                length_ticks: crate::tracker::NoteLength::default(),
                 pitch,
                 octave: self.octave.saturating_add(octave_offset).min(9),
             }),
+            Command::HalveLength | Command::DoubleLength => self.adjust_length(command == Command::DoubleLength),
             Command::CycleEditStep => self.cycle_edit_step(),
             Command::Copy | Command::Cut => self.copy_or_cut(command == Command::Cut),
             Command::Paste => self.paste(),
@@ -461,7 +463,23 @@ impl App {
         };
     }
 
-    fn enter_note(&mut self, note: Note) {
+    fn adjust_length(&mut self, double: bool) {
+        if let Some(mut note) = self.project.patterns[self.selected_pattern]
+            .get_step(self.cursor_track, self.cursor_row)
+            .and_then(|step| step.note)
+        {
+            note.length_ticks = note.length_ticks.adjusted(double);
+            self.insert_note_under_cursor(Some(note));
+        }
+    }
+
+    fn enter_note(&mut self, mut note: Note) {
+        if let Some(previous) = self.project.patterns[self.selected_pattern]
+            .get_step(self.cursor_track, self.cursor_row)
+            .and_then(|step| step.note)
+        {
+            note.length_ticks = previous.length_ticks;
+        }
         if self.project.patterns[self.selected_pattern]
             .get_step(self.cursor_track, self.cursor_row)
             .is_some()
@@ -739,6 +757,7 @@ mod tests {
             );
             for index in 0..120_usize {
                 let note = Note {
+                    length_ticks: crate::tracker::NoteLength::default(),
                     pitch: pitches[index % 12],
                     octave: u8::try_from(index / 12).unwrap(),
                 };
@@ -752,6 +771,7 @@ mod tests {
                 assert_eq!(
                     app.project.patterns[app.selected_pattern].get_step(2, 3).unwrap().note,
                     Some(Note {
+                        length_ticks: crate::tracker::NoteLength::default(),
                         pitch: pitches[expected % 12],
                         octave: u8::try_from(expected / 12).unwrap()
                     })
@@ -836,6 +856,7 @@ mod tests {
         assert_eq!(
             app.project.patterns[app.selected_pattern].get_step(1, 1).unwrap().note,
             Some(Note {
+                length_ticks: crate::tracker::NoteLength::default(),
                 pitch: NotePitch::D,
                 octave: 5
             })

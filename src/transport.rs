@@ -32,12 +32,14 @@ pub fn collect_row(pattern: &Pattern, instruments: &[Instrument], event: RowEven
         .iter()
         .enumerate()
         .filter_map(|(track, steps)| {
+            let note = steps.get(event.row)?.note?;
+            let rows = f64::from(note.length_ticks.ticks()) / f64::from(crate::tracker::NoteLength::TICKS_PER_ROW);
             Some(NoteEvent {
                 track,
                 instrument: instruments.get(track).copied().unwrap_or_default(),
-                note: steps.get(event.row)?.note?,
-                beats: event.beats,
-                duration: event.duration,
+                note,
+                beats: event.beats * rows,
+                duration: event.duration.mul_f64(rows),
             })
         })
         .collect()
@@ -291,6 +293,7 @@ mod tests {
                     0,
                     1,
                     Some(crate::tracker::Note {
+                        length_ticks: crate::tracker::NoteLength::default(),
                         pitch: NotePitch::Cs,
                         octave: 4,
                     }),
@@ -407,6 +410,7 @@ mod tests {
     fn collection_preserves_track_and_musical_duration() {
         let mut pattern = Pattern::new(2, 3);
         let note = Note {
+            length_ticks: crate::tracker::NoteLength::default(),
             pitch: crate::tracker::NotePitch::C,
             octave: 4,
         };

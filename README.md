@@ -13,6 +13,7 @@ to Normal. `hjkl` moves in every mode; Normal/Visual accepts counts like `16j`.
 
 In Insert, `zxcvbnm,` enters notes, `a`/`s` changes octave, and `f`/`r` lowers/raises
 a note one semitone. Tab cycles entry steps of 0/1/2/4 rows.
+`{`/`}` halves/doubles note length (16 ticks per row); new notes last one row.
 
 Normal `y` copies, `d` cuts, `p` pastes, and `x`/Delete clears. Visual `y`/`d`/`x`
 acts on the rectangle and returns to Normal. Paste includes empty cells and clips
@@ -52,7 +53,7 @@ Esc cancels the prompt. `:wq` saves and quits.
 it. A failed load leaves your project alone; a successful load stops playback and
 clears undo history. The footer marks unsaved changes with `*`.
 
-The JSON format is experimental and versioned. Unsupported versions are rejected;
+The JSON format is experimental: saves use v2; v1 files load with one-row notes. Unsupported versions are rejected;
 [format limits](src/project_file.rs) keep malformed files from allocating huge projects.
 
 ### Dev

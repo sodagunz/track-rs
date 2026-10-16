@@ -105,9 +105,56 @@ impl std::fmt::Display for NotePitch {
     }
 }
 
+/// Validated musical gate: sixteen ticks per row, one through 4096 ticks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "u16", into = "u16")]
+pub struct NoteLength(u16);
+
+impl NoteLength {
+    pub const TICKS_PER_ROW: u16 = 16;
+
+    #[must_use]
+    pub const fn ticks(self) -> u16 {
+        self.0
+    }
+
+    #[must_use]
+    pub fn adjusted(self, double: bool) -> Self {
+        Self(if double {
+            self.0.saturating_mul(2).min(4096)
+        } else {
+            (self.0 / 2).max(1)
+        })
+    }
+}
+
+impl Default for NoteLength {
+    fn default() -> Self {
+        Self(Self::TICKS_PER_ROW)
+    }
+}
+
+impl TryFrom<u16> for NoteLength {
+    type Error = &'static str;
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        if (1..=4096).contains(&value) {
+            Ok(Self(value))
+        } else {
+            Err("Note length must be 1..=4096 ticks")
+        }
+    }
+}
+
+impl From<NoteLength> for u16 {
+    fn from(value: NoteLength) -> Self {
+        value.0
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Note {
+    pub length_ticks: NoteLength,
     pub pitch: NotePitch,
     pub octave: u8,
 }
@@ -132,6 +179,7 @@ impl Note {
             _ => NotePitch::B,
         };
         Self {
+            length_ticks: self.length_ticks,
             pitch,
             octave: u8::try_from(index / 12).unwrap_or(9),
         }

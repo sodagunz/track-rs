@@ -14,6 +14,7 @@ fn add(app: &mut App) {
 }
 fn note() -> Note {
     Note {
+        length_ticks: crate::tracker::NoteLength::default(),
         pitch: NotePitch::C,
         octave: 4,
     }

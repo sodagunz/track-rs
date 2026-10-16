@@ -30,6 +30,8 @@ impl Binding {
             modifiers: KeyModifiers::NONE,
             modes: match command {
                 Command::InsertNote { .. }
+                | Command::HalveLength
+                | Command::DoubleLength
                 | Command::CycleEditStep
                 | Command::LowerNote
                 | Command::RaiseNote
@@ -52,6 +54,13 @@ impl Binding {
 
 /// The single source of truth for default controls and their descriptions.
 pub const DEFAULT_BINDINGS: &[Binding] = &[
+    Binding::new(KeyCode::Char('{'), Command::HalveLength, "Halve note length", "Editing"),
+    Binding::new(
+        KeyCode::Char('}'),
+        Command::DoubleLength,
+        "Double note length",
+        "Editing",
+    ),
     Binding {
         modifiers: KeyModifiers::CONTROL,
         ..Binding::new(

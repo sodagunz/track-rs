@@ -28,7 +28,15 @@ fn seed() -> App {
     };
     for (track, row, pitch) in [(0, 0, NotePitch::C), (1, 1, NotePitch::D), (2, 2, NotePitch::E)] {
         app.project.patterns[app.selected_pattern]
-            .set_step(track, row, Some(Note { pitch, octave: 4 }))
+            .set_step(
+                track,
+                row,
+                Some(Note {
+                    length_ticks: crate::tracker::NoteLength::default(),
+                    pitch,
+                    octave: 4,
+                }),
+            )
             .unwrap();
     }
     app.project.set_instrument(0, Instrument::Kick);

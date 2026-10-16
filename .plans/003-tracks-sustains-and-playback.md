@@ -2,7 +2,8 @@
 
 Status: Phase 1 implemented and validated on `feat/add-tracks`, based on develop
 `f0a7ea7` after the earlier stacks merged. Phase 2 implemented on
-`feat/cursor-playback`, stacked on `feat/add-tracks` (PR #17). Phases 3–5 pending.
+`feat/cursor-playback`, stacked on `feat/add-tracks` (PR #17). Phase 3 implemented
+on `feat/note-lengths`, stacked on `feat/cursor-playback` (PR #18). Phases 4–5 pending.
 
 One phase per PR. Preserve the existing modal editor, history, and project
 files. No mixer, arbitrary synth editor, or track removal in this pass.
@@ -80,31 +81,46 @@ UI checks remain pending.
 
 Touches: cell model, clipboard/history, file format, events, scheduling, UI.
 
-- [ ] Store note length as integer musical ticks: 16 ticks per row, default 16,
+- [x] Store note length as integer musical ticks: 16 ticks per row, default 16,
   range 1–4096 (1/16 row to 256 rows). Keep this separate from Insert's edit step,
   which controls cursor movement rather than sound duration.
-- [ ] Insert `{`/`}` halves/doubles the selected note's length, clamped at the
+- [x] Insert `{`/`}` halves/doubles the selected note's length, clamped at the
   limits. An empty cell is a no-op. New notes default to one row; replacing a
   pitch in a populated cell preserves its length. Show selected length in status
   and a compact length indicator without breaking note-cell alignment.
-- [ ] Cut/copy/paste/duplicate/save include length; clearing removes the whole
+- [x] Cut/copy/paste/duplicate/save include length; clearing removes the whole
   note. Extend the edit interface and history to capture complete cell changes,
   not just pitch/octave. Each length adjustment and bulk paste is atomic.
-- [ ] Resolve ticks to seconds at the trigger's BPM. Already-triggered notes keep
+- [x] Resolve ticks to seconds at the trigger's BPM. Already-triggered notes keep
   that resolved duration if tempo changes; future notes use the new tempo.
   Stopping cancels active gates. No infinite gates yet.
-- [ ] Allow gates across row, pattern, and song-loop boundaries. Give each track
+- [x] Allow gates across row, pattern, and song-loop boundaries. Give each track
   monophonic voice ownership: its next note releases the old voice with a short
   de-click fade instead of accumulating arbitrarily many sustained voices.
   Different tracks remain polyphonic; bound releasing voices too.
-- [ ] Introduce project format v2. Read v1 with one-row defaults; always write v2.
+- [x] Introduce project format v2. Read v1 with one-row defaults; always write v2.
   Preserve v1 fixtures and add a v2 fixture. Reject zero/out-of-range ticks and
   unknown versions before replacing live data; retain atomic-save/dirty guards.
-- [ ] Test shortest/longest lengths, replacement/transpose, clipboard empties and
+- [x] Test shortest/longest lengths, replacement/transpose, clipboard empties and
   clipped pastes, undo/redo, v1 import/v2 round trip, and gates crossing patterns.
   Verify onset/release timing at several BPMs/sample rates and bounded retriggers.
 
-Done: the same pitched preset can make a short stab or a held multi-bar note.
+Done: note gates are editable independently of cursor step. Existing preset
+identity/decay is unchanged; new sustained presets remain phase 4.
+
+Evidence: 91 nextest tests pass (80 baseline + 11 new), including real-key length
+edits, whole-note clipboard/history, strict v2 validation, and the unchanged v1
+fixture. All 91 tests also pass without ignored demos or development-shell files.
+Offline gates cover 1/16/4096 ticks at 50/125/750 ms row
+periods and 8,000/44,100/48,000 Hz; tests cover retrigger fades, bounded releasing
+voices, track polyphony, tempo changes, pattern/song-loop crossings, and runtime
+restart cancellation. Full CI gate and null-audio example pass; cargo-deny retains
+existing duplicate-dependency warnings. A 100×24 PTY passed length editing, v2
+save/reload, real v1 demo import with one-row defaults, Space/NUL restart, help,
+and clean quit using ALSA null output.
+
+- [ ] Listening and subjective UI review: null output and offline timing checks
+  do not verify audible clicks, preset identity, or terminal scanability.
 
 ## 4. Sustained presets and open hi-hat
 

@@ -1,4 +1,5 @@
-//! Experimental version 1 JSON. Decode and validate completely before installation.
+//! Version 2 JSON with strict version 1 migration. Decode and validate completely before
+//! installation.
 use std::{
     fs::File,
     io::{Read, Write},
@@ -22,25 +23,25 @@ pub const MAX_ORDER: usize = 65_536;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Document {
+struct Document<N = Note> {
     version: u32,
     bpm: f64,
     instruments: Vec<Instrument>,
-    patterns: Vec<StoredPattern>,
+    patterns: Vec<StoredPattern<N>>,
     order: Vec<usize>,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct StoredPattern {
+struct StoredPattern<N = Note> {
     rows: usize,
     tracks: usize,
-    cells: Vec<Vec<Option<Note>>>,
+    cells: Vec<Vec<Option<N>>>,
 }
 
 impl Document {
     fn validate(&self) -> anyhow::Result<()> {
-        ensure!(self.version == 1, "Unsupported project version {}", self.version);
+        ensure!(self.version == 2, "Unsupported project version {}", self.version);
         ensure!(
             self.bpm.is_finite() && (20.0..=300.0).contains(&self.bpm),
             "BPM must be finite and between 20 and 300"
@@ -98,10 +99,50 @@ pub fn load(path: &Path) -> anyhow::Result<Project> {
     File::open(path)?.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes)?;
     ensure!(bytes.len() as u64 <= MAX_FILE_BYTES, "Project exceeds 16 MiB");
     let header: Header = serde_json::from_slice(&bytes)?;
-    if header.version != 1 {
+    if !matches!(header.version, 1 | 2) {
         bail!("Unsupported project version {}", header.version);
     }
-    let document: Document = serde_json::from_slice(&bytes)?;
+    let document = if header.version == 1 {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct LegacyNote {
+            pitch: crate::tracker::NotePitch,
+            octave: u8,
+        }
+        let legacy: Document<LegacyNote> = serde_json::from_slice(&bytes)?;
+        Document {
+            version: 2,
+            bpm: legacy.bpm,
+            instruments: legacy.instruments,
+            order: legacy.order,
+            patterns: legacy
+                .patterns
+                .into_iter()
+                .map(|pattern| StoredPattern {
+                    rows: pattern.rows,
+                    tracks: pattern.tracks,
+                    cells: pattern
+                        .cells
+                        .into_iter()
+                        .map(|track| {
+                            track
+                                .into_iter()
+                                .map(|note| {
+                                    note.map(|note| Note {
+                                        pitch: note.pitch,
+                                        octave: note.octave,
+                                        length_ticks: crate::tracker::NoteLength::default(),
+                                    })
+                                })
+                                .collect()
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    } else {
+        serde_json::from_slice(&bytes)?
+    };
     document.validate()?;
     let patterns = document
         .patterns
@@ -130,7 +171,7 @@ pub fn load(path: &Path) -> anyhow::Result<Project> {
 /// Returns validation, serialization, or filesystem errors. The target is not truncated.
 pub fn save(project: &Project, path: &Path) -> anyhow::Result<()> {
     let document = Document {
-        version: 1,
+        version: 2,
         bpm: project.bpm,
         instruments: project.instruments.clone(),
         patterns: project

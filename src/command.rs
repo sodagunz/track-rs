@@ -40,6 +40,8 @@ pub enum Command {
     Cut,
     Paste,
     CycleEditStep,
+    HalveLength,
+    DoubleLength,
     PreviousInstrument,
     NextInstrument,
     SetInstrument(Instrument),

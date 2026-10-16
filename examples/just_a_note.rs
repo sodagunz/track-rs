@@ -6,6 +6,7 @@ use track_rs::{
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut au = AudioEngine::new()?;
     let note = Note {
+        length_ticks: track_rs::tracker::NoteLength::default(),
         pitch: NotePitch::E,
         octave: 3,
     };

@@ -35,19 +35,152 @@ use fundsp::{
 
 type Renderer = BlockRateAdapter;
 
+const RETRIGGER_SECONDS: f64 = 0.005;
+
+// The outer envelope gates effects too. Renderers are built on the control
+// thread; fixed track slots only render, move, and retire them in the callback.
+struct GatedVoice {
+    renderer: Renderer,
+    elapsed: f64,
+    duration: f64,
+    attack: f64,
+    release: f64,
+    sample_period: f64,
+}
+
+impl GatedVoice {
+    fn new(event: NoteEvent, sample_rate: f64, dry: bool, seed: u64) -> Self {
+        let mut unit = voice(event.note, event.instrument, dry, seed);
+        unit.set_sample_rate(sample_rate);
+        unit.allocate();
+        let duration = event.duration.as_secs_f64();
+        Self {
+            renderer: BlockRateAdapter::new(unit),
+            elapsed: 0.0,
+            duration,
+            attack: attack_time(event.instrument).min(duration * 0.25),
+            release: DEFAULT_FADE_OUT.min(duration * 0.25),
+            sample_period: sample_rate.recip(),
+        }
+    }
+
+    fn sample(&mut self) -> Option<(f32, f32)> {
+        if self.elapsed >= self.duration {
+            return None;
+        }
+        let gain = smooth_gain(self.elapsed / self.attack) * smooth_gain((self.duration - self.elapsed) / self.release);
+        let (l, r) = self.renderer.get_stereo();
+        self.elapsed += self.sample_period;
+        Some((l * gain, r * gain))
+    }
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn smooth_gain(phase: f64) -> f32 {
+    let x = phase.clamp(0.0, 1.0);
+    (x * x * x * x.mul_add(x.mul_add(6.0, -15.0), 10.0)) as f32
+}
+
+enum OutputCommand {
+    Replace(Renderer),
+    Trigger { track: usize, voice: GatedVoice },
+}
+
+#[derive(Default)]
+struct TrackVoices {
+    active: Option<GatedVoice>,
+    releasing: Option<(GatedVoice, f64)>,
+}
+
+impl TrackVoices {
+    fn clear(&mut self, retired: &Sender<Renderer>) {
+        if let Some(voice) = self.active.take() {
+            let _ = retired.send(voice.renderer);
+        }
+        if let Some((voice, _)) = self.releasing.take() {
+            let _ = retired.send(voice.renderer);
+        }
+    }
+
+    fn trigger(&mut self, voice: GatedVoice, retired: &Sender<Renderer>) {
+        if let Some((old, _)) = self.releasing.take() {
+            let _ = retired.send(old.renderer);
+        }
+        self.releasing = self.active.take().map(|old| (old, RETRIGGER_SECONDS));
+        self.active = Some(voice);
+    }
+
+    fn sample(&mut self, retired: &Sender<Renderer>) -> (f32, f32) {
+        let mut sample = (0.0, 0.0);
+        if let Some(voice) = &mut self.active {
+            if let Some(value) = voice.sample() {
+                sample = value;
+            } else if let Some(old) = self.active.take() {
+                let _ = retired.send(old.renderer);
+            }
+        }
+        if let Some((voice, remaining)) = &mut self.releasing {
+            let value = if *remaining > 0.0 { voice.sample() } else { None };
+            if let Some((l, r)) = value {
+                let gain = smooth_gain(*remaining / RETRIGGER_SECONDS);
+                sample.0 = l.mul_add(gain, sample.0);
+                sample.1 = r.mul_add(gain, sample.1);
+                *remaining -= voice.sample_period;
+            } else if let Some((old, _)) = self.releasing.take() {
+                let _ = retired.send(old.renderer);
+            }
+        }
+        sample
+    }
+}
+
 struct Output {
     renderer: Renderer,
-    replacements: Receiver<Renderer>,
+    commands: Receiver<OutputCommand>,
     retired: Sender<Renderer>,
+    tracks: Vec<TrackVoices>,
 }
 
 impl Output {
-    fn sample(&mut self) -> (f32, f32) {
-        while let Ok(renderer) = self.replacements.try_recv() {
-            let old = std::mem::replace(&mut self.renderer, renderer);
-            let _ = self.retired.send(old);
+    fn new(renderer: Renderer, commands: Receiver<OutputCommand>, retired: Sender<Renderer>) -> Self {
+        Self {
+            renderer,
+            commands,
+            retired,
+            tracks: (0..crate::project_file::MAX_TRACKS)
+                .map(|_| TrackVoices::default())
+                .collect(),
         }
-        self.renderer.get_stereo()
+    }
+
+    fn sample(&mut self) -> (f32, f32) {
+        // One FIFO orders cancellation before the next run's triggers, even when
+        // the control thread sends commands while this callback is draining it.
+        while let Ok(command) = self.commands.try_recv() {
+            match command {
+                OutputCommand::Replace(renderer) => {
+                    for track in &mut self.tracks {
+                        track.clear(&self.retired);
+                    }
+                    let old = std::mem::replace(&mut self.renderer, renderer);
+                    let _ = self.retired.send(old);
+                }
+                OutputCommand::Trigger { track, voice } => {
+                    if let Some(track) = self.tracks.get_mut(track) {
+                        track.trigger(voice, &self.retired);
+                    } else {
+                        let _ = self.retired.send(voice.renderer);
+                    }
+                }
+            }
+        }
+        let mut sample = self.renderer.get_stereo();
+        for track in &mut self.tracks {
+            let (l, r) = track.sample(&self.retired);
+            sample.0 += l;
+            sample.1 += r;
+        }
+        sample
     }
 }
 
@@ -57,15 +190,15 @@ fn prepare(sample_rate: f64) -> (Sequencer, Renderer) {
     (sequencer, BlockRateAdapter::new(Box::new(net.backend())))
 }
 
-fn replace_graph(sequencer: &mut Sequencer, replacements: &Sender<Renderer>, sample_rate: f64) {
+fn replace_graph(sequencer: &mut Sequencer, replacements: &Sender<OutputCommand>, sample_rate: f64) {
     let (next, renderer) = prepare(sample_rate);
     *sequencer = next;
-    let _ = replacements.send(renderer);
+    let _ = replacements.send(OutputCommand::Replace(renderer));
 }
 
 pub struct AudioEngine {
     sequencer: Sequencer,
-    replacements: Sender<Renderer>,
+    replacements: Sender<OutputCommand>,
     retired: Receiver<Renderer>,
     sample_rate: f64,
     dry: bool,
@@ -106,11 +239,7 @@ impl AudioEngine {
         let (sequencer, renderer) = prepare(sample_rate);
         let (replacements, receiver) = mpsc::channel();
         let (retired_sender, retired) = mpsc::channel();
-        let output = Output {
-            renderer,
-            replacements: receiver,
-            retired: retired_sender,
-        };
+        let output = Output::new(renderer, receiver, retired_sender);
 
         let stream = match config.sample_format() {
             cpal::SampleFormat::F32 => build_stream::<f32>(config, &device, output)?,
@@ -130,6 +259,7 @@ impl AudioEngine {
         })
     }
 
+    /// Legacy audition: always 200 ms, independent of the note's musical length.
     pub fn play(&mut self, note: Note) {
         self.collect_retired();
         schedule_instrument(
@@ -142,13 +272,13 @@ impl AudioEngine {
     }
     pub fn play_event(&mut self, event: NoteEvent) {
         self.collect_retired();
-        schedule_instrument(
-            &mut self.sequencer,
-            event.note,
-            event.instrument,
-            event.duration,
-            self.dry,
-        );
+        if event.track >= crate::project_file::MAX_TRACKS {
+            return;
+        }
+        let _ = self.replacements.send(OutputCommand::Trigger {
+            track: event.track,
+            voice: GatedVoice::new(event, self.sample_rate, self.dry, rand::random()),
+        });
     }
 
     /// Replace the entire prepared graph, cancelling voices and effect tails.
@@ -181,11 +311,7 @@ fn schedule_voice(
     seed: u64,
 ) {
     let seconds = duration.as_secs_f64();
-    let attack = match instrument {
-        // Preserve the drum transient instead of fading through most of it.
-        Instrument::Kick | Instrument::Snare | Instrument::HiHat => PERCUSSION_ATTACK,
-        _ => DEFAULT_FADE_IN,
-    };
+    let attack = attack_time(instrument);
     if seconds > 0.0 {
         sequencer.push_relative(
             0.0,
@@ -195,6 +321,13 @@ fn schedule_voice(
             DEFAULT_FADE_OUT.min(seconds * 0.25),
             voice(note, instrument, dry, seed),
         );
+    }
+}
+
+const fn attack_time(instrument: Instrument) -> f64 {
+    match instrument {
+        Instrument::Kick | Instrument::Snare | Instrument::HiHat => PERCUSSION_ATTACK,
+        _ => DEFAULT_FADE_IN,
     }
 }
 
@@ -287,12 +420,247 @@ mod tests {
     use super::*;
     use crate::tracker::NotePitch;
 
+    fn sine_event(track: usize, duration: Duration) -> NoteEvent {
+        NoteEvent {
+            track,
+            instrument: Instrument::Sine,
+            note: Note {
+                pitch: NotePitch::A,
+                octave: 4,
+                length_ticks: crate::tracker::NoteLength::default(),
+            },
+            beats: 0.25,
+            duration,
+        }
+    }
+
+    #[test]
+    fn gates_render_onset_hold_and_release_at_multiple_rates_and_row_periods() {
+        for rate in [8_000_u32, 44_100, 48_000] {
+            for milliseconds in [50, 125, 750] {
+                for ticks in [1_u16, 16, 4096] {
+                    let mut pattern = crate::tracker::Pattern::new(1, 1);
+                    let mut event = sine_event(0, Duration::ZERO);
+                    event.note.length_ticks = crate::tracker::NoteLength::try_from(ticks).unwrap();
+                    pattern.set_step(0, 0, Some(event.note)).unwrap();
+                    let event = crate::transport::collect_row(
+                        &pattern,
+                        &[Instrument::Sine],
+                        crate::transport::RowEvent {
+                            row: 0,
+                            beats: 0.25,
+                            duration: Duration::from_millis(milliseconds),
+                        },
+                    )[0];
+                    let mut voice = GatedVoice::new(event, f64::from(rate), true, 42);
+                    assert_eq!(voice.sample().unwrap(), (0.0, 0.0));
+                    let mut count = 1_u64;
+                    let mut energy = 0.0_f64;
+                    let mut last = 0.0_f32;
+                    let mut max_jump = 0.0_f32;
+                    while let Some((l, r)) = voice.sample() {
+                        assert!(l.is_finite() && r.is_finite());
+                        energy += f64::from(r.mul_add(r, l * l));
+                        max_jump = max_jump.max((l - last).abs());
+                        last = l;
+                        count += 1;
+                    }
+                    let rendered = Duration::from_secs_f64(f64::from(u32::try_from(count).unwrap()) / f64::from(rate));
+                    assert!(
+                        rendered.abs_diff(event.duration) <= Duration::from_secs_f64(2.0 / f64::from(rate)),
+                        "{rate} Hz, {milliseconds} ms row, {ticks} ticks: {rendered:?}"
+                    );
+                    assert!(energy > 0.001);
+                    let final_sample_bound =
+                        0.13_f32.mul_add(smooth_gain(voice.sample_period / voice.release), 0.00001);
+                    assert!(
+                        last.abs() <= final_sample_bound,
+                        "release: {last} > {final_sample_bound} at {rate} Hz"
+                    );
+                    assert!(max_jump < 0.06, "discontinuous gate: {max_jump}");
+                    assert!(voice.sample().is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn track_retrigger_fades_old_voice_and_bounds_releases_while_other_tracks_mix() {
+        let (_, renderer) = prepare(48_000.0);
+        let (triggers, replacements) = mpsc::channel();
+        let (retired, retired_rx) = mpsc::channel();
+        let mut output = Output::new(renderer, replacements, retired);
+        let event = NoteEvent {
+            instrument: Instrument::Pluck,
+            ..sine_event(0, Duration::from_secs(10))
+        };
+        triggers
+            .send(OutputCommand::Trigger {
+                track: 0,
+                voice: GatedVoice::new(event, 48_000.0, true, 42),
+            })
+            .unwrap();
+        for _ in 0..4800 {
+            output.sample();
+        }
+        let new = NoteEvent {
+            instrument: Instrument::Sine,
+            note: Note {
+                octave: 5,
+                ..event.note
+            },
+            ..event
+        };
+        triggers
+            .send(OutputCommand::Trigger {
+                track: 0,
+                voice: GatedVoice::new(new, 48_000.0, true, 43),
+            })
+            .unwrap();
+        let mut reference = GatedVoice::new(new, 48_000.0, true, 43);
+        let mut difference = 0.0_f32;
+        for i in 0..4800 {
+            let sample = output.sample();
+            let expected = reference.sample().unwrap();
+            if i < 200 {
+                difference += (sample.0 - expected.0).abs();
+            }
+            if i > 241 {
+                assert_eq!(sample, expected, "old voice survived release");
+            }
+        }
+        assert!(difference > 0.1, "old voice was cut rather than faded");
+        assert!(output.tracks[0].releasing.is_none());
+        let other = sine_event(1, Duration::from_secs(10));
+        triggers
+            .send(OutputCommand::Trigger {
+                track: 1,
+                voice: GatedVoice::new(other, 48_000.0, true, 44),
+            })
+            .unwrap();
+        let mut second = GatedVoice::new(other, 48_000.0, true, 44);
+        for _ in 0..4800 {
+            let a = reference.sample().unwrap();
+            let b = second.sample().unwrap();
+            assert_eq!(output.sample(), (a.0 + b.0, a.1 + b.1));
+        }
+        for _ in 0..100 {
+            triggers
+                .send(OutputCommand::Trigger {
+                    track: 0,
+                    voice: GatedVoice::new(event, 48_000.0, false, 45),
+                })
+                .unwrap();
+            for _ in 0..10 {
+                output.sample();
+            }
+            assert!(output.tracks[0].active.is_some());
+            assert!(output.tracks[0].releasing.is_some());
+            assert!(output.tracks[1].active.is_some());
+        }
+        assert!(retired_rx.try_iter().count() >= 99);
+        for _ in 0..300 {
+            output.sample();
+        }
+        assert!(output.tracks[0].releasing.is_none());
+    }
+
+    #[test]
+    fn track_fifo_cancellation_discards_queued_and_releasing_voices() {
+        let (_, renderer) = prepare(48_000.0);
+        let (reset, replacements) = mpsc::channel();
+        let triggers = reset.clone();
+        let (retired, _retired_rx) = mpsc::channel();
+        let mut output = Output::new(renderer, replacements, retired);
+        let event = sine_event(0, Duration::from_secs(100));
+        for _ in 0..2 {
+            triggers
+                .send(OutputCommand::Trigger {
+                    track: 0,
+                    voice: GatedVoice::new(event, 48_000.0, false, 42),
+                })
+                .unwrap();
+            for _ in 0..100 {
+                output.sample();
+            }
+        }
+        assert!(output.tracks[0].releasing.is_some());
+        triggers
+            .send(OutputCommand::Trigger {
+                track: 1,
+                voice: GatedVoice::new(event, 48_000.0, false, 42),
+            })
+            .unwrap();
+        let (_, renderer) = prepare(48_000.0);
+        reset.send(OutputCommand::Replace(renderer)).unwrap();
+        for _ in 0..1000 {
+            assert_eq!(output.sample(), (0.0, 0.0));
+        }
+        assert!(output
+            .tracks
+            .iter()
+            .all(|track| track.active.is_none() && track.releasing.is_none()));
+        let restart = sine_event(0, Duration::from_millis(50));
+        triggers
+            .send(OutputCommand::Trigger {
+                track: 0,
+                voice: GatedVoice::new(restart, 48_000.0, true, 43),
+            })
+            .unwrap();
+        let mut reference = GatedVoice::new(restart, 48_000.0, true, 43);
+        for _ in 0..3000 {
+            assert_eq!(output.sample(), reference.sample().unwrap_or((0.0, 0.0)));
+        }
+        assert!(output.tracks[0].active.is_none());
+    }
+
+    #[test]
+    fn held_gate_crosses_pattern_and_song_loop_and_ignores_later_tempo() {
+        use crate::{command::Command, state::App, transport::Transport};
+        let mut app = App::default();
+        app.project.patterns = vec![crate::tracker::Pattern::new(1, 4), crate::tracker::Pattern::new(2, 4)];
+        app.project.order = vec![0, 1];
+        app.project.instruments[0] = Instrument::Sine;
+        let mut note = sine_event(0, Duration::ZERO).note;
+        note.length_ticks = crate::tracker::NoteLength::try_from(256).unwrap();
+        app.project.patterns[0].set_step(0, 0, Some(note)).unwrap();
+        app.handle_command(Command::ToggleSong);
+        app.take_stop_request();
+        app.handle_command(Command::TogglePlayback);
+        let mut clock = Transport::default();
+        let start = std::time::Instant::now();
+        let event = clock.update_app(start, &mut app, || panic!("unexpected cancellation"))[0];
+        assert_eq!(event.duration, Duration::from_secs(2));
+        let mut voice = GatedVoice::new(event, 48_000.0, true, 42);
+        for _ in 0..6000 {
+            voice.sample();
+        }
+        app.project.bpm = 60.0;
+        assert!(clock
+            .update_app(start + Duration::from_millis(125), &mut app, || panic!(
+                "boundary cancelled gate"
+            ))
+            .is_empty());
+        assert_eq!(app.playing_pattern, 1);
+        for _ in 0..24000 {
+            voice.sample();
+        }
+        let next = clock.update_app(start + Duration::from_millis(625), &mut app, || {
+            panic!("loop cancelled gate")
+        })[0];
+        assert_eq!(app.playing_pattern, 0);
+        assert_eq!(next.duration, Duration::from_secs(4));
+        assert!(voice.sample().is_some());
+        assert_eq!(voice.duration, 2.0);
+    }
+
     fn render_presets(instruments: &[Instrument], dry: bool, duration: Duration) -> Vec<(f32, f32)> {
         let (mut seq, mut renderer) = prepare(48_000.0);
         for instrument in instruments {
             schedule_voice(
                 &mut seq,
                 Note {
+                    length_ticks: crate::tracker::NoteLength::default(),
                     pitch: NotePitch::C,
                     octave: 4,
                 },
@@ -381,6 +749,7 @@ mod tests {
         for instrument in [Instrument::Kick, Instrument::Snare, Instrument::HiHat] {
             let mut low = voice(
                 Note {
+                    length_ticks: crate::tracker::NoteLength::default(),
                     pitch: NotePitch::C,
                     octave: 0,
                 },
@@ -390,6 +759,7 @@ mod tests {
             );
             let mut high = voice(
                 Note {
+                    length_ticks: crate::tracker::NoteLength::default(),
                     pitch: NotePitch::B,
                     octave: 9,
                 },
@@ -411,12 +781,9 @@ mod tests {
             let (mut seq, renderer) = prepare(48_000.0);
             let (tx, replacements) = mpsc::channel();
             let (retired, rx) = mpsc::channel();
-            let mut output = Output {
-                renderer,
-                replacements,
-                retired,
-            };
+            let mut output = Output::new(renderer, replacements, retired);
             let note = Note {
+                length_ticks: crate::tracker::NoteLength::default(),
                 pitch: NotePitch::C,
                 octave: 4,
             };
@@ -434,7 +801,7 @@ mod tests {
                 schedule_instrument(&mut seq, note, instrument, Duration::from_secs(2), dry);
             }
             let (mut next, renderer) = prepare(48_000.0);
-            tx.send(renderer).unwrap();
+            tx.send(OutputCommand::Replace(renderer)).unwrap();
             for _ in 0..100_000 {
                 assert_eq!(output.sample(), (0.0, 0.0));
             }
@@ -445,7 +812,7 @@ mod tests {
                 l.abs() + r.abs() > 1e-6
             }));
             let (_, renderer) = prepare(48_000.0);
-            tx.send(renderer).unwrap();
+            tx.send(OutputCommand::Replace(renderer)).unwrap();
             for _ in 0..100_000 {
                 assert_eq!(output.sample(), (0.0, 0.0));
             }
@@ -459,19 +826,29 @@ mod tests {
         let (mut sequencer, renderer) = prepare(48_000.0);
         let (tx, replacements) = mpsc::channel();
         let (retired, _rx) = mpsc::channel();
-        let mut output = Output {
-            renderer,
-            replacements,
-            retired,
-        };
+        let mut output = Output::new(renderer, replacements, retired);
         let mut app = App::default();
         let note = Note {
+            length_ticks: crate::tracker::NoteLength::default(),
             pitch: NotePitch::C,
             octave: 4,
         };
         app.project.patterns[0].set_step(0, 8, Some(note)).unwrap();
         // A long old gate must not be reconstructed when starting later.
-        schedule_instrument(&mut sequencer, note, Instrument::Pluck, Duration::from_secs(10), false);
+        tx.send(OutputCommand::Trigger {
+            track: 0,
+            voice: GatedVoice::new(
+                NoteEvent {
+                    instrument: Instrument::Pluck,
+                    note,
+                    ..sine_event(0, Duration::from_secs(10))
+                },
+                48_000.0,
+                false,
+                42,
+            ),
+        })
+        .unwrap();
         assert!((0..10_000).any(|_| {
             let (l, r) = output.sample();
             l.abs() + r.abs() > 1e-6
@@ -493,7 +870,11 @@ mod tests {
         assert_eq!(app.playback_row, 8);
         assert_eq!(notes.len(), 1);
         for event in notes {
-            schedule_instrument(&mut sequencer, event.note, event.instrument, event.duration, false);
+            tx.send(OutputCommand::Trigger {
+                track: event.track,
+                voice: GatedVoice::new(event, 48_000.0, false, 43),
+            })
+            .unwrap();
         }
         assert!((0..10_000).any(|_| {
             let (l, r) = output.sample();
@@ -528,6 +909,7 @@ mod tests {
         schedule_note(
             &mut sequencer,
             Note {
+                length_ticks: crate::tracker::NoteLength::default(),
                 pitch: NotePitch::C,
                 octave: 4,
             },
