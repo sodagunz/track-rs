@@ -38,6 +38,10 @@ pub enum PlaybackState {
 }
 
 #[derive(Clone, Debug)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "Input repeat suppression, help, shutdown, and transport stop flags are independent."
+)]
 pub struct App {
     pub(crate) history: History,
     // Track-major owned snapshot; None cells are part of the rectangle.
@@ -46,6 +50,8 @@ pub struct App {
     pub mode: Mode,
     pub selection_anchor: Option<(usize, usize)>,
     pub pending_count: Option<u16>,
+    pub suppressed_repeat: bool,
+    pub pending_prefix: Option<char>,
     pub project: Project,
     pub selected_pattern: usize,
     pub selected_order: usize,
@@ -97,6 +103,8 @@ impl Default for App {
             mode: Mode::Normal,
             selection_anchor: None,
             pending_count: None,
+            pending_prefix: None,
+            suppressed_repeat: false,
             project: Project::new(default_rows, default_tracks),
             selected_pattern: 0,
             selected_order: 0,
@@ -215,6 +223,7 @@ impl App {
 
     /// Apply an editor action without depending on terminal key events.
     pub fn handle_command(&mut self, command: Command) {
+        self.pending_prefix = None;
         match command {
             Command::ToggleHelp => {
                 self.pending_count = None;
@@ -227,6 +236,7 @@ impl App {
             }
             Command::ScrollHelpUp | Command::ScrollHelpDown => self.scroll_help(command == Command::ScrollHelpDown),
             Command::Quit => self.shutdown(),
+            Command::CountDigit(_) => {}
             _ if self.help_visible => {}
 
             Command::PreviousPattern
@@ -245,8 +255,7 @@ impl App {
             Command::AddTrack => self.add_track(),
             Command::OpenPrompt => self.open_prompt(),
             Command::EnterInsert => {
-                self.mode = Mode::Insert;
-                self.selection_anchor = None;
+                self.enter_insert();
             }
             Command::EnterNormal => {
                 self.mode = Mode::Normal;
@@ -262,7 +271,6 @@ impl App {
                     self.selection_anchor = Some((self.cursor_row, self.cursor_track));
                 }
             }
-            Command::CountDigit(_) => {}
             Command::MoveCursor { rows, tracks } => {
                 let offset = |value: i32| {
                     if value < 0 {
@@ -273,6 +281,7 @@ impl App {
                 };
                 self.offset_cursor(&offset(rows), &offset(tracks));
             }
+            Command::FirstTrack | Command::FirstRow | Command::LastRow | Command::LastTrack => self.jump(command),
             Command::TogglePlayback => self.toggle_playback(),
             Command::RestartPlayback => self.restart_playback(),
             Command::MoveCursorUp => self.offset_cursor(&CursorOffset::Neg(1), &CursorOffset::None),
@@ -305,10 +314,31 @@ impl App {
                     (self.project.bpm + if command == Command::IncreaseTempo { 1.0 } else { -1.0 }).clamp(20.0, 300.0);
                 self.edit(|edit| edit.set_tempo(bpm));
             }
-            Command::LowerNote | Command::RaiseNote => self.transpose_note(command == Command::RaiseNote),
+            Command::LowerNote | Command::RaiseNote => {
+                self.transpose_notes(if command == Command::RaiseNote { 1 } else { -1 });
+            }
+            Command::LowerOctave | Command::RaiseOctave => {
+                self.transpose_notes(if command == Command::RaiseOctave { 12 } else { -12 });
+            }
             Command::DeleteNote => self.clear_selection(),
             Command::DecreaseOctave => self.octave = self.octave.saturating_sub(1).min(9),
             Command::IncreaseOctave => self.octave = self.octave.saturating_add(1).min(9),
+        }
+    }
+
+    const fn enter_insert(&mut self) {
+        self.mode = Mode::Insert;
+        self.selection_anchor = None;
+    }
+
+    fn jump(&mut self, command: Command) {
+        let pattern = &self.project.patterns[self.selected_pattern];
+        match command {
+            Command::FirstTrack => self.cursor_track = 0,
+            Command::FirstRow => self.cursor_row = 0,
+            Command::LastRow => self.cursor_row = pattern.num_rows.saturating_sub(1),
+            Command::LastTrack => self.cursor_track = pattern.tracks.len().saturating_sub(1),
+            _ => unreachable!(),
         }
     }
 
@@ -323,12 +353,26 @@ impl App {
         }
     }
 
-    fn transpose_note(&mut self, raise: bool) {
-        if let Some(note) = self.project.patterns[self.selected_pattern]
-            .get_step(self.cursor_track, self.cursor_row)
-            .and_then(|step| step.note)
-        {
-            self.insert_note_under_cursor(Some(note.transpose(if raise { 1 } else { -1 })));
+    fn transpose_notes(&mut self, semitones: i8) {
+        let (first_row, last_row, first_track, last_track) = self.rectangle();
+        let pattern = self.selected_pattern;
+        let mut notes = Vec::new();
+        for track in first_track..=last_track {
+            for row in first_row..=last_row {
+                if let Some(note) = self.project.patterns[pattern]
+                    .get_step(track, row)
+                    .and_then(|step| step.note)
+                {
+                    notes.push((track, row, note.transpose(semitones)));
+                }
+            }
+        }
+        if !notes.is_empty() {
+            self.edit(|edit| {
+                for (track, row, note) in notes {
+                    edit.set_cell(pattern, track, row, Some(note));
+                }
+            });
         }
     }
 

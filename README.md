@@ -8,12 +8,16 @@ audio. Sorry Mario, your blazingly fast modern tracker is in another repo.
 ### Controls
 
 Start in Normal mode. `i` enters Insert, `v` selects a rectangle, `Esc` returns
-to Normal. `hjkl` moves in every mode; Normal/Visual accepts counts like `16j`.
+to Normal. `hjkl` moves in every mode, with counts like `16j`.
+`gh`/`gj`/`gk`/`gl` jumps to first track/first row/last row/last track.
 `?` shows the bindings for each mode. Help blocks editing, not playback.
 
-In Insert, `zxcvbnm,` enters notes, `a`/`s` changes octave, and `f`/`r` lowers/raises
-a note one semitone. Tab cycles entry steps of 0/1/2/4 rows.
+In every mode, `a`/`s` lowers/raises notes one octave; `A`/`S` does so one
+semitone. Visual transposes the inclusive rectangle without leaving selection;
+otherwise only the cursor cell changes.
+In Insert, `zxcvbnm,` enters notes. Tab cycles entry steps of 0/1/2/4 rows.
 `{`/`}` halves/doubles note length (16 ticks per row); new notes last one row.
+Length sets note-off; the instrument's release rings afterward.
 
 Normal `y` copies, `d` cuts, `p` pastes, and `x`/Delete clears. Visual `y`/`d`/`x`
 acts on the rectangle and returns to Normal. Paste includes empty cells and clips

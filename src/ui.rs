@@ -144,6 +144,9 @@ fn binding_label(binding: &crate::bindings::Binding) -> String {
             prefix.push_str(label);
         }
     }
+    if let Some(key) = binding.prefix {
+        prefix.push_str(&key_label(key));
+    }
     format!("{prefix}{}", key_label(binding.key))
 }
 
