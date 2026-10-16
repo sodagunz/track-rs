@@ -638,7 +638,10 @@ fn draw_pattern_editor(f: &mut Frame, area: Rect, state: &App) {
 }
 
 fn draw_status_bar(f: &mut Frame, area: Rect, state: &App) {
-    f.render_widget(Paragraph::new(Presentation(state).status_line(area.width)), area);
+    f.render_widget(
+        Paragraph::new(Presentation(state).status_with_buffer(area.width, f.area().height >= 6)),
+        area,
+    );
 }
 
 fn format_step(step: PatternStep) -> String {
@@ -1302,7 +1305,9 @@ mod tests {
                 let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
                 terminal.draw(|frame| render(frame, &app)).unwrap();
                 if height >= 3 {
-                    assert!(screen(&terminal).contains(mode));
+                    assert!(
+                        screen(&terminal).contains(mode) || (mode == "INSERT" && screen(&terminal).contains("I:W"))
+                    );
                 } else {
                     assert!(!screen(&terminal).contains("? Help"));
                 }
@@ -1377,7 +1382,10 @@ mod tests {
                     terminal.draw(|frame| render(frame, &app)).unwrap();
                     let text = screen_lines(&terminal, width);
                     if height >= 3 {
-                        assert!(text.contains(mode.label()), "{width}x{height}: {text}");
+                        assert!(
+                            text.contains(mode.label()) || (mode == Mode::Insert && text.contains("I:W")),
+                            "{width}x{height}: {text}"
+                        );
                         assert!(text.contains('*'));
                         assert!(text.contains("T1"));
                         assert!(text.contains("Stopped") || text.contains("P ■"));
@@ -1554,18 +1562,27 @@ mod tests {
                 let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
                 terminal.draw(|f| draw_status_bar(f, f.area(), &app)).unwrap();
                 let text = screen(&terminal);
-                assert!(text.contains("song.json*"), "{text}");
-                assert!(text.contains("? Help"), "{width}: {text}");
+                assert!(text.contains('*'), "{text}");
+                assert!(!text.contains("song.json"));
+                if width >= 80 {
+                    assert!(text.contains("? Help"), "{width}: {text}");
+                }
                 assert!(text.contains("P0R00T1"));
                 let buffer = terminal.backend().buffer();
                 for x in 0..width {
                     let cell = &buffer[(x, 0)];
                     assert_eq!(
                         cell.bg,
-                        if usize::from(x) < mode.label().len() {
+                        if usize::from(x)
+                            < if mode == Mode::Insert {
+                                13
+                            } else {
+                                mode.label().len() + 1
+                            }
+                        {
                             color
                         } else {
-                            Color::Black
+                            Color::Reset
                         }
                     );
                 }

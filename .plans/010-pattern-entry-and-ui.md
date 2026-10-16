@@ -2,7 +2,15 @@
 
 Status: approved for implementation after PR #32 (stacked on #31).
 Input contract submitted as PR #33 (`feat/chromatic-entry`).
-Grid clarity implemented on `feat/pattern-landmarks`; context/audition pending.
+Grid clarity submitted as PR #34 (`feat/pattern-landmarks`).
+Context implemented on `feat/pattern-context`; audition pending.
+
+Context now labels Insert WRITE (I:W when narrow), instrument, entry octave,
+New:1r and step separately from Cell detail. Normal includes focused instrument.
+Buffer identity stays in its bar; dirty state falls back to the strip only when
+that bar is absent. Context uses whole fields, transport fills the remaining
+width, and the full leftover-width progress bar remains. Formatting, strict
+Clippy and nextest pass (153 tests). Real-terminal checks remain pending.
 
 Grid retains ten-column fixed pitch/tick fields, clips long headers, sizes row
 numbers to pattern dimensions, and marks cursor/playback independently (`>`/`*`).
