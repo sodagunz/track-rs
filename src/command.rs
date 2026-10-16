@@ -26,6 +26,7 @@ pub enum Command {
     Undo,
     Redo,
     EnterInsert,
+    EnterAudition,
     ToggleVisual,
     EnterNormal,
     CountDigit(u8),

@@ -130,6 +130,44 @@ fn audition_obeys_panel_playback_help_prompt_and_key_guards() {
 }
 
 #[test]
+fn pattern_audition_load_and_transport_lifecycle_discard_stale_requests() {
+    let mut app = App::default();
+    enter(&mut app);
+    assert_eq!(app.mode, crate::state::Mode::Audition);
+    key(&mut app, 'z');
+    app.handle_command(Command::TogglePlayback);
+    assert!(app.take_audition().is_none());
+    assert!(app.take_stop_request());
+    key(&mut app, 'x');
+    app.handle_command(Command::RestartPlayback);
+    assert!(app.take_audition().is_none());
+    assert!(app.take_stop_request());
+    key(&mut app, 'c');
+    app.handle_command(Command::TogglePlayback);
+    assert!(app.take_audition().is_none());
+    assert!(app.take_stop_request());
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("project.json");
+    app.execute_prompt(&format!("w {}", path.display()));
+    key(&mut app, 'q');
+    let revision = app.revision();
+    app.execute_prompt(&format!("e {}/missing.json", directory.path().display()));
+    assert!(app.take_audition().is_some());
+    assert_eq!(app.mode, crate::state::Mode::Audition);
+    assert_eq!(app.revision(), revision);
+    key(&mut app, 'q');
+    app.execute_prompt(&format!("e {}", path.display()));
+    assert!(app.take_audition().is_none());
+    assert!(app.take_stop_request());
+    assert_eq!(app.mode, crate::state::Mode::Normal);
+    enter(&mut app);
+    key(&mut app, 'z');
+    app.execute_prompt("q");
+    assert!(app.shutdown);
+    assert!(app.take_audition().is_none());
+}
+
+#[test]
 fn starting_transport_discards_pending_audition_and_cancels_audio() {
     let mut app = App::default();
     app.handle_command(Command::ShowInstrument);

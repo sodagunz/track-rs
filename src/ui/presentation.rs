@@ -124,6 +124,13 @@ impl Presentation<'_> {
                 _ => format!("Voice: {}", app.project.instrument(app.cursor_track).label()),
             };
         }
+        if app.mode == Mode::Audition {
+            return format!(
+                "{} Oct:{} Gate:200ms+release",
+                app.project.instrument(app.cursor_track).label(),
+                app.octave
+            );
+        }
         if app.mode == Mode::Visual {
             return self.selection();
         }
@@ -202,8 +209,16 @@ impl Presentation<'_> {
         let app = self.0;
         let base = Style::default();
         let dirty = if app.is_dirty() && !buffer_visible { "*" } else { "" };
-        let piano = app.view == crate::state::View::Pattern && app.mode == Mode::Insert;
-        let mut mode = if piano { "INSERT WRITE".into() } else { self.mode() };
+        let piano = app.view == crate::state::View::Pattern && matches!(app.mode, Mode::Insert | Mode::Audition);
+        let audition = app.mode == Mode::Audition;
+        let short = if audition { "A:N" } else { "I:W" };
+        let mut mode = if audition {
+            "AUDITION NO WRITE".into()
+        } else if piano {
+            "INSERT WRITE".into()
+        } else {
+            self.mode()
+        };
         let mut cursor = self.cursor().replace(' ', "");
         let compact = format!(
             "{} {}",
@@ -219,11 +234,11 @@ impl Presentation<'_> {
             }
         );
         if Line::from(format!("{mode}{dirty} {cursor} {compact}")).width() > width {
-            mode = if piano { "I:W".into() } else { app.mode.label().into() };
+            mode = if piano { short.into() } else { app.mode.label().into() };
         }
         if Line::from(format!("{mode}{dirty} {cursor} {compact}")).width() > width {
             mode = if piano {
-                "I:W".into()
+                short.into()
             } else {
                 app.mode.label()[..1].into()
             };
@@ -236,15 +251,7 @@ impl Presentation<'_> {
             Span::styled(format!("{mode}{dirty}"), self.mode_style()),
             Span::raw(format!(" {cursor}")),
         ];
-        let fields = if piano {
-            vec![
-                app.project.instrument(app.cursor_track).label().to_owned(),
-                format!("Oct:{}", app.octave),
-                format!("New:1r Step:{}r", app.edit_step),
-            ]
-        } else {
-            vec![self.context()]
-        };
+        let fields = self.context_fields(audition, piano);
         // Editor context owns only the space it needs; transport gets everything left.
         for field in fields {
             let used = Line::from(spans.clone()).width() + Line::from(right.as_str()).width();
@@ -290,6 +297,25 @@ impl Presentation<'_> {
         }
     }
 
+    fn context_fields(&self, audition: bool, piano: bool) -> Vec<String> {
+        let app = self.0;
+        if audition {
+            vec![
+                app.project.instrument(app.cursor_track).label().to_owned(),
+                format!("Oct:{}", app.octave),
+                "Gate:200ms+release".into(),
+            ]
+        } else if piano {
+            vec![
+                app.project.instrument(app.cursor_track).label().to_owned(),
+                format!("Oct:{}", app.octave),
+                format!("New:1r Step:{}r", app.edit_step),
+            ]
+        } else {
+            vec![self.context()]
+        }
+    }
+
     fn transport_bar(&self, width: usize, base: Style) -> Vec<Span<'static>> {
         if width < 5 {
             return vec![Span::raw(" ".repeat(width))];
@@ -330,6 +356,7 @@ impl Presentation<'_> {
         let (foreground, background) = match self.0.mode {
             Mode::Normal => (Color::White, Color::Blue),
             Mode::Insert => (Color::Black, Color::Green),
+            Mode::Audition => (Color::Black, Color::Yellow),
             Mode::Visual => (Color::Black, Color::Cyan),
         };
         Style::default()
@@ -732,6 +759,25 @@ mod tests {
         let status = Presentation(&app).status_line(100).to_string();
         assert!(status.contains("P2R00T1"));
         assert!(status.ends_with("Song Playing O3 P1 R16"));
+    }
+
+    #[test]
+    fn audition_context_never_implies_writes_or_step_and_fits_narrow_screens() {
+        let mut app = App::default();
+        app.handle_command(Command::EnterAudition);
+        for width in [0, 12, 24, 40, 80, 120] {
+            let line = Presentation(&app).status_line(width);
+            let text = line.to_string();
+            assert!(line.width() <= usize::from(width));
+            assert!(!text.contains("Step:") && !text.contains("New:") && !text.contains("Cell:"));
+            if width >= 12 {
+                assert!(text.contains("NO WRITE") || text.contains("A:N"), "{text}");
+                assert!(text.contains("T1"));
+            }
+            if width >= 80 {
+                assert!(text.contains("Gate:200ms+release"), "{text}");
+            }
+        }
     }
 
     #[test]

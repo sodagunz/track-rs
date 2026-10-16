@@ -38,6 +38,15 @@ impl Binding {
     }
 
     pub(crate) const fn description_in_view(&self, view: crate::state::View) -> &'static str {
+        if matches!(view, crate::state::View::Pattern) {
+            match self.command {
+                Command::MoveCursorLeft => return "Previous track",
+                Command::MoveCursorRight => return "Next track",
+                Command::MoveCursorUp => return "Previous row",
+                Command::MoveCursorDown => return "Next row",
+                _ => {}
+            }
+        }
         if matches!(view, crate::state::View::Mixer) {
             match self.command {
                 Command::MoveCursorLeft => return "Previous channel / decrease in Insert",
@@ -57,7 +66,26 @@ impl Binding {
         if !self.available_in_view(view) || !self.modes.contains(&mode) {
             return false;
         }
-        if view == crate::state::View::Pattern && mode == Mode::Insert {
+        if view == crate::state::View::Pattern
+            && matches!(
+                self.command,
+                Command::MoveCursorLeft | Command::MoveCursorRight | Command::MoveCursorUp | Command::MoveCursorDown
+            )
+            && matches!(self.key, KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down)
+            && !matches!(mode, Mode::Insert | Mode::Audition)
+        {
+            return false;
+        }
+        if mode == Mode::Audition
+            && (view != crate::state::View::Pattern
+                || matches!(
+                    self.command,
+                    Command::DeleteNote | Command::CycleEditStep | Command::HalveLength | Command::DoubleLength
+                ))
+        {
+            return false;
+        }
+        if view == crate::state::View::Pattern && matches!(mode, Mode::Insert | Mode::Audition) {
             return matches!(
                 self.command,
                 Command::InsertNote { .. }
@@ -100,12 +128,12 @@ impl Binding {
                 | Command::DoubleLength
                 | Command::CycleEditStep
                 | Command::DecreaseOctave
-                | Command::IncreaseOctave => &[Mode::Insert],
+                | Command::IncreaseOctave => &[Mode::Insert, Mode::Audition],
                 Command::OpenPrompt | Command::Undo | Command::Redo | Command::Paste => &[Mode::Normal],
                 Command::Copy | Command::Cut | Command::EnterInsert | Command::ToggleVisual => {
                     &[Mode::Normal, Mode::Visual]
                 }
-                _ => &[Mode::Normal, Mode::Insert, Mode::Visual],
+                _ => &[Mode::Normal, Mode::Insert, Mode::Visual, Mode::Audition],
             },
             command,
             description,
@@ -116,6 +144,15 @@ impl Binding {
 
 /// The single source of truth for default controls and their descriptions.
 pub const DEFAULT_BINDINGS: &[Binding] = &[
+    Binding {
+        modes: &[Mode::Normal],
+        ..Binding::new(
+            KeyCode::Enter,
+            Command::EnterAudition,
+            "Play without writing (F1)",
+            "Notes",
+        )
+    },
     Binding::new(
         KeyCode::Char('s'),
         Command::InsertNote {
@@ -285,18 +322,18 @@ pub const DEFAULT_BINDINGS: &[Binding] = &[
         KeyCode::Left,
         Command::MoveCursorLeft,
         "Previous channel / decrease in Insert",
-        "Mixer",
+        "Navigation",
     ),
     Binding::new(
         KeyCode::Right,
         Command::MoveCursorRight,
         "Next channel / increase in Insert",
-        "Mixer",
+        "Navigation",
     ),
-    Binding::new(KeyCode::Up, Command::MoveCursorUp, "Previous parameter", "Mixer"),
-    Binding::new(KeyCode::Down, Command::MoveCursorDown, "Next parameter", "Mixer"),
+    Binding::new(KeyCode::Up, Command::MoveCursorUp, "Previous parameter", "Navigation"),
+    Binding::new(KeyCode::Down, Command::MoveCursorDown, "Next parameter", "Navigation"),
     Binding {
-        modes: &[Mode::Insert],
+        modes: &[Mode::Insert, Mode::Audition],
         ..Binding::new(
             KeyCode::Enter,
             Command::MixerValue,
@@ -323,7 +360,7 @@ pub const DEFAULT_BINDINGS: &[Binding] = &[
         )
     },
     Binding {
-        modes: &[Mode::Insert],
+        modes: &[Mode::Insert, Mode::Audition],
         ..Binding::new(
             KeyCode::Backspace,
             Command::MixerReset,
@@ -341,11 +378,11 @@ pub const DEFAULT_BINDINGS: &[Binding] = &[
         )
     },
     Binding {
-        modes: &[Mode::Normal, Mode::Insert, Mode::Visual],
+        modes: &[Mode::Normal, Mode::Insert, Mode::Visual, Mode::Audition],
         ..Binding::new(KeyCode::F(1), Command::ShowPattern, "Pattern view", "Application")
     },
     Binding {
-        modes: &[Mode::Normal, Mode::Insert, Mode::Visual],
+        modes: &[Mode::Normal, Mode::Insert, Mode::Visual, Mode::Audition],
         ..Binding::new(
             KeyCode::F(2),
             Command::ShowArrangement,
@@ -354,11 +391,11 @@ pub const DEFAULT_BINDINGS: &[Binding] = &[
         )
     },
     Binding {
-        modes: &[Mode::Normal, Mode::Insert, Mode::Visual],
+        modes: &[Mode::Normal, Mode::Insert, Mode::Visual, Mode::Audition],
         ..Binding::new(KeyCode::F(3), Command::ShowMixer, "Mixer view", "Application")
     },
     Binding {
-        modes: &[Mode::Normal, Mode::Insert, Mode::Visual],
+        modes: &[Mode::Normal, Mode::Insert, Mode::Visual, Mode::Audition],
         ..Binding::new(
             KeyCode::F(4),
             Command::ShowInstrument,
@@ -777,12 +814,7 @@ pub fn resolve(key: KeyEvent, state: &mut App) -> Option<Command> {
     if state.prompt.is_some() || key.kind == KeyEventKind::Release {
         return None;
     }
-    // Crossterm decodes legacy Ctrl-Space (NUL) as Null + CONTROL.
-    let code = if key.code == KeyCode::Null && key.modifiers == KeyModifiers::CONTROL {
-        KeyCode::Char(' ')
-    } else {
-        key.code
-    };
+    let code = terminal_code(key);
     if key.kind == KeyEventKind::Repeat && state.suppressed_repeat {
         return None;
     }
@@ -813,6 +845,7 @@ pub fn resolve(key: KeyEvent, state: &mut App) -> Option<Command> {
         (binding.prefix == prefix || matches!(code, KeyCode::F(1..=4)))
             && binding.key == code
             && binding.modifiers == modifiers
+            && (!matches!(binding.command, Command::InsertNote { .. }) || !key.modifiers.contains(KeyModifiers::SHIFT))
             && if state.help_visible {
                 matches!(
                     binding.command,
@@ -876,6 +909,15 @@ pub fn resolve(key: KeyEvent, state: &mut App) -> Option<Command> {
         rows: rows * count,
         tracks: tracks * count,
     })
+}
+
+fn terminal_code(key: KeyEvent) -> KeyCode {
+    // Crossterm decodes legacy Ctrl-Space (NUL) as Null + CONTROL.
+    if key.code == KeyCode::Null && key.modifiers == KeyModifiers::CONTROL {
+        KeyCode::Char(' ')
+    } else {
+        key.code
+    }
 }
 
 fn extend_count(state: &mut App, digit: u8) {
@@ -1428,6 +1470,11 @@ mod tests {
                 }
                 assert_eq!(app.revision(), revision);
                 assert!(app.take_audition().is_none());
+                for modifiers in [KeyModifiers::SHIFT, KeyModifiers::ALT, KeyModifiers::CONTROL] {
+                    key(&mut app, KeyCode::Char(ch), modifiers, KeyEventKind::Press);
+                    assert!(app.take_audition().is_none());
+                    assert_eq!(app.revision(), revision);
+                }
                 sequence(&mut app, &ch.to_string());
                 assert_eq!(app.revision(), revision);
                 assert!(app.take_audition().is_some());
@@ -1450,6 +1497,70 @@ mod tests {
         key(&mut app, KeyCode::PageUp, KeyModifiers::NONE, KeyEventKind::Press);
         sequence(&mut app, ",");
         assert_eq!(app.project.patterns[0].get_step(0, 0).unwrap().note.unwrap().octave, 5);
+    }
+
+    #[test]
+    fn audition_plays_chromatic_keys_without_writes_or_transport_changes() {
+        use crate::tracker::Instrument;
+        for voice in [Instrument::Sine, Instrument::Kick] {
+            let mut app = App::default();
+            app.handle_command(Command::SetInstrument(voice));
+            sequence(&mut app, "iz}");
+            escape(&mut app);
+            sequence(&mut app, "y ");
+            app.edit_step = 4;
+            app.playback_row = 17;
+            let project = app.project.clone();
+            let revision = app.revision();
+            let clipboard = app.clipboard.clone();
+            let dirty = app.is_dirty();
+            key(&mut app, KeyCode::Enter, KeyModifiers::NONE, KeyEventKind::Press);
+            assert_eq!(app.mode, Mode::Audition);
+            for ch in "zsxdcvgbhnjmq2w3er5t6y7u,".chars() {
+                sequence(&mut app, &ch.to_string());
+                let event = app.take_audition().unwrap();
+                assert_eq!(event.instrument, voice);
+                assert_eq!(event.track, 0);
+                assert_eq!(event.duration, crate::audio::DEFAULT_NOTE_DURATION);
+                assert!(app.take_audition().is_none());
+                for kind in [KeyEventKind::Repeat, KeyEventKind::Release] {
+                    key(&mut app, KeyCode::Char(ch), KeyModifiers::NONE, kind);
+                }
+                assert!(app.take_audition().is_none());
+                assert_eq!(app.project, project);
+                assert_eq!(app.revision(), revision);
+                assert_eq!(app.is_dirty(), dirty);
+                assert_eq!(app.clipboard, clipboard);
+                assert_eq!((app.cursor_row, app.cursor_track, app.playback_row), (0, 0, 17));
+                assert_eq!(app.selection_anchor, None);
+            }
+            sequence(&mut app, "{}ipaklAS01489Q:");
+            key(&mut app, KeyCode::Delete, KeyModifiers::NONE, KeyEventKind::Press);
+            key(&mut app, KeyCode::Tab, KeyModifiers::NONE, KeyEventKind::Press);
+            assert_eq!(app.project, project);
+            assert_eq!(app.edit_step, 4);
+            assert!(app.prompt.is_none());
+            key(&mut app, KeyCode::PageDown, KeyModifiers::NONE, KeyEventKind::Press);
+            key(&mut app, KeyCode::Right, KeyModifiers::NONE, KeyEventKind::Press);
+            sequence(&mut app, "q");
+            let event = app.take_audition().unwrap();
+            assert_eq!((event.track, event.note.pitch, event.note.octave), (1, NotePitch::C, 6));
+            sequence(&mut app, "z?");
+            assert!(app.take_audition().is_none());
+            sequence(&mut app, "z");
+            assert!(app.take_audition().is_none());
+            escape(&mut app);
+            sequence(&mut app, "z");
+            key(&mut app, KeyCode::F(3), KeyModifiers::NONE, KeyEventKind::Press);
+            assert!(app.take_audition().is_none());
+            key(&mut app, KeyCode::F(1), KeyModifiers::NONE, KeyEventKind::Press);
+            assert_eq!(app.mode, Mode::Audition);
+            assert!(app.take_audition().is_none());
+            escape(&mut app);
+            assert_eq!(app.mode, Mode::Normal);
+            sequence(&mut app, "u");
+            assert_ne!(app.revision(), revision); // Audition added no history entries.
+        }
     }
 
     #[test]

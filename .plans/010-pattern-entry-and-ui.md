@@ -3,7 +3,22 @@
 Status: approved for implementation after PR #32 (stacked on #31).
 Input contract submitted as PR #33 (`feat/chromatic-entry`).
 Grid clarity submitted as PR #34 (`feat/pattern-landmarks`).
-Context implemented on `feat/pattern-context`; audition pending.
+Context submitted as PR #35 (`feat/pattern-context`).
+All five features implemented; audition is on `feat/pattern-audition`.
+
+F1 Normal Enter enters explicit Audition; its piano keys share Insert mapping
+but don't write, advance, alter clipboard/history or move playback. Brackets
+remain deliberate shared-instrument edits. Repeat/Release and shifted note
+aliases are rejected. Pending requests clear on Esc/help/view changes; returning
+to F1 restores Audition without replay. Existing bounded preview voices/channel
+processing are reused unchanged. Failed loads retain state; successful load,
+transport transitions and shutdown retain their existing cancellation behavior.
+
+Final automated validation: formatting, strict all-target Clippy, all-target
+nextest (156 passed, none skipped), warning-as-error rustdoc, doctests (zero),
+and ALSA-null `just_a_note` pass. The null sink checks setup, not audible output.
+Real-terminal key/resize/light-dark/no-color checks and listening during playback
+remain pending. No plan009 bulk mixer work, new dependencies or format changes.
 
 Context now labels Insert WRITE (I:W when narrow), instrument, entry octave,
 New:1r and step separately from Cell detail. Normal includes focused instrument.
