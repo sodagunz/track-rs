@@ -1,9 +1,4 @@
-use track_rs::{
-    audio::AudioEngine,
-    bindings,
-    state::{App, PlaybackState},
-    ui::TUI,
-};
+use track_rs::{audio::AudioEngine, bindings, state::App, ui::TUI};
 
 use std::{
     io::stdout,
@@ -36,43 +31,15 @@ fn main_loop<W: std::io::Write>(
     let frame_period = Duration::from_millis(50);
     let mut next_frame = Instant::now();
     let mut transport = track_rs::transport::Transport::default();
-    let mut was_playing = false;
+
     let mut pending = None;
     loop {
         if let Some(key) = pending.take() {
             bindings::handle_key(key, app_state);
         }
-        let playing = !app_state.shutdown && matches!(app_state.playback_state, PlaybackState::Playing);
-        let stop_requested = app_state.take_stop_request();
-        if stop_requested {
-            transport.stop();
-        }
-        if stop_requested || (was_playing && !playing) {
-            audio_engine.stop();
-        }
-        was_playing = playing;
         let now = Instant::now();
-        if let Some(event) = transport.update_project(
-            now,
-            playing,
-            &app_state.project,
-            if app_state.playback_mode == track_rs::state::PlaybackMode::Song {
-                track_rs::transport::PlaybackRoute::Song
-            } else {
-                track_rs::transport::PlaybackRoute::Pattern(app_state.playing_pattern)
-            },
-            track_rs::transport::DEFAULT_ROWS_PER_BEAT,
-        ) {
-            app_state.playback_row = event.row.row;
-            app_state.playing_pattern = event.pattern;
-            app_state.playing_order = event.order.unwrap_or(0);
-            for event in track_rs::transport::collect_row(
-                &app_state.project.patterns[event.pattern],
-                app_state.project.instruments(),
-                event.row,
-            ) {
-                audio_engine.play_event(event);
-            }
+        for event in transport.update_app(now, app_state, || audio_engine.stop()) {
+            audio_engine.play_event(event);
         }
         if app_state.shutdown {
             break;

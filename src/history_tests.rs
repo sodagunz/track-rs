@@ -115,7 +115,7 @@ fn noops_invalid_targets_and_navigation_preserve_redo() {
     }));
     app.handle_command(Command::IncreaseOctave);
     app.handle_command(Command::ToggleVisual);
-    app.handle_command(Command::TogglePlayback);
+    app.handle_command(Command::RestartPlayback);
     app.advance_playback_row();
     assert_eq!(app.revision(), initial);
     app.handle_command(Command::Redo);

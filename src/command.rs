@@ -29,6 +29,7 @@ pub enum Command {
     ScrollHelpUp,
     ScrollHelpDown,
     TogglePlayback,
+    RestartPlayback,
     MoveCursorUp,
     MoveCursorDown,
     MoveCursorLeft,

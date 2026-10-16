@@ -53,6 +53,15 @@ impl Binding {
 /// The single source of truth for default controls and their descriptions.
 pub const DEFAULT_BINDINGS: &[Binding] = &[
     Binding {
+        modifiers: KeyModifiers::CONTROL,
+        ..Binding::new(
+            KeyCode::Char(' '),
+            Command::RestartPlayback,
+            "Restart from beginning (:restart)",
+            "Playback",
+        )
+    },
+    Binding {
         modes: &[Mode::Normal],
         modifiers: KeyModifiers::CONTROL,
         ..Binding::new(
@@ -326,7 +335,7 @@ pub const DEFAULT_BINDINGS: &[Binding] = &[
     Binding::new(
         KeyCode::Char(' '),
         Command::TogglePlayback,
-        "Start/stop playback",
+        "Stop / play from cursor",
         "Playback",
     ),
     Binding::new(KeyCode::Char('k'), Command::MoveCursorUp, "Move up", "Navigation"),
@@ -421,12 +430,18 @@ pub fn resolve(key: KeyEvent, state: &mut App) -> Option<Command> {
     if state.prompt.is_some() || key.kind == KeyEventKind::Release {
         return None;
     }
+    // Crossterm decodes legacy Ctrl-Space (NUL) as Null + CONTROL.
+    let code = if key.code == KeyCode::Null && key.modifiers == KeyModifiers::CONTROL {
+        KeyCode::Char(' ')
+    } else {
+        key.code
+    };
     let mut modifiers = key.modifiers;
-    if matches!(key.code, KeyCode::Char(_)) {
+    if matches!(code, KeyCode::Char(ch) if ch != ' ') {
         modifiers.remove(KeyModifiers::SHIFT);
     }
     let binding = DEFAULT_BINDINGS.iter().find(|binding| {
-        binding.key == key.code
+        binding.key == code
             && binding.modifiers == modifiers
             && if state.help_visible {
                 matches!(
