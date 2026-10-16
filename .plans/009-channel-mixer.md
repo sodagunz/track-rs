@@ -254,6 +254,34 @@ can clip and test finite output even when it exceeds the device range.
   listening remain pending. Per-channel stereo meters/master clip indicator are
   suitable follow-up work, not part of this batch.
 
+### Metering polish progress (2026-10-16)
+
+- F3 stereo peaks measure each channel after tone/gain/pan, summing its song and
+  preview voices. Compact L/R rows leave editable cells and selection intact;
+  short panels hide meters. `!` marks channel overload. Master CLIP measures the
+  full pre-device-conversion sum, including the legacy sequencer path, and holds
+  for two seconds. Non-finite samples show ERR/CLIP rather than apparent silence.
+- A fixed bank of atomic positive-float peak bits accumulates until the UI swaps
+  them out. The callback is the sole writer; the UI owns display decay (24 dB/s
+  using elapsed time) and hold timing. Meter updates add no locks, allocations,
+  messages per sample, dependencies, saved state or undo entries. Scratch storage
+  is preallocated alongside existing voice slots, including future appended tracks.
+- Stop/restart/load reset through the existing ordered cancellation FIFO, with an
+  acknowledgement generation preventing old peaks from reappearing while pending.
+  Audio summation order, gain and device conversion are unchanged: no limiter.
+  Existing voice retirement/command queues are unchanged, not claimed RT-safe.
+- Validation: formatting, strict all-target Clippy and all-target nextest pass
+  (165 tests, none skipped). Offline tests cover channel isolation, preview sums,
+  post-tone filtering, pan endpoints, volume-off silence, individually sub-unity
+  channels clipping the master, peak consumption, elapsed-time decay/hold,
+  non-finite telemetry, reset/append slots and narrow/zero-size rendering.
+  Warning-as-error docs, doctests (zero), the null-ALSA `just_a_note` example and
+  diff whitespace checks also pass; the null sink checks setup, not sound.
+  The first full run failed on a zero-attack test fixture and timed out during
+  cancellation; the corrected full run passed in 164 seconds with a longer bound.
+- Manual listening, real-device overload behavior, real-terminal resize and
+  light/dark/no-color readability remain pending. Mute/solo remains separate work.
+
 Each slice gets a short plan update, focused tests, formatting, strict Clippy and
 all-target nextest before committing/pushing a stacked PR. Run docs and the null
 output example when audio interfaces change. A null sink checks setup, not sound.

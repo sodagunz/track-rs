@@ -31,4 +31,5 @@ mod length_tests;
 #[cfg(test)]
 mod mixer_tests;
 
+pub mod meter;
 mod tone;

@@ -4,7 +4,10 @@ use crate::{
     tracker::{Instrument, Note},
     transport::NoteEvent,
 };
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{
+    mpsc::{self, Receiver, Sender},
+    Arc,
+};
 use std::time::Duration;
 
 pub const DEFAULT_VOICE_GAIN: f32 = 0.5;
@@ -84,6 +87,7 @@ fn smooth_gain(phase: f64) -> f32 {
 }
 
 enum OutputCommand {
+    ResetMeters(u32),
     Channel {
         track: usize,
         gains: (f32, f32),
@@ -209,6 +213,8 @@ struct Output {
     retired: Sender<Renderer>,
     tracks: Vec<TrackVoices>,
     previews: Vec<TrackVoices>,
+    meters: Arc<crate::meter::Meters>,
+    channel_samples: Vec<(f32, f32)>,
 }
 
 impl Output {
@@ -217,6 +223,8 @@ impl Output {
             renderer,
             commands,
             retired,
+            meters: Arc::default(),
+            channel_samples: vec![(0.0, 0.0); crate::project_file::MAX_TRACKS],
             previews: (0..crate::project_file::MAX_TRACKS)
                 .map(|_| TrackVoices::default())
                 .collect(),
@@ -231,6 +239,7 @@ impl Output {
         // the control thread sends commands while this callback is draining it.
         while let Ok(command) = self.commands.try_recv() {
             match command {
+                OutputCommand::ResetMeters(generation) => self.meters.reset(generation),
                 OutputCommand::Channel {
                     track,
                     gains,
@@ -269,11 +278,19 @@ impl Output {
             }
         }
         let mut sample = self.renderer.get_stereo();
-        for track in self.tracks.iter_mut().chain(&mut self.previews) {
-            let (l, r) = track.sample(&self.retired);
-            sample.0 += l;
-            sample.1 += r;
+        for (track, channel) in self.tracks.iter_mut().zip(&mut self.channel_samples) {
+            *channel = track.sample(&self.retired);
+            sample.0 += channel.0;
+            sample.1 += channel.1;
         }
+        for (index, (preview, channel)) in self.previews.iter_mut().zip(&self.channel_samples).enumerate() {
+            let preview = preview.sample(&self.retired);
+            self.meters
+                .channel(index, (channel.0 + preview.0, channel.1 + preview.1));
+            sample.0 += preview.0;
+            sample.1 += preview.1;
+        }
+        self.meters.master(sample);
         sample
     }
 }
@@ -320,6 +337,8 @@ pub struct AudioEngine {
     sample_rate: f64,
     dry: bool,
     channel_targets: Vec<crate::project::ChannelSettings>,
+    meters: Arc<crate::meter::Meters>,
+    meter_generation: u32,
     // Keep the output stream alive for as long as the engine.
     _stream: Stream,
 }
@@ -358,6 +377,7 @@ impl AudioEngine {
         let (replacements, receiver) = mpsc::channel();
         let (retired_sender, retired) = mpsc::channel();
         let output = Output::new(renderer, receiver, retired_sender);
+        let meters = Arc::clone(&output.meters);
 
         let stream = match config.sample_format() {
             cpal::SampleFormat::F32 => build_stream::<f32>(config, &device, output)?,
@@ -374,6 +394,8 @@ impl AudioEngine {
             sample_rate,
             dry,
             channel_targets: Vec::new(),
+            meters,
+            meter_generation: 0,
             _stream: stream,
         })
     }
@@ -427,6 +449,15 @@ impl AudioEngine {
     pub fn stop(&mut self) {
         self.collect_retired();
         replace_graph(&mut self.sequencer, &self.replacements, self.sample_rate);
+        self.meter_generation = self.meter_generation.wrapping_add(1);
+        let _ = self
+            .replacements
+            .send(OutputCommand::ResetMeters(self.meter_generation));
+    }
+
+    /// Consume peaks since the previous UI sample; never called from the callback.
+    pub fn sample_meters(&self, display: &mut crate::meter::MeterDisplay, tracks: usize, elapsed: Duration) {
+        display.update(&self.meters, self.meter_generation, tracks, elapsed);
     }
 
     fn collect_retired(&self) {
@@ -583,6 +614,136 @@ fn build_net(sample_rate: f64, sequencer_backend: SequencerBackend) -> Net {
 mod tests {
     use super::*;
     use crate::tracker::NotePitch;
+
+    #[test]
+    #[allow(clippy::float_cmp, clippy::too_many_lines)]
+    fn meters_measure_processed_song_preview_sum_and_reset_in_fifo_order() {
+        use crate::{meter::MeterDisplay, project::ChannelSettings};
+        let rate = 8000.0;
+        let (_, renderer) = prepare(rate);
+        let (sender, receiver) = mpsc::channel();
+        let (retired, _rx) = mpsc::channel();
+        let mut output = Output::new(renderer, receiver, retired);
+        let mut display = MeterDisplay::default();
+        let constant = || GatedVoice {
+            renderer: BlockRateAdapter::new(Box::new(fundsp::prelude32::dc((0.6, -0.6)))),
+            elapsed: 1.0,
+            duration: 10.0,
+            attack: 0.001,
+            release: 0.001,
+            sample_period: 1.0 / rate,
+        };
+        sender
+            .send(OutputCommand::Trigger {
+                track: 0,
+                voice: constant(),
+            })
+            .unwrap();
+        sender
+            .send(OutputCommand::Preview {
+                track: 1,
+                voice: constant(),
+            })
+            .unwrap();
+        let sample = output.sample();
+        assert!((sample.0 - 1.2).abs() < 1e-6);
+        assert!(sample.1 < -1.0); // The telemetry does not limit output.
+        display.update(&output.meters, 0, 3, Duration::ZERO);
+        assert_eq!(display.channels, [[0.6, 0.6], [0.6, 0.6], [0.0, 0.0]]);
+        assert!(display.clipped); // Neither channel clips alone.
+                                  // A high-pass removes this DC signal before channel telemetry.
+        let filtered = ChannelSettings {
+            hpf_hz: Some(200.0),
+            ..ChannelSettings::default()
+        };
+        sender
+            .send(OutputCommand::Channel {
+                track: 0,
+                gains: (1.0, 1.0),
+                tone: crate::tone::targets(filtered, rate),
+                sample_rate: rate,
+            })
+            .unwrap();
+        for _ in 0..800 {
+            output.sample();
+        }
+        output.meters.reset(0);
+        output.sample();
+        display = MeterDisplay::default();
+        display.update(&output.meters, 0, 3, Duration::ZERO);
+        assert!(display.channels[0].iter().all(|peak| *peak < 0.001));
+        assert_eq!(display.channels[1], [0.6; 2]);
+        for (pan, expected) in [(-100.0, [0.6, 0.0]), (100.0, [0.0, 0.6])] {
+            sender
+                .send(OutputCommand::Channel {
+                    track: 0,
+                    gains: channel_gains(ChannelSettings {
+                        pan,
+                        ..ChannelSettings::default()
+                    }),
+                    tone: crate::tone::targets(ChannelSettings::default(), rate),
+                    sample_rate: rate,
+                })
+                .unwrap();
+            for _ in 0..80 {
+                output.sample();
+            }
+            output.meters.reset(0);
+            output.sample();
+            display = MeterDisplay::default();
+            display.update(&output.meters, 0, 3, Duration::ZERO);
+            assert!((display.channels[0][0] - expected[0]).abs() < 1e-6);
+            assert!((display.channels[0][1] - expected[1]).abs() < 1e-6);
+        }
+        // Preview and transport are combined on the same channel.
+        sender
+            .send(OutputCommand::Preview {
+                track: 0,
+                voice: constant(),
+            })
+            .unwrap();
+        output.sample();
+        display = MeterDisplay::default();
+        display.update(&output.meters, 0, 3, Duration::ZERO);
+        assert!(display.channels[0][1] > 0.6);
+        sender
+            .send(OutputCommand::Channel {
+                track: 0,
+                gains: (0.0, 0.0),
+                tone: crate::tone::targets(ChannelSettings::default(), rate),
+                sample_rate: rate,
+            })
+            .unwrap();
+        for _ in 0..80 {
+            output.sample();
+        }
+        output.meters.reset(0);
+        output.sample();
+        display = MeterDisplay::default();
+        display.update(&output.meters, 0, 3, Duration::ZERO);
+        assert_eq!(display.channels[0], [0.0; 2]);
+        // Stop/load cancellation clears pending peaks; a new slot starts clean.
+        let (_, renderer) = prepare(rate);
+        sender.send(OutputCommand::Replace(renderer)).unwrap();
+        sender.send(OutputCommand::ResetMeters(1)).unwrap();
+        display.update(&output.meters, 1, 4, Duration::ZERO);
+        assert!(!display.clipped);
+        assert_eq!(display.channels, [[0.0; 2]; 4]);
+        output.sample();
+        display.update(&output.meters, 1, 4, Duration::ZERO);
+        assert_eq!(display.channels, [[0.0; 2]; 4]);
+        sender
+            .send(OutputCommand::Trigger {
+                track: 3,
+                voice: constant(),
+            })
+            .unwrap();
+        output.sample();
+        display.update(&output.meters, 1, 4, Duration::ZERO);
+        assert_eq!(display.channels[3], [0.6; 2]);
+        assert_eq!(display.channels[0], [0.0; 2]);
+        assert!(!display.clipped);
+    }
 
     #[test]
     #[allow(clippy::float_cmp)]
