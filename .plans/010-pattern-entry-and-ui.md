@@ -1,7 +1,15 @@
 # 010 — Pattern entry and UI
 
 Status: approved for implementation after PR #32 (stacked on #31).
-Input contract implemented on `feat/chromatic-entry`; remaining slices pending.
+Input contract submitted as PR #33 (`feat/chromatic-entry`).
+Grid clarity implemented on `feat/pattern-landmarks`; context/audition pending.
+
+Grid retains ten-column fixed pitch/tick fields, clips long headers, sizes row
+numbers to pattern dimensions, and marks cursor/playback independently (`>`/`*`).
+Beat/bar marks (`.`/`|`) use the transport beat constant. Inclusive selection has
+a text edge and underline; unselected rows use terminal defaults rather than
+alternating black backgrounds. Formatting, strict Clippy and nextest pass (152
+tests). Light/dark terminal checks remain pending.
 
 Borrow the structure in [the tracker research](../.ideas/tui-trackers.md), not
 Renoise's entire data model. That research documents sources, not hands-on testing.

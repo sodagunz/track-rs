@@ -525,15 +525,46 @@ fn draw_buffer_line(f: &mut Frame, area: Rect, state: &App) {
     );
 }
 
+fn pattern_gutter(row: usize, row_width: usize, cursor_row: usize, playing: bool) -> Span<'static> {
+    let rows_per_beat = usize::try_from(crate::transport::DEFAULT_ROWS_PER_BEAT).unwrap_or(4);
+    let boundary = if row.is_multiple_of(rows_per_beat * 4) {
+        "|"
+    } else if row.is_multiple_of(rows_per_beat) {
+        "."
+    } else {
+        " "
+    };
+    Span::styled(
+        format!(
+            "{}{}{:row_width$}{} ",
+            if row == cursor_row { ">" } else { " " },
+            if playing { "*" } else { " " },
+            row_label(row),
+            boundary
+        ),
+        Style::default().add_modifier(if boundary == "|" {
+            Modifier::BOLD
+        } else {
+            Modifier::empty()
+        }),
+    )
+}
+
 fn draw_pattern_editor(f: &mut Frame, area: Rect, state: &App) {
-    const GUTTER: u16 = 5;
     const TRACK_WIDTH: u16 = 10;
+    let row_width = state.project.patterns[state.selected_pattern]
+        .num_rows
+        .saturating_sub(1)
+        .to_string()
+        .len()
+        .max(2);
+    let gutter = u16::try_from(row_width + 4).unwrap_or(u16::MAX);
     if area.is_empty() {
         return;
     }
     let pattern = &state.project.patterns[state.selected_pattern];
-    let visible_tracks = usize::from(area.width.saturating_sub(GUTTER) / TRACK_WIDTH)
-        .max(usize::from(area.width > GUTTER))
+    let visible_tracks = usize::from(area.width.saturating_sub(gutter) / TRACK_WIDTH)
+        .max(usize::from(area.width > gutter))
         .min(pattern.tracks.len());
     let first_track = state
         .cursor_track
@@ -548,12 +579,15 @@ fn draw_pattern_editor(f: &mut Frame, area: Rect, state: &App) {
         .saturating_sub(visible_rows)
         .min(pattern.num_rows.saturating_sub(visible_rows));
     if header_rows > 0 {
-        let mut header = vec![Span::raw("Row  ")];
+        let mut header = vec![Span::raw(format!("{:width$}", "r/tick", width = usize::from(gutter)))];
         for track in first_track..first_track + visible_tracks {
             header.push(Span::styled(
                 format!(
                     "{:<10}",
                     format!("{} {}", track_number(track), state.project.instrument(track).label())
+                        .chars()
+                        .take(10)
+                        .collect::<String>()
                 ),
                 Style::default().fg(Color::Green),
             ));
@@ -567,36 +601,16 @@ fn draw_pattern_editor(f: &mut Frame, area: Rect, state: &App) {
         let playing = matches!(state.playback_state, crate::state::PlaybackState::Playing)
             && state.selected_pattern == state.playing_pattern
             && row == state.playback_row;
-        let background = if playing {
-            Color::DarkGray
-        } else if row % 2 == 0 {
-            Color::Reset
-        } else {
-            Color::Black
-        };
-        let foreground = if background == Color::Reset {
-            Color::Reset
-        } else {
-            Color::Gray
-        };
-        // Boundaries use absolute rows and consume no extra viewport height.
-        let (boundary, color) = if row % 16 == 0 {
-            ("━", Color::Gray)
-        } else if row % 4 == 0 {
-            ("─", Color::DarkGray)
-        } else {
-            (" ", Color::DarkGray)
-        };
-        let mut spans = vec![Span::styled(
-            format!("{}{}{} ", if playing { "▶" } else { " " }, row_label(row), boundary),
-            Style::default().fg(if playing { Color::Cyan } else { color }),
-        )];
+        let mut spans = vec![pattern_gutter(row, row_width, state.cursor_row, playing)];
         for track in first_track..first_track + visible_tracks {
             let step = pattern.get_step(track, row).copied().expect("Pattern row must exist");
             let style = if row == state.cursor_row && track == state.cursor_track {
                 Style::default().bg(Color::Green).fg(Color::Black)
             } else if state.is_selected(row, track) {
-                Style::default().bg(Color::Blue).fg(Color::White)
+                Style::default()
+                    .bg(Color::Blue)
+                    .fg(Color::White)
+                    .add_modifier(Modifier::UNDERLINED)
             } else if playing {
                 Style::default().bg(Color::DarkGray)
             } else {
@@ -605,10 +619,14 @@ fn draw_pattern_editor(f: &mut Frame, area: Rect, state: &App) {
             let text = format_step(step);
             spans.push(Span::styled(text[..3].to_owned(), style));
             spans.push(Span::styled(text[3..].to_owned(), Style::default()));
-            spans.push(Span::raw("  "));
+            spans.push(if state.is_selected(row, track) {
+                Span::styled("| ", style)
+            } else {
+                Span::raw("  ")
+            });
         }
         f.render_widget(
-            Paragraph::new(Line::from(spans)).style(Style::default().fg(foreground).bg(background)),
+            Paragraph::new(Line::from(spans)),
             Rect::new(
                 area.x,
                 area.y + header_rows + u16::try_from(offset).unwrap_or(0),
@@ -866,14 +884,14 @@ mod tests {
         assert!(text.contains("Pattern Playing O0 P1 R00"));
         assert!(text.contains("99:P0"));
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(0, 3)].symbol(), " ");
+        assert_eq!(buffer[(1, 3)].symbol(), " ");
         assert!(buffer
             .content()
             .iter()
             .any(|cell| cell.symbol() == "9" && cell.bg == Color::Green));
         app.handle_command(Command::NextPattern);
         terminal.draw(|frame| render(frame, &app)).unwrap();
-        assert_eq!(terminal.backend().buffer()[(0, 3)].symbol(), "▶");
+        assert_eq!(terminal.backend().buffer()[(1, 3)].symbol(), "*");
         for (width, height) in [(0, 0), (1, 1), (12, 3), (30, 7)] {
             terminal.resize(Rect::new(0, 0, width, height)).unwrap();
             terminal.draw(|frame| render(frame, &app)).unwrap();
@@ -914,6 +932,47 @@ mod tests {
     }
 
     #[test]
+    fn grid_fields_and_monochrome_cues_survive_focus_and_resize() {
+        let mut app = App::default();
+        app.project.patterns[0]
+            .set_step(
+                0,
+                0,
+                Some(Note {
+                    pitch: NotePitch::Cs,
+                    octave: 9,
+                    length_ticks: crate::tracker::NoteLength::try_from(4096).unwrap(),
+                }),
+            )
+            .unwrap();
+        app.mode = Mode::Visual;
+        app.selection_anchor = Some((0, 0));
+        app.cursor_track = 1;
+        app.playback_state = crate::state::PlaybackState::Playing;
+        let mut terminal = Terminal::new(TestBackend::new(80, 4)).unwrap();
+        terminal.draw(|f| draw_pattern_editor(f, f.area(), &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!((0..6).map(|x| buffer[(x, 1)].symbol()).collect::<String>(), ">*00| ");
+        assert_eq!((6..14).map(|x| buffer[(x, 1)].symbol()).collect::<String>(), "C#9:4096");
+        assert_eq!(buffer[(14, 1)].symbol(), "|");
+        assert!(buffer[(6, 1)].modifier.contains(Modifier::UNDERLINED));
+        app.cursor_track = 0;
+        terminal.draw(|f| draw_pattern_editor(f, f.area(), &app)).unwrap();
+        assert_eq!(
+            (6..14)
+                .map(|x| terminal.backend().buffer()[(x, 1)].symbol())
+                .collect::<String>(),
+            "C#9:4096"
+        );
+        for width in [80, 40, 24, 12, 0] {
+            for height in 0..=10 {
+                terminal.resize(Rect::new(0, 0, width, height)).unwrap();
+                terminal.draw(|f| render(f, &app)).unwrap();
+            }
+        }
+    }
+
+    #[test]
     fn instrument_headers_fit_existing_columns_without_moving_highlights() {
         use crate::tracker::Instrument;
         for instrument in Instrument::ALL {
@@ -930,8 +989,8 @@ mod tests {
             assert!(text.contains("1 Pluck"));
             assert!(format!("2 {}", instrument.label()).len() <= 10);
             let buffer = terminal.backend().buffer();
-            assert_eq!(buffer[(15, 3)].bg, Color::Green);
-            assert_eq!(buffer[(15, 4)].bg, Color::DarkGray);
+            assert_eq!(buffer[(16, 3)].bg, Color::Green);
+            assert_eq!(buffer[(16, 4)].bg, Color::DarkGray);
         }
     }
 
@@ -948,19 +1007,21 @@ mod tests {
             for offset in 0..8_u16 {
                 let row = first + usize::from(offset);
                 let y = offset + 1;
-                let gutter: String = (0..5).map(|x| buffer[(x, y)].symbol()).collect();
-                let (mark, color) = if row % 16 == 0 {
-                    ("━", Color::Gray)
+                let gutter: String = (0..6).map(|x| buffer[(x, y)].symbol()).collect();
+                let mark = if row % 16 == 0 {
+                    "|"
                 } else if row % 4 == 0 {
-                    ("─", Color::DarkGray)
+                    "."
                 } else {
-                    (" ", Color::DarkGray)
+                    " "
                 };
-                assert_eq!(gutter, format!(" {row:02}{mark} "));
-                assert_eq!(buffer[(3, y)].fg, color);
+                assert_eq!(
+                    gutter,
+                    format!("{} {row:02}{mark} ", if row == cursor { ">" } else { " " })
+                );
             }
             let y = u16::try_from(cursor - first + 1).unwrap();
-            assert_eq!(buffer[(5, y)].bg, Color::Green);
+            assert_eq!(buffer[(6, y)].bg, Color::Green);
         }
     }
 
@@ -986,22 +1047,22 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(45, 4)).unwrap();
         terminal.draw(|f| draw_pattern_editor(f, f.area(), &app)).unwrap();
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(0, 1)].symbol(), "▶");
-        assert_eq!(buffer[(0, 1)].fg, Color::Cyan);
-        assert_eq!(buffer[(5, 1)].bg, Color::Green);
-        assert_eq!(buffer[(5, 1)].fg, Color::Black);
-        for (x, expected) in [(5, "C4 "), (15, "C#4"), (25, "D4 ")] {
+        assert_eq!(buffer[(0, 1)].symbol(), ">");
+        assert_eq!(buffer[(1, 1)].symbol(), "*");
+        assert_eq!(buffer[(6, 1)].bg, Color::Green);
+        assert_eq!(buffer[(6, 1)].fg, Color::Black);
+        for (x, expected) in [(6, "C4 "), (16, "C#4"), (26, "D4 ")] {
             let text: String = (x..x + 3).map(|x| buffer[(x, 1)].symbol()).collect();
             assert_eq!(text, expected);
         }
-        assert_eq!(buffer[(15, 1)].bg, Color::DarkGray);
-        assert_ne!(buffer[(15, 1)].fg, Color::Black);
-        assert_eq!(buffer[(15, 2)].bg, Color::Black);
-        assert_eq!(buffer[(44, 1)].bg, Color::DarkGray);
+        assert_eq!(buffer[(16, 1)].bg, Color::DarkGray);
+        assert_ne!(buffer[(16, 1)].fg, Color::Black);
+        assert_eq!(buffer[(16, 2)].bg, Color::Reset);
+        assert_eq!(buffer[(44, 1)].bg, Color::Reset);
     }
 
     #[test]
-    fn alternating_backgrounds_cover_the_row_and_stay_anchored_when_scrolling() {
+    fn unselected_rows_use_terminal_defaults_when_scrolling() {
         for (cursor, first) in [(0, 0), (20, 13), (63, 56)] {
             let app = App {
                 cursor_row: cursor,
@@ -1012,8 +1073,8 @@ mod tests {
             let buffer = terminal.backend().buffer();
             for offset in 0..8_u16 {
                 let row = first + usize::from(offset);
-                let background = if row % 2 == 0 { Color::Reset } else { Color::Black };
-                for x in [0, 4, 8, 15, 44, 47] {
+                let background = Color::Reset;
+                for x in [0, 4, 15, 44, 47] {
                     assert_eq!(buffer[(x, offset + 1)].bg, background, "row {row}, x {x}");
                 }
             }
@@ -1051,7 +1112,7 @@ mod tests {
         assert!(screen(&terminal).contains("4 HiHat"));
         assert!(screen(&terminal).contains("63"));
         assert!(!screen(&terminal).contains("? Help"));
-        assert_eq!(terminal.backend().buffer()[(5, 4)].bg, Color::Green);
+        assert_eq!(terminal.backend().buffer()[(6, 4)].bg, Color::Green);
         for width in 0..16 {
             for height in 0..4 {
                 let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -1224,14 +1285,14 @@ mod tests {
         assert!(text.contains("Sel:4r × 2t Empty"));
         let buffer = terminal.backend().buffer();
         // Cursor follows scrolling; selected cells take precedence over playback.
-        assert_eq!(buffer[(15, 6)].bg, Color::Green);
-        assert_eq!(buffer[(25, 6)].bg, Color::Blue);
+        assert_eq!(buffer[(16, 6)].bg, Color::Green);
+        assert_eq!(buffer[(26, 6)].bg, Color::Blue);
         app.cursor_row = 15;
         terminal.draw(|frame| render(frame, &app)).unwrap();
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(15, 6)].bg, Color::Green);
-        assert_eq!(buffer[(25, 6)].bg, Color::Blue);
-        assert_eq!(buffer[(0, 6)].symbol(), "▶");
+        assert_eq!(buffer[(16, 6)].bg, Color::Green);
+        assert_eq!(buffer[(26, 6)].bg, Color::Blue);
+        assert_eq!(buffer[(1, 6)].symbol(), "*");
         for (keys, mode) in [("", "NORMAL"), ("i", "INSERT"), ("v", "VISUAL")] {
             let mut app = App::default();
             for ch in keys.chars() {
@@ -1268,7 +1329,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(100, 1)).unwrap();
         terminal.draw(|f| draw_pattern_editor(f, f.area(), &app)).unwrap();
         let row = screen(&terminal);
-        for (column, expected) in [(5, "C#4:   1"), (15, "C#4:  16"), (25, "C#4:4096"), (35, " .      ")] {
+        for (column, expected) in [(6, "C#4:   1"), (16, "C#4:  16"), (26, "C#4:4096"), (36, " .      ")] {
             assert_eq!(row.chars().skip(column).take(8).collect::<String>(), expected);
         }
         app.cursor_track = 2;

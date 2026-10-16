@@ -94,6 +94,11 @@ F4 supports counted `h`/`l` and `gh`/`gl` track navigation.
 
 ### Patterns and order
 
+Pattern cells show pitch and gate length in ticks at fixed positions (16 ticks
+per row). The gutter marks the edit row `>`, playing row `*`, beats `.`, and bars
+`|` (four rows per beat, four beats per bar). Selection has a text edge as well
+as emphasis; playback never scrolls the edit cursor out of view.
+
 In the arrangement, `]` marks selection and `>` marks the playing Song entry.
 Repeated patterns have separate entries.
 
