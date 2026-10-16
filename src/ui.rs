@@ -127,7 +127,7 @@ fn draw_instrument(f: &mut Frame, area: Rect, state: &App) {
     use crate::tracker::Instrument;
     let current = state.project.instrument(state.cursor_track);
     let block = Block::default().borders(Borders::ALL).title(format!(
-        "Instrument | Track {} | {} | [/] voice | h/l track",
+        "Instrument | Track {} | {} | [/] voice | h/l track | Enter audition",
         track_number(state.cursor_track),
         current.label()
     ));

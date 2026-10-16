@@ -41,6 +41,9 @@ fn main_loop<W: std::io::Write>(
         for event in transport.update_app(now, app_state, || audio_engine.stop()) {
             audio_engine.play_event(event);
         }
+        if let Some(event) = app_state.take_audition() {
+            audio_engine.play_event(event);
+        }
         if app_state.shutdown {
             break;
         }
