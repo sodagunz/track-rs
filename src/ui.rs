@@ -280,8 +280,8 @@ fn help_groups(view: View, mode: Option<Mode>) -> Vec<Vec<&'static crate::bindin
         .filter(|binding| {
             let shared = [Mode::Normal, Mode::Insert, Mode::Visual]
                 .iter()
-                .all(|mode| binding.modes.contains(mode));
-            binding.available_in_view(view) && mode.map_or(shared, |mode| !shared && binding.modes.contains(&mode))
+                .all(|mode| binding.available_in_mode(view, *mode));
+            mode.map_or(shared, |mode| !shared && binding.available_in_mode(view, mode))
         })
         .collect();
     bindings.sort_by_key(|binding| binding.category);
@@ -1071,9 +1071,9 @@ mod tests {
             for binding in DEFAULT_BINDINGS {
                 let shared = [Mode::Normal, Mode::Insert, Mode::Visual]
                     .iter()
-                    .all(|mode| binding.modes.contains(mode));
+                    .all(|mode| binding.available_in_mode(View::Pattern, *mode));
                 let expected = binding.available_in_view(View::Pattern)
-                    && section.map_or(shared, |mode| !shared && binding.modes.contains(&mode));
+                    && section.map_or(shared, |mode| !shared && binding.available_in_mode(View::Pattern, mode));
                 assert_eq!(
                     groups
                         .iter()

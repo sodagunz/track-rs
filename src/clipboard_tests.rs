@@ -118,7 +118,7 @@ fn steps_advance_valid_entry_including_noop_but_not_other_edits() {
         keys(&mut app, "z"); // same C4 is a no-op but successful entry
         assert_eq!(app.revision(), revision);
         assert_eq!(app.cursor_row, step);
-        keys(&mut app, "rf");
+        keys(&mut app, "if");
         key(&mut app, KeyCode::Delete);
         assert_eq!(app.cursor_row, step);
         app.cursor_row = 0;
@@ -169,7 +169,10 @@ fn operators_obey_counts_help_modifiers_and_press_only() {
         &mut app,
     );
     assert_eq!(app.edit_step, 0);
-    keys(&mut app, "dyp");
+    keys(&mut app, "ip");
     assert_eq!(app.clipboard, clipboard);
     assert_eq!(app.revision(), revision);
+    keys(&mut app, "dy");
+    assert_eq!(app.clipboard, clipboard);
+    assert_ne!(app.revision(), revision);
 }

@@ -31,7 +31,7 @@ impl Binding {
                 self.command,
                 Command::MoveCursorLeft | Command::MoveCursorRight | Command::MoveCursorUp | Command::MoveCursorDown
             ))
-            || matches!(view, crate::state::View::Mixer))
+            || matches!(view, crate::state::View::Mixer | crate::state::View::Pattern))
             && self.command.available_in_view(view)
             && (!matches!(self.command, Command::MixerValue | Command::MixerReset)
                 || matches!(view, crate::state::View::Mixer))
@@ -53,8 +53,40 @@ impl Binding {
         self.description
     }
 
+    pub(crate) fn available_in_mode(&self, view: crate::state::View, mode: Mode) -> bool {
+        if !self.available_in_view(view) || !self.modes.contains(&mode) {
+            return false;
+        }
+        if view == crate::state::View::Pattern && mode == Mode::Insert {
+            return matches!(
+                self.command,
+                Command::InsertNote { .. }
+                    | Command::HalveLength
+                    | Command::DoubleLength
+                    | Command::CycleEditStep
+                    | Command::DecreaseOctave
+                    | Command::IncreaseOctave
+                    | Command::DeleteNote
+                    | Command::PreviousInstrument
+                    | Command::NextInstrument
+                    | Command::DecreaseTempo
+                    | Command::IncreaseTempo
+                    | Command::EnterNormal
+                    | Command::TogglePlayback
+                    | Command::RestartPlayback
+                    | Command::ToggleHelp
+                    | Command::ShowPattern
+                    | Command::ShowArrangement
+                    | Command::ShowMixer
+                    | Command::ShowInstrument
+            ) || (self.prefix.is_none()
+                && matches!(self.key, KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down));
+        }
+        true
+    }
+
     fn matches_context(&self, state: &App) -> bool {
-        self.modes.contains(&state.mode) && self.available_in_view(state.view)
+        self.available_in_mode(state.view, state.mode)
     }
 
     const fn new(key: KeyCode, command: Command, description: &'static str, category: &'static str) -> Self {
@@ -84,6 +116,171 @@ impl Binding {
 
 /// The single source of truth for default controls and their descriptions.
 pub const DEFAULT_BINDINGS: &[Binding] = &[
+    Binding::new(
+        KeyCode::Char('s'),
+        Command::InsertNote {
+            pitch: NotePitch::Cs,
+            octave_offset: 0,
+        },
+        "Insert Cs",
+        "Notes",
+    ),
+    Binding::new(
+        KeyCode::Char('d'),
+        Command::InsertNote {
+            pitch: NotePitch::Ds,
+            octave_offset: 0,
+        },
+        "Insert Ds",
+        "Notes",
+    ),
+    Binding::new(
+        KeyCode::Char('g'),
+        Command::InsertNote {
+            pitch: NotePitch::Fs,
+            octave_offset: 0,
+        },
+        "Insert Fs",
+        "Notes",
+    ),
+    Binding::new(
+        KeyCode::Char('h'),
+        Command::InsertNote {
+            pitch: NotePitch::Gs,
+            octave_offset: 0,
+        },
+        "Insert Gs",
+        "Notes",
+    ),
+    Binding::new(
+        KeyCode::Char('j'),
+        Command::InsertNote {
+            pitch: NotePitch::As,
+            octave_offset: 0,
+        },
+        "Insert As",
+        "Notes",
+    ),
+    Binding::new(
+        KeyCode::Char('q'),
+        Command::InsertNote {
+            pitch: NotePitch::C,
+            octave_offset: 1,
+        },
+        "Insert C (upper octave)",
+        "Notes",
+    ),
+    Binding::new(
+        KeyCode::Char('2'),
+        Command::InsertNote {
+            pitch: NotePitch::Cs,
+            octave_offset: 1,
+        },
+        "Insert Cs (upper octave)",
+        "Notes",
+    ),
+    Binding::new(
+        KeyCode::Char('w'),
+        Command::InsertNote {
+            pitch: NotePitch::D,
+            octave_offset: 1,
+        },
+        "Insert D (upper octave)",
+        "Notes",
+    ),
+    Binding::new(
+        KeyCode::Char('3'),
+        Command::InsertNote {
+            pitch: NotePitch::Ds,
+            octave_offset: 1,
+        },
+        "Insert Ds (upper octave)",
+        "Notes",
+    ),
+    Binding::new(
+        KeyCode::Char('e'),
+        Command::InsertNote {
+            pitch: NotePitch::E,
+            octave_offset: 1,
+        },
+        "Insert E (upper octave)",
+        "Notes",
+    ),
+    Binding::new(
+        KeyCode::Char('r'),
+        Command::InsertNote {
+            pitch: NotePitch::F,
+            octave_offset: 1,
+        },
+        "Insert F (upper octave)",
+        "Notes",
+    ),
+    Binding::new(
+        KeyCode::Char('5'),
+        Command::InsertNote {
+            pitch: NotePitch::Fs,
+            octave_offset: 1,
+        },
+        "Insert Fs (upper octave)",
+        "Notes",
+    ),
+    Binding::new(
+        KeyCode::Char('t'),
+        Command::InsertNote {
+            pitch: NotePitch::G,
+            octave_offset: 1,
+        },
+        "Insert G (upper octave)",
+        "Notes",
+    ),
+    Binding::new(
+        KeyCode::Char('6'),
+        Command::InsertNote {
+            pitch: NotePitch::Gs,
+            octave_offset: 1,
+        },
+        "Insert Gs (upper octave)",
+        "Notes",
+    ),
+    Binding::new(
+        KeyCode::Char('y'),
+        Command::InsertNote {
+            pitch: NotePitch::A,
+            octave_offset: 1,
+        },
+        "Insert A (upper octave)",
+        "Notes",
+    ),
+    Binding::new(
+        KeyCode::Char('7'),
+        Command::InsertNote {
+            pitch: NotePitch::As,
+            octave_offset: 1,
+        },
+        "Insert As (upper octave)",
+        "Notes",
+    ),
+    Binding::new(
+        KeyCode::Char('u'),
+        Command::InsertNote {
+            pitch: NotePitch::B,
+            octave_offset: 1,
+        },
+        "Insert B (upper octave)",
+        "Notes",
+    ),
+    Binding::new(
+        KeyCode::PageUp,
+        Command::DecreaseOctave,
+        "Decrease entry octave",
+        "Notes",
+    ),
+    Binding::new(
+        KeyCode::PageDown,
+        Command::IncreaseOctave,
+        "Increase entry octave",
+        "Notes",
+    ),
     Binding::new(
         KeyCode::Left,
         Command::MoveCursorLeft,
@@ -791,7 +988,8 @@ mod tests {
             sequence(&mut app, setup);
             let saved = (app.mode, app.cursor_row, app.cursor_track, app.selection_anchor);
             let revision = app.revision();
-            sequence(&mut app, "12g");
+            let pending = if app.mode == Mode::Insert { "14" } else { "12g" };
+            sequence(&mut app, pending);
             key(&mut app, KeyCode::F(3), KeyModifiers::NONE, KeyEventKind::Press);
             assert_eq!(app.view, View::Mixer);
             assert_eq!(app.mode, Mode::Normal);
@@ -865,7 +1063,9 @@ mod tests {
                 .pitch,
             NotePitch::F
         );
-        sequence(&mut app, "2j");
+        for _ in 0..2 {
+            key(&mut app, KeyCode::Down, KeyModifiers::NONE, KeyEventKind::Press);
+        }
         assert_eq!(app.cursor_row, 2);
         escape(&mut app);
         sequence(&mut app, "16j2lv3k1h");
@@ -929,7 +1129,7 @@ mod tests {
             sequence(&mut app, " ");
             sequence(&mut app, mode_keys);
             let (mode, anchor, row, track) = (app.mode, app.selection_anchor, app.cursor_row, app.cursor_track);
-            sequence(&mut app, "12?");
+            sequence(&mut app, "14?");
             assert!(app.help_visible);
             assert_eq!(app.pending_count, None);
             sequence(&mut app, "ivzj2 ");
@@ -972,7 +1172,6 @@ mod tests {
         key(&mut app, KeyCode::Char('j'), KeyModifiers::CONTROL, KeyEventKind::Press);
         assert_eq!(app.pending_count, None);
         assert_eq!(app.cursor_row, 17);
-        sequence(&mut app, "i");
         for (ch, command) in [
             ('A', Command::LowerNote),
             ('S', Command::RaiseNote),
@@ -990,15 +1189,20 @@ mod tests {
                     Some(command)
                 );
             }
-            for modifiers in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
-                assert_eq!(resolve(KeyEvent::new(KeyCode::Char(ch), modifiers), &mut app), None);
-            }
+            assert_eq!(
+                resolve(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::ALT), &mut app),
+                None
+            );
         }
+        sequence(&mut app, "i");
         key(&mut app, KeyCode::Char('v'), KeyModifiers::NONE, KeyEventKind::Repeat);
         assert_eq!(
             app.project.patterns[app.selected_pattern].get_step(0, 17).unwrap().note,
             None
         );
+        key(&mut app, KeyCode::Char('Q'), KeyModifiers::SHIFT, KeyEventKind::Press);
+        assert!(!app.shutdown);
+        escape(&mut app);
         key(&mut app, KeyCode::Char('Q'), KeyModifiers::SHIFT, KeyEventKind::Press);
         assert!(app.shutdown);
     }
@@ -1009,7 +1213,13 @@ mod tests {
             let mut app = App::default();
             sequence(&mut app, mode_keys);
             let mode = app.mode;
-            sequence(&mut app, "jjllkh+-][ ");
+            if mode == Mode::Insert {
+                key(&mut app, KeyCode::Down, KeyModifiers::NONE, KeyEventKind::Press);
+                key(&mut app, KeyCode::Right, KeyModifiers::NONE, KeyEventKind::Press);
+                sequence(&mut app, "+-][ ");
+            } else {
+                sequence(&mut app, "jjllkh+-][ ");
+            }
             assert_eq!((app.cursor_row, app.cursor_track), (1, 1));
             assert_eq!(app.mode, mode);
             assert_eq!(app.project.bpm, 120.0);
@@ -1022,7 +1232,9 @@ mod tests {
             );
         }
         let mut app = App::default();
-        sequence(&mut app, "izsS");
+        sequence(&mut app, "iz");
+        escape(&mut app);
+        sequence(&mut app, "sS");
         let note = app.project.patterns[app.selected_pattern]
             .get_step(0, 0)
             .unwrap()
@@ -1076,7 +1288,7 @@ mod tests {
 
     #[test]
     fn jumps_consume_counts_cancel_invalid_and_ignore_repeats_in_all_modes() {
-        for mode in [Mode::Normal, Mode::Insert, Mode::Visual] {
+        for mode in [Mode::Normal, Mode::Visual] {
             let mut app = App { mode, ..App::default() };
             sequence(&mut app, "12gj");
             assert_eq!(app.cursor_row, 63);
@@ -1108,7 +1320,10 @@ mod tests {
     #[test]
     fn transpose_rectangle_preserves_selection_lengths_and_undoes_atomically() {
         let mut app = App::default();
-        sequence(&mut app, "iz}jlx");
+        sequence(&mut app, "iz}");
+        key(&mut app, KeyCode::Down, KeyModifiers::NONE, KeyEventKind::Press);
+        key(&mut app, KeyCode::Right, KeyModifiers::NONE, KeyEventKind::Press);
+        sequence(&mut app, "x");
         escape(&mut app);
         let before = app.project.clone();
         sequence(&mut app, "vkh");
@@ -1125,7 +1340,7 @@ mod tests {
         assert_eq!((app.cursor_row, app.cursor_track, app.octave), (0, 0, 4));
         app.handle_command(Command::Undo);
         assert_eq!(app.project, before);
-        for mode in [Mode::Normal, Mode::Insert, Mode::Visual] {
+        for mode in [Mode::Normal, Mode::Visual] {
             app.mode = mode;
             let revision = app.revision();
             sequence(&mut app, "2s2A2zfr");
@@ -1181,6 +1396,63 @@ mod tests {
     }
 
     #[test]
+    fn chromatic_insert_owns_both_octaves_and_never_treats_notes_as_commands() {
+        let pitches = [
+            NotePitch::C,
+            NotePitch::Cs,
+            NotePitch::D,
+            NotePitch::Ds,
+            NotePitch::E,
+            NotePitch::F,
+            NotePitch::Fs,
+            NotePitch::G,
+            NotePitch::Gs,
+            NotePitch::A,
+            NotePitch::As,
+            NotePitch::B,
+        ];
+        for (offset, keys) in [(0, "zsxdcvgbhnjm"), (1, "q2w3er5t6y7u")] {
+            for (ch, pitch) in keys.chars().zip(pitches) {
+                let mut app = App::default();
+                sequence(&mut app, "i");
+                sequence(&mut app, &ch.to_string());
+                let note = app.project.patterns[0].get_step(0, 0).unwrap().note.unwrap();
+                assert_eq!((note.pitch, note.octave), (pitch, 4 + offset), "{ch}");
+                assert_eq!((app.cursor_row, app.cursor_track), (0, 0));
+                assert_eq!((app.pending_count, app.pending_prefix), (None, None));
+                assert!(!app.shutdown);
+                assert!(app.take_audition().is_some());
+                let revision = app.revision();
+                for kind in [KeyEventKind::Repeat, KeyEventKind::Release] {
+                    key(&mut app, KeyCode::Char(ch), KeyModifiers::NONE, kind);
+                }
+                assert_eq!(app.revision(), revision);
+                assert!(app.take_audition().is_none());
+                sequence(&mut app, &ch.to_string());
+                assert_eq!(app.revision(), revision);
+                assert!(app.take_audition().is_some());
+                escape(&mut app);
+                sequence(&mut app, "u");
+                assert!(app.project.patterns[0].get_step(0, 0).unwrap().note.is_none());
+            }
+        }
+        let mut app = App::default();
+        sequence(&mut app, "i");
+        let before = app.project.clone();
+        sequence(&mut app, "aklAS01489Qip:");
+        assert_eq!(app.project, before);
+        assert_eq!(app.mode, Mode::Insert);
+        assert!(app.prompt.is_none());
+        assert!(!app.shutdown);
+        key(&mut app, KeyCode::PageDown, KeyModifiers::NONE, KeyEventKind::Press);
+        assert_eq!(app.octave, 5);
+        assert_eq!(app.selected_pattern, 0);
+        key(&mut app, KeyCode::PageUp, KeyModifiers::NONE, KeyEventKind::Press);
+        sequence(&mut app, ",");
+        assert_eq!(app.project.patterns[0].get_step(0, 0).unwrap().note.unwrap().octave, 5);
+    }
+
+    #[test]
     fn registry_has_unique_mode_modifier_keys_and_metadata() {
         for (index, binding) in DEFAULT_BINDINGS.iter().enumerate() {
             assert!(!binding.description.is_empty() && !binding.category.is_empty());
@@ -1210,11 +1482,13 @@ mod tests {
                     ),
                     ..App::default()
                 };
+                if !app.help_visible && !binding.available_in_mode(app.view, *mode) {
+                    continue;
+                }
                 assert!(!DEFAULT_BINDINGS[..index].iter().any(|other| other.key == binding.key
                     && other.prefix == binding.prefix
                     && other.modifiers == binding.modifiers
-                    && other.modes.contains(mode)
-                    && other.available_in_view(app.view)
+                    && other.available_in_mode(app.view, *mode)
                     && matches!(
                         other.command,
                         Command::DismissHelp | Command::ScrollHelpUp | Command::ScrollHelpDown

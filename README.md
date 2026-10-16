@@ -8,16 +8,22 @@ audio. Sorry Mario, your blazingly fast modern tracker is in another repo.
 ### Controls
 
 Start in Normal mode. `i` enters Insert, `v` selects a rectangle, `Esc` returns
-to Normal. `hjkl` moves in every mode, with counts like `16j`.
+to Normal. Normal/Visual use `hjkl`, with counts like `16j`.
 `gh`/`gk`/`gj`/`gl` jumps to first track/first row/last row/last track.
 `?` shows the bindings for each mode. Help blocks editing, not playback.
 
-In every mode, `a`/`s` lowers/raises notes one octave; `A`/`S` does so one
+In Normal/Visual, `a`/`s` lowers/raises notes one octave; `A`/`S` does so one
 semitone. Visual transposes the inclusive rectangle without leaving selection;
 otherwise only the cursor cell changes.
-In Insert, `zxcvbnm,` enters notes and immediately auditions the selected track's
+In Pattern Insert, `zsxdcvgbhnjm` plays C through B chromatically;
+`q2w3er5t6y7u` plays the octave above. `,` also plays upper C.
+Arrows navigate; PageUp/PageDown lowers/raises entry octave (0–9). Upper notes
+at octave 9 are rejected. These are QWERTY characters, not physical key positions.
+Esc returns to Normal for counts, transposition, undo, clipboard, prompts or quit.
+Each note enters once and immediately auditions the selected track's
 instrument for 200 ms plus release, including when re-entering the same note.
-Holding a note key doesn't repeat. Previews use the track's mixer settings and
+Reported Repeat/Release events are ignored for notes; legacy terminals may report
+held keys as repeated Press events and retrigger. Previews use the track's mixer settings and
 separate bounded voices, so entry during playback doesn't cut off song notes or
 move the playhead. Tab cycles entry steps of 0/1/2/4 rows.
 `{`/`}` halves/doubles note length (16 ticks per row); new notes last one row.
