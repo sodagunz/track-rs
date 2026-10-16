@@ -2,7 +2,8 @@
 
 Status: foundation and volume/pan submitted as PR #31, stacked on #30.
 Tone controls implemented on `feat/channel-tone`, ready for stacked review.
-Bulk-edit polish remains unimplemented.
+Bulk Visual edits and bounded adjustment undo are implemented on
+`feat/mixer-bulk-next`, stacked on PR #36. Meters remain deferred.
 
 Build a usable gain/pan mixer first, then add the requested tone controls. No
 parametric EQ, routing graph, sends, automation, or custom effects in this plan.
@@ -223,6 +224,35 @@ can clip and test finite output even when it exceeds the device range.
   Formatting, strict Clippy, all-target nextest (150 passed, none skipped),
   warning-as-error docs, doctests and the ALSA-null `just_a_note` example pass.
   The null sink checks setup, not audible output.
+
+### Bulk editing and undo progress (2026-10-16)
+
+- Mixer Normal `v` enters view-local Visual. Counted hjkl and gh/gl/gk/gj extend
+  inclusive rectangles across all six controls, independently of pattern height.
+  Visual a/s applies each control's own increments and directional Off/range
+  rules; d/x resets selected controls to neutral. Each rectangle/count is one
+  transaction; unchanged values add no history. Esc clears the mixer rectangle;
+  switching views preserves it and the separate pattern selection.
+- Insert h/l/arrows and Visual a/s group successive same-key adjustments. Reported
+  release, any other key (including counts/prefixes), command, help, prompt or view
+  change ends the gesture. Without releases, grouping is deliberately heuristic:
+  at most 400 ms between changes and two seconds from the first change. Quick
+  separate taps can group; long holds split. No keyboard protocol is assumed or
+  enabled. Counted edits remain separate atomic transactions.
+- Channel-only history joins retain original before-values and newest revisions,
+  guarded against crossing unrelated edits. Undo/redo, dirty state, clamp no-ops,
+  bulk reset, one-row patterns, saved pattern selection, append/structural undo,
+  load reset, help ownership and narrow/zero-size buffers have automated coverage.
+  Visual highlighting uses reverse/underline, not RGB or color alone.
+- Validation: formatting, strict all-target Clippy and all-target nextest pass
+  (161 tests, none skipped). Initial runs exposed obsolete inert-v assertions and
+  an overly wide status expectation; these were updated to the implemented input
+  and existing compact-status contracts. One 120-second run timed out draining
+  the sustained-audio test; the full run passed with a longer bound.
+- No audio, persistence format, dependencies, mute/solo or metering changes.
+  Real-terminal releases/repeats, resizing, light/dark/no-color readability and
+  listening remain pending. Per-channel stereo meters/master clip indicator are
+  suitable follow-up work, not part of this batch.
 
 Each slice gets a short plan update, focused tests, formatting, strict Clippy and
 all-target nextest before committing/pushing a stacked PR. Run docs and the null

@@ -17,6 +17,191 @@ fn text(app: &mut App, value: &str) {
         key(app, KeyCode::Char(ch));
     }
 }
+#[test]
+fn visual_mixer_rectangles_counts_off_reset_and_saved_pattern() {
+    let mut app = App::default();
+    text(&mut app, "3jv2l");
+    let saved = (app.mode, app.cursor_row, app.cursor_track, app.selection_anchor);
+    let notes = app.project.patterns.clone();
+    key(&mut app, KeyCode::F(3));
+    // Mixer height is independent of even a one-row pattern.
+    app.project.patterns[0] = crate::tracker::Pattern::new(1, 4);
+    text(&mut app, "v2lgj2s");
+    assert_eq!(app.mode, Mode::Visual);
+    for setting in &app.project.channels()[..3] {
+        assert_eq!(setting.volume_db, Some(2.0));
+        assert_eq!(setting.pan, 2.0);
+        assert_eq!(setting.low_shelf_db, 2.0);
+        assert_eq!(setting.high_shelf_db, 2.0);
+        assert!((setting.hpf_hz.unwrap() - 21.189_262).abs() < 0.001);
+        assert_eq!(setting.lpf_hz, None);
+    }
+    assert_eq!(app.project.channels()[3], ChannelSettings::default());
+    let adjusted = app.project.channels().to_vec();
+    text(&mut app, "d");
+    assert_eq!(app.mode, Mode::Visual);
+    assert!(app.project.channels().iter().all(|s| *s == ChannelSettings::default()));
+    key(&mut app, KeyCode::Esc);
+    text(&mut app, "u");
+    assert_eq!(app.project.channels(), adjusted);
+    text(&mut app, "u");
+    assert!(!app.is_dirty());
+    handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL), &mut app);
+    assert_eq!(app.project.channels(), adjusted);
+    // Reversed geometry and huge counts clamp without wrapping.
+    text(&mut app, "vgkgh9999a");
+    assert_eq!((app.cursor_row, app.cursor_track), (0, 0));
+    for setting in &app.project.channels()[..3] {
+        assert_eq!(setting.volume_db, None);
+        assert_eq!(setting.pan, -100.0);
+        assert_eq!(setting.low_shelf_db, -12.0);
+        assert_eq!(setting.high_shelf_db, -12.0);
+        assert_eq!(setting.hpf_hz, None);
+        assert_eq!(setting.lpf_hz, Some(20.0));
+    }
+    text(&mut app, "ypi{A");
+    assert_eq!(app.project.patterns[0].num_rows, 1);
+    key(&mut app, KeyCode::Esc);
+    assert_eq!((app.mode, app.selection_anchor), (Mode::Normal, None));
+    app.project.patterns = notes;
+    key(&mut app, KeyCode::F(1));
+    assert_eq!(
+        (app.mode, app.cursor_row, app.cursor_track, app.selection_anchor),
+        saved
+    );
+}
+
+#[test]
+fn mixer_gestures_bound_repeats_and_close_at_input_boundaries() {
+    use crate::bindings::handle_key_at;
+    use std::time::{Duration, Instant};
+    let start = Instant::now();
+    let event = |ch, kind| KeyEvent::new_with_kind(KeyCode::Char(ch), KeyModifiers::NONE, kind);
+    for kind in [KeyEventKind::Press, KeyEventKind::Repeat] {
+        let mut app = App::default();
+        key(&mut app, KeyCode::F(3));
+        text(&mut app, "i");
+        handle_key_at(event('h', KeyEventKind::Press), &mut app, start);
+        for millis in [50, 100, 200] {
+            handle_key_at(event('h', kind), &mut app, start + Duration::from_millis(millis));
+        }
+        assert_eq!(app.project.channels()[0].volume_db, Some(-4.0));
+        app.handle_command(Command::Undo);
+        assert_eq!(app.project.channels()[0].volume_db, Some(0.0));
+        assert!(!app.is_dirty());
+        app.handle_command(Command::Redo);
+        assert_eq!(app.project.channels()[0].volume_db, Some(-4.0));
+    }
+    let mut app = App::default();
+    key(&mut app, KeyCode::F(3));
+    text(&mut app, "i");
+    for millis in [0, 300, 600, 900, 1200, 1500, 1800, 2100] {
+        handle_key_at(
+            event('h', KeyEventKind::Press),
+            &mut app,
+            start + Duration::from_millis(millis),
+        );
+    }
+    app.handle_command(Command::Undo);
+    assert_eq!(app.project.channels()[0].volume_db, Some(-7.0));
+    app.handle_command(Command::Undo);
+    assert!(!app.is_dirty());
+    for boundary in ["jkh", "?", "2h", "l", "g", ":"] {
+        let mut app = App::default();
+        key(&mut app, KeyCode::F(3));
+        text(&mut app, "i");
+        handle_key_at(event('h', KeyEventKind::Press), &mut app, start);
+        text(&mut app, boundary);
+        assert!(app
+            .mixer_gesture
+            .as_ref()
+            .is_none_or(|_| boundary == "jkh" || boundary == "l"));
+    }
+    for (delay, release) in [(100, true), (401, false), (2000, false)] {
+        let mut app = App::default();
+        key(&mut app, KeyCode::F(3));
+        text(&mut app, "i");
+        handle_key_at(event('h', KeyEventKind::Press), &mut app, start);
+        if release {
+            handle_key_at(event('h', KeyEventKind::Release), &mut app, start);
+        }
+        handle_key_at(
+            event('h', KeyEventKind::Press),
+            &mut app,
+            start + Duration::from_millis(delay),
+        );
+        app.handle_command(Command::Undo);
+        assert_eq!(app.project.channels()[0].volume_db, Some(-1.0));
+    }
+}
+
+#[test]
+fn visual_gestures_counts_noops_and_mode_prompt_boundaries() {
+    let mut app = App::default();
+    let notes = app.project.patterns.clone();
+    key(&mut app, KeyCode::F(3));
+    text(&mut app, "vljss");
+    assert_eq!(app.project.channels()[0].pan, 2.0);
+    assert_eq!(app.project.channels()[1].volume_db, Some(2.0));
+    key(&mut app, KeyCode::Esc);
+    text(&mut app, "u");
+    assert!(!app.is_dirty());
+    handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL), &mut app);
+    text(&mut app, "gkghi2h3h");
+    assert_eq!(app.project.channels()[0].volume_db, Some(-3.0));
+    key(&mut app, KeyCode::Esc);
+    text(&mut app, "u");
+    assert_eq!(app.project.channels()[0].volume_db, Some(0.0));
+    text(&mut app, "u");
+    assert_eq!(app.project.channels()[0].volume_db, Some(2.0));
+    text(&mut app, "i9999l");
+    let revision = app.revision();
+    text(&mut app, "lll");
+    assert_eq!(app.revision(), revision);
+    numeric(&mut app, "6");
+    assert_eq!(app.revision(), revision);
+    numeric(&mut app, "oops");
+    assert_eq!(app.revision(), revision);
+    key(&mut app, KeyCode::Esc);
+    text(&mut app, "u");
+    assert_eq!(app.project.channels()[0].volume_db, Some(2.0));
+    assert_eq!(app.project.patterns, notes);
+}
+
+#[test]
+fn mixer_selection_load_append_and_structural_history_cleanup() {
+    let mut app = App::default();
+    key(&mut app, KeyCode::F(3));
+    text(&mut app, "vglgj");
+    key(&mut app, KeyCode::F(1));
+    app.handle_command(Command::AddTrack);
+    key(&mut app, KeyCode::F(3));
+    assert_eq!(app.selection_anchor, None);
+    assert_eq!(app.mode, Mode::Normal);
+    text(&mut app, "glvghgks");
+    key(&mut app, KeyCode::Esc);
+    text(&mut app, "uu");
+    assert_eq!(app.project.channels().len(), 4);
+    key(&mut app, KeyCode::F(1));
+    key(&mut app, KeyCode::F(3));
+    assert!(app.cursor_track < 4);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("small.json");
+    project_file::save(&Project::new(1, 1), &path).unwrap();
+    text(&mut app, "v");
+    key(&mut app, KeyCode::Esc);
+    text(&mut app, &format!(":e! {}", path.display()));
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(
+        (app.mode, app.cursor_row, app.cursor_track, app.selection_anchor),
+        (Mode::Normal, 0, 0, None)
+    );
+    assert!(!app.is_dirty());
+    text(&mut app, "v9999j9999ls");
+    assert_eq!((app.cursor_row, app.cursor_track), (5, 0));
+    assert_eq!(app.project.channels()[0].low_shelf_db, 1.0);
+}
+
 fn numeric(app: &mut App, value: &str) {
     key(app, KeyCode::Enter);
     assert!(app.prompt.is_some());
@@ -67,7 +252,7 @@ fn real_mixer_keys_counts_modes_numeric_reset_history_and_playback() {
     assert_eq!(app.project.channels()[0].pan, 0.0);
     let revision = app.revision();
     text(&mut app, "dxv");
-    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(app.mode, Mode::Visual);
     assert_eq!(app.revision(), revision);
     assert!(matches!(app.playback_state, PlaybackState::Playing));
     assert_eq!(app.project.channels()[1], ChannelSettings::default());

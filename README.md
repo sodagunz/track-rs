@@ -85,8 +85,13 @@ are capped below the output's Nyquist frequency; saved settings retain the
 requested values. Tone targets and bypass blend over 10 ms, before gain/pan.
 Neutral shelves and Off filters preserve the original signal.
 
-Mixer Visual/bulk edits, grouped held-key undo, mute/solo and meters aren't
-implemented. Counted edits undo atomically; key repeats currently undo separately.
+Mixer Normal `v` starts a rectangle; `hjkl`, counts and `g` motions extend it.
+Visual `a`/`s` decrease/increase each selected control by its own increment;
+`d`/`x` reset to neutral. Esc clears the selection. Each bulk/count edit is atomic.
+Repeated adjustment keys share one undo entry until release, another key/command,
+or a 400 ms idle gap, with a maximum two-second group. Legacy terminals don't
+report releases reliably: quick separate taps may group, and long holds split.
+Mute/solo and meters aren't implemented.
 Voice assignments in F1/F4 apply across all patterns; `u`/Ctrl-r undoes/redoes them.
 Custom synth parameters aren't implemented. In F4, Enter auditions C in the current
 entry octave for 200 ms plus release, only while playback is stopped. Holding

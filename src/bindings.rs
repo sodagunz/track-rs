@@ -1,7 +1,7 @@
 use std::{
     sync::mpsc::{channel, Receiver},
     thread::spawn,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -56,6 +56,9 @@ impl Binding {
                 Command::FirstRow => return "First parameter",
                 Command::LastRow => return "Last parameter",
                 Command::EnterInsert => return "Enter mixer adjustment mode",
+                Command::LowerOctave => return "Decrease selected controls",
+                Command::RaiseOctave => return "Increase selected controls",
+                Command::MixerReset => return "Reset cell/rectangle to neutral",
                 _ => {}
             }
         }
@@ -73,6 +76,12 @@ impl Binding {
             )
             && matches!(self.key, KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down)
             && !matches!(mode, Mode::Insert | Mode::Audition)
+        {
+            return false;
+        }
+        if view == crate::state::View::Mixer
+            && matches!(self.command, Command::LowerOctave | Command::RaiseOctave)
+            && mode != Mode::Visual
         {
             return false;
         }
@@ -342,7 +351,7 @@ pub const DEFAULT_BINDINGS: &[Binding] = &[
         )
     },
     Binding {
-        modes: &[Mode::Normal],
+        modes: &[Mode::Normal, Mode::Visual],
         ..Binding::new(
             KeyCode::Char('d'),
             Command::MixerReset,
@@ -351,7 +360,7 @@ pub const DEFAULT_BINDINGS: &[Binding] = &[
         )
     },
     Binding {
-        modes: &[Mode::Normal],
+        modes: &[Mode::Normal, Mode::Visual],
         ..Binding::new(
             KeyCode::Char('x'),
             Command::MixerReset,
@@ -890,18 +899,26 @@ pub fn resolve(key: KeyEvent, state: &mut App) -> Option<Command> {
         }
         return None;
     }
-    let count = state.pending_count.take();
-    let (rows, tracks) = match binding.command {
+    counted_command(binding.command, state.pending_count.take(), state.view)
+}
+
+fn counted_command(command: Command, count: Option<u16>, view: crate::state::View) -> Option<Command> {
+    let (rows, tracks) = match command {
         Command::MoveCursorUp => (-1, 0),
         Command::MoveCursorDown => (1, 0),
         Command::MoveCursorLeft => (0, -1),
         Command::MoveCursorRight => (0, 1),
         command => {
+            if view == crate::state::View::Mixer && matches!(command, Command::LowerOctave | Command::RaiseOctave) {
+                return Some(Command::MixerAdjust(
+                    if command == Command::RaiseOctave { 1 } else { -1 } * i32::from(count.unwrap_or(1)),
+                ));
+            }
             return if count.is_none() || command.ignores_count() {
                 Some(command)
             } else {
                 None
-            }
+            };
         }
     };
     let count = i32::from(count.unwrap_or(1));
@@ -933,8 +950,57 @@ fn extend_count(state: &mut App, digit: u8) {
     }
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct MixerGesture {
+    key: (KeyCode, KeyModifiers),
+    started: Instant,
+    last: Instant,
+    revision: crate::history::Revision,
+}
+
 /// Dispatch one real key through the shared resolver.
 pub fn handle_key(key: KeyEvent, state: &mut App) {
+    handle_key_at(key, state, Instant::now());
+}
+
+pub(crate) fn handle_key_at(key: KeyEvent, state: &mut App, now: Instant) {
+    let previous = state.mixer_gesture.take();
+    let eligible = state.view == crate::state::View::Mixer
+        && !state.help_visible
+        && state.prompt.is_none()
+        && state.pending_count.is_none()
+        && state.pending_prefix.is_none()
+        && key.kind != KeyEventKind::Release
+        && key.modifiers.is_empty()
+        && ((state.mode == Mode::Insert
+            && matches!(key.code, KeyCode::Left | KeyCode::Right | KeyCode::Char('h' | 'l')))
+            || (state.mode == Mode::Visual && matches!(key.code, KeyCode::Char('a' | 's'))));
+    let before = state.revision();
+    dispatch_key(key, state);
+    if eligible && state.revision() != before {
+        let prior = previous.filter(|gesture| {
+            gesture.key == (key.code, key.modifiers)
+                && gesture.revision == before
+                && now.duration_since(gesture.last) <= Duration::from_millis(400)
+                && now.duration_since(gesture.started) < Duration::from_secs(2)
+        });
+        if prior.is_some() {
+            state.history.join_channel_edits(before);
+        }
+        state.mixer_gesture = Some(MixerGesture {
+            key: (key.code, key.modifiers),
+            started: prior.map_or(now, |gesture| gesture.started),
+            last: now,
+            revision: state.revision(),
+        });
+    } else if eligible {
+        // Clamped repeats keep the gesture alive without creating history.
+        state.mixer_gesture =
+            previous.filter(|gesture| gesture.key == (key.code, key.modifiers) && gesture.revision == before);
+    }
+}
+
+fn dispatch_key(key: KeyEvent, state: &mut App) {
     if state.prompt.is_some() {
         state.pending_prefix = None;
         state.pending_count = None;
@@ -1036,7 +1102,7 @@ mod tests {
             assert_eq!(app.view, View::Mixer);
             assert_eq!(app.mode, Mode::Normal);
             assert_eq!((app.pending_count, app.pending_prefix), (None, None));
-            sequence(&mut app, "avsxdypz{");
+            sequence(&mut app, "asxdypz{");
             assert_eq!(app.mode, Mode::Normal);
             assert_eq!(app.cursor_row, 0);
             assert_eq!(app.revision(), revision);
