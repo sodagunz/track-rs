@@ -70,6 +70,14 @@ impl Project {
 pub struct ChannelSettings {
     pub volume_db: Option<f32>,
     pub pan: f32,
+    #[serde(default)]
+    pub low_shelf_db: f32,
+    #[serde(default)]
+    pub high_shelf_db: f32,
+    #[serde(default)]
+    pub hpf_hz: Option<f32>,
+    #[serde(default)]
+    pub lpf_hz: Option<f32>,
 }
 
 impl Default for ChannelSettings {
@@ -77,9 +85,16 @@ impl Default for ChannelSettings {
         Self {
             volume_db: Some(0.0),
             pan: 0.0,
+            low_shelf_db: 0.0,
+            high_shelf_db: 0.0,
+            hpf_hz: None,
+            lpf_hz: None,
         }
     }
 }
+
+pub const CHANNEL_ROWS: usize = 6;
+pub const CHANNEL_LABELS: [&str; CHANNEL_ROWS] = ["Vol dB", "Pan %", "Low dB", "High dB", "HPF Hz", "LPF Hz"];
 
 impl ChannelSettings {
     #[must_use]
@@ -88,6 +103,12 @@ impl ChannelSettings {
             .is_none_or(|v| v.is_finite() && (-60.0..=6.0).contains(&v))
             && self.pan.is_finite()
             && (-100.0..=100.0).contains(&self.pan)
+            && [self.low_shelf_db, self.high_shelf_db]
+                .iter()
+                .all(|v| v.is_finite() && (-12.0..=12.0).contains(v))
+            && [self.hpf_hz, self.lpf_hz]
+                .iter()
+                .all(|v| v.is_none_or(|v| v.is_finite() && (20.0..=20_000.0).contains(&v)))
     }
 
     #[must_use]
@@ -96,14 +117,63 @@ impl ChannelSettings {
         if row == 0 {
             let value = self.volume_db.unwrap_or(-61.0) + f32::from(steps.clamp(-9999, 9999) as i16);
             self.volume_db = if value < -60.0 { None } else { Some(value.min(6.0)) };
-        } else {
+        } else if row == 1 {
             self.pan = (self.pan + f32::from(steps.clamp(-9999, 9999) as i16)).clamp(-100.0, 100.0);
+        } else if row < 4 {
+            let gain = if row == 2 {
+                &mut self.low_shelf_db
+            } else {
+                &mut self.high_shelf_db
+            };
+            *gain = (*gain + f32::from(steps.clamp(-9999, 9999) as i16)).clamp(-12.0, 12.0);
+        } else {
+            let cutoff = if row == 4 { &mut self.hpf_hz } else { &mut self.lpf_hz };
+            // Apply each step so counted motion has the same Off boundaries as single keys.
+            for _ in 0..steps.unsigned_abs().min(9999) {
+                *cutoff = match (*cutoff, row, steps.signum()) {
+                    (None, 4, 1) => Some(20.0),
+                    (None, 5, -1) => Some(20_000.0),
+                    (Some(v), 4, -1) if v <= 20.0 => None,
+                    (Some(v), 5, 1) if v >= 20_000.0 => None,
+                    (Some(v), _, direction) => {
+                        let next = v * (f32::from(direction as i16) / 12.0).exp2();
+                        if (row == 4 && next < 20.0) || (row == 5 && next > 20_000.0) {
+                            None
+                        } else {
+                            Some(next.clamp(20.0, 20_000.0))
+                        }
+                    }
+                    _ => *cutoff,
+                };
+            }
         }
         self
     }
 
     #[must_use]
     pub fn label(self, row: usize) -> String {
+        if row >= 4 {
+            return if row == 4 { self.hpf_hz } else { self.lpf_hz }.map_or_else(
+                || "Off".into(),
+                |v| {
+                    if v >= 1000.0 {
+                        format!("{:.2} kHz", v / 1000.0)
+                    } else {
+                        format!("{v:.1} Hz")
+                    }
+                },
+            );
+        }
+        if row >= 2 {
+            return format!(
+                "{:+} dB",
+                if row == 2 {
+                    self.low_shelf_db
+                } else {
+                    self.high_shelf_db
+                }
+            );
+        }
         if row == 0 {
             self.volume_db.map_or_else(|| "-inf dB".into(), |v| format!("{v:+} dB"))
         } else if self.pan < 0.0 {

@@ -110,10 +110,13 @@ fn render(f: &mut Frame, state: &App) {
                 let text = if state.view == View::Mixer && state.mode == Mode::Insert {
                     labeled = format!(
                         "{}: {text}",
-                        if state.cursor_row == 0 {
-                            "Volume dB (-inf allowed)"
-                        } else {
-                            "Pan % (-100 L, +100 R)"
+                        match state.cursor_row {
+                            0 => "Volume dB (-inf allowed)",
+                            1 => "Pan % (-100 L, +100 R)",
+                            2 => "Low shelf dB (200 Hz)",
+                            3 => "High shelf dB (4 kHz)",
+                            4 => "HPF Hz (off allowed)",
+                            _ => "LPF Hz (off allowed)",
                         }
                     );
                     &labeled
@@ -183,16 +186,14 @@ fn draw_mixer(f: &mut Frame, area: Rect, state: &App) {
     if inner.width == 0 || inner.height == 0 {
         return;
     }
-    let label_width = 7usize.min(usize::from(inner.width).saturating_sub(8));
+    let label_width = 8usize.min(usize::from(inner.width).saturating_sub(8));
     let cell_width = 12usize.min(usize::from(inner.width).saturating_sub(label_width)).max(1);
     let count = (usize::from(inner.width).saturating_sub(label_width) / cell_width).max(1);
     let first = state.cursor_track.saturating_sub(count - 1);
     // Keep the header, selected parameter and its label even at two rows tall.
-    let rows: Vec<usize> = if inner.height < 3 {
-        vec![state.cursor_row]
-    } else {
-        vec![0, 1]
-    };
+    let visible = usize::from(inner.height.saturating_sub(1)).max(1);
+    let first_row = state.cursor_row.saturating_sub(visible - 1);
+    let rows = first_row..(first_row + visible).min(crate::project::CHANNEL_ROWS);
     let mut lines = Vec::new();
     if inner.height > 1 {
         let mut header = vec![Span::raw(format!("{:label_width$}", ""))];
@@ -211,7 +212,7 @@ fn draw_mixer(f: &mut Frame, area: Rect, state: &App) {
     for row in rows {
         let mut spans = vec![Span::raw(format!(
             "{:<label_width$}",
-            if row == 0 { "Vol dB" } else { "Pan %" }
+            crate::project::CHANNEL_LABELS[row]
         ))];
         for track in first..(first + count).min(state.project.channels().len()) {
             let style = if track == state.cursor_track && row == state.cursor_row {
@@ -340,6 +341,12 @@ fn help_lines(view: View, mode: Mode, width: u16) -> Vec<Line<'static>> {
         ));
         lines.push(Line::from(
             "Counts multiply steps. Pan is stereo balance; centre preserves width, no boost.",
+        ));
+        lines.push(Line::from(
+            "Shelves: 200 Hz/4 kHz, -12..+12 dB. HPF/LPF: 20..20000 Hz or off, semitone steps.",
+        ));
+        lines.push(Line::from(
+            "HPF off: increase from 20 Hz. LPF off: decrease from 20000 Hz. Boosts can clip.",
         ));
     }
     for (section, label) in sections {
@@ -710,6 +717,32 @@ mod tests {
             assert!(!status.contains("Empty"));
             assert!(!status.contains("R0"));
         }
+    }
+
+    #[test]
+    fn tone_rows_scroll_with_labels_and_view_specific_status() {
+        let mut app = App::default();
+        app.handle_command(Command::ShowMixer);
+        for row in 2..crate::project::CHANNEL_ROWS {
+            app.cursor_row = row;
+            for (width, height) in [(80, 20), (24, 7), (12, 6)] {
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal.draw(|f| render(f, &app)).unwrap();
+                let text = screen(&terminal);
+                assert!(
+                    text.contains(crate::project::CHANNEL_LABELS[row]),
+                    "{width}x{height}: {text}"
+                );
+            }
+            let status = presentation::Presentation(&app).status_line(120).to_string();
+            assert!(status.contains(["", "", "Lowshelf", "Highshelf", "HPF", "LPF"][row]));
+        }
+        let help = help_lines(app.view, app.mode, 120)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(help.contains("off"));
     }
 
     #[test]

@@ -43,7 +43,7 @@ fn main_loop<W: std::io::Write>(
             audio_engine.play_event(event);
         }
         if let Some(event) = app_state.take_audition() {
-            audio_engine.play_event(event);
+            audio_engine.preview_event(event);
         }
         if app_state.shutdown {
             break;

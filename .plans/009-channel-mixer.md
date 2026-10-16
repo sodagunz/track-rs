@@ -1,8 +1,8 @@
 # 009 — Channel mixer
 
-Status: view-local foundation and working volume/pan slice implemented, awaiting
-review. F3 now changes per-track audio. Tone controls and bulk-edit polish remain
-unimplemented.
+Status: foundation and volume/pan submitted as PR #31, stacked on #30.
+Tone controls implemented on `feat/channel-tone`, ready for stacked review.
+Bulk-edit polish remains unimplemented.
 
 Build a usable gain/pan mixer first, then add the requested tone controls. No
 parametric EQ, routing graph, sends, automation, or custom effects in this plan.
@@ -26,7 +26,7 @@ except while a prompt or help owns input.
 
 - `h`/`l`: previous/next channel; `j`/`k`: next/previous control.
 - Counts work: `3l`, `2j`. Clamp at edges, don't wrap.
-- `gh`/`gl`: first/last channel; `gj`/`gk`: first/last control.
+- `gh`/`gl`: first/last channel; `gk`/`gj`: first/last control.
 - `i`: enter mixer Insert (adjustment) mode on the selected cell.
 - `v`: rectangular Visual selection, using the same inclusive geometry as patterns.
 - `u`/Ctrl-r: undo/redo mixer edits without stopping playback.
@@ -187,6 +187,42 @@ can clip and test finite output even when it exceeds the device range.
   atomic; repeat events currently produce separate undo entries. Small-terminal
   rendering has automated coverage, but listening and real-terminal interaction
   checks remain pending. Boost can clip; no limiter or click-free claim is added.
+
+### Tone progress (2026-10-16)
+
+- F3 adds working 200 Hz/4 kHz shelves (−12..+12 dB) and independent
+  Butterworth HPF/LPF (12 dB/octave, Off or 20..20000 Hz). Semitone keys follow
+  the directional Off boundaries above; numeric entry accepts Hz/`off` and dB.
+  Reset, counts, undo/redo, view-local status/help and vertical scrolling cover all
+  six rows. Invalid numeric entries leave history and document unchanged.
+- Fixed-size stereo TPT state-variable filters persist after the summed voices,
+  before gain/pan. Control-side targets clamp effective frequencies, including
+  shelf warping, below actual Nyquist (0.45 × sample rate); requested values stay
+  in the project. Positive filter parameters and bypass weights interpolate over
+  10 ms. Neutral processing has an exact dry fast path; fully bypassed filter
+  memory is cleared. Retriggers preserve active filter memory; stop/replacement
+  clears it while preserving targets. No callback graph building or allocations,
+  master limiter, new dependencies, or unrelated voice changes.
+- Version 3 stores tone targets. Missing new fields in earlier v3 saves default
+  neutral, preserving the submitted gain/pan format. Existing v1/v2 migration is
+  unchanged; malformed/non-finite/out-of-range targets remain rejected.
+- Automated coverage: shelf/cutoff response at 8/44.1/48/96 kHz; neutral identity,
+  stereo separation, 10 ms transitions, held voices/retrigger/filter tails,
+  replacement reset, and rapid finite sweeps at 1/8/44.1/48/96 kHz. Real-key tests
+  cover counts, directional Off boundaries, numeric rejection, reset/history and
+  saved cursors; persistence covers tone round trips and earlier-v3 defaults;
+  terminal buffers cover selected tone labels at small sizes.
+- Validation: all-target nextest passes (146 tests, none skipped), along with
+  formatting, strict Clippy, warning-as-error docs/doctests and ALSA-null example.
+  An initial run hit an outdated two-row assertion and timed out while draining
+  another test; after updating the assertion and adding the neutral fast path,
+  the full suite passed. Manual listening and real-terminal checks are pending.
+  Boosts can clip; smoothing is not a click-free claim. Slice 4 remains deferred.
+- Final shipping checks also cover the directional `gk`/`gj` correction and
+  immediate note-entry previews in separate bounded slots (no song-voice theft).
+  Formatting, strict Clippy, all-target nextest (150 passed, none skipped),
+  warning-as-error docs, doctests and the ALSA-null `just_a_note` example pass.
+  The null sink checks setup, not audible output.
 
 Each slice gets a short plan update, focused tests, formatting, strict Clippy and
 all-target nextest before committing/pushing a stacked PR. Run docs and the null

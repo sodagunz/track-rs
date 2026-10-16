@@ -87,7 +87,12 @@ enum OutputCommand {
     Channel {
         track: usize,
         gains: (f32, f32),
+        tone: [crate::tone::Target; 4],
         sample_rate: f64,
+    },
+    Preview {
+        track: usize,
+        voice: GatedVoice,
     },
     Replace(Renderer),
     Trigger {
@@ -101,6 +106,7 @@ struct ChannelProcessor {
     current: (f32, f32),
     target: (f32, f32),
     remaining: u32,
+    tone: crate::tone::Tone,
 }
 
 impl Default for ChannelProcessor {
@@ -109,6 +115,7 @@ impl Default for ChannelProcessor {
             current: (1.0, 1.0),
             target: (1.0, 1.0),
             remaining: 0,
+            tone: crate::tone::Tone::default(),
         }
     }
 }
@@ -128,9 +135,10 @@ impl ChannelProcessor {
         self.remaining = (sample_rate * 0.01).round().max(1.0) as u32;
     }
 
-    const fn reset(&mut self) {
+    fn reset(&mut self) {
         self.current = self.target;
         self.remaining = 0;
+        self.tone.reset();
     }
 
     #[allow(clippy::cast_precision_loss)]
@@ -140,6 +148,7 @@ impl ChannelProcessor {
             self.current.1 += (self.target.1 - self.current.1) / self.remaining as f32;
             self.remaining -= 1;
         }
+        let sample = self.tone.process(sample);
         (sample.0 * self.current.0, sample.1 * self.current.1)
     }
 }
@@ -193,11 +202,13 @@ impl TrackVoices {
     }
 }
 
+// Preview slots are independent so live entry never steals a transport voice.
 struct Output {
     renderer: Renderer,
     commands: Receiver<OutputCommand>,
     retired: Sender<Renderer>,
     tracks: Vec<TrackVoices>,
+    previews: Vec<TrackVoices>,
 }
 
 impl Output {
@@ -206,6 +217,9 @@ impl Output {
             renderer,
             commands,
             retired,
+            previews: (0..crate::project_file::MAX_TRACKS)
+                .map(|_| TrackVoices::default())
+                .collect(),
             tracks: (0..crate::project_file::MAX_TRACKS)
                 .map(|_| TrackVoices::default())
                 .collect(),
@@ -220,19 +234,30 @@ impl Output {
                 OutputCommand::Channel {
                     track,
                     gains,
+                    tone,
                     sample_rate,
                 } => {
-                    if let Some(track) = self.tracks.get_mut(track) {
-                        track.mixer.set(gains, sample_rate);
+                    for slots in [&mut self.tracks, &mut self.previews] {
+                        if let Some(track) = slots.get_mut(track) {
+                            track.mixer.set(gains, sample_rate);
+                            track.mixer.tone.set(tone, track.mixer.remaining);
+                        }
                     }
                 }
                 OutputCommand::Replace(renderer) => {
-                    for track in &mut self.tracks {
+                    for track in self.tracks.iter_mut().chain(&mut self.previews) {
                         track.clear(&self.retired);
                         track.mixer.reset();
                     }
                     let old = std::mem::replace(&mut self.renderer, renderer);
                     let _ = self.retired.send(old);
+                }
+                OutputCommand::Preview { track, voice } => {
+                    if let Some(track) = self.previews.get_mut(track) {
+                        track.trigger(voice, &self.retired);
+                    } else {
+                        let _ = self.retired.send(voice.renderer);
+                    }
                 }
                 OutputCommand::Trigger { track, voice } => {
                     if let Some(track) = self.tracks.get_mut(track) {
@@ -244,7 +269,7 @@ impl Output {
             }
         }
         let mut sample = self.renderer.get_stereo();
-        for track in &mut self.tracks {
+        for track in self.tracks.iter_mut().chain(&mut self.previews) {
             let (l, r) = track.sample(&self.retired);
             sample.0 += l;
             sample.1 += r;
@@ -279,6 +304,7 @@ fn sync_channel_targets(
             let _ = sender.send(OutputCommand::Channel {
                 track,
                 gains: channel_gains(setting),
+                tone: crate::tone::targets(setting, sample_rate),
                 sample_rate,
             });
         }
@@ -383,6 +409,17 @@ impl AudioEngine {
             track: event.track,
             voice: GatedVoice::new(event, self.sample_rate, self.dry, rand::random()),
         });
+    }
+
+    /// Audition without retriggering a song voice on the same track.
+    pub fn preview_event(&mut self, event: NoteEvent) {
+        self.collect_retired();
+        if event.track < crate::project_file::MAX_TRACKS {
+            let _ = self.replacements.send(OutputCommand::Preview {
+                track: event.track,
+                voice: GatedVoice::new(event, self.sample_rate, self.dry, rand::random()),
+            });
+        }
     }
 
     /// Replace the entire prepared graph, cancelling voices and effect tails.
@@ -548,6 +585,106 @@ mod tests {
     use crate::tracker::NotePitch;
 
     #[test]
+    #[allow(clippy::float_cmp)]
+    fn tone_commands_change_held_voices_and_survive_retrigger() {
+        use crate::project::ChannelSettings;
+        let rate = 8000.0;
+        let (_, renderer) = prepare(rate);
+        let (sender, receiver) = mpsc::channel();
+        let (retired, _rx) = mpsc::channel();
+        let mut output = Output::new(renderer, receiver, retired);
+        sender
+            .send(OutputCommand::Trigger {
+                track: 0,
+                voice: GatedVoice::new(sine_event(0, Duration::from_secs(1)), rate, true, 42),
+            })
+            .unwrap();
+        for _ in 0..400 {
+            output.sample();
+        }
+        let before = output.tracks[0].active.as_ref().unwrap().elapsed;
+        sender
+            .send(OutputCommand::Channel {
+                track: 0,
+                gains: (1.0, 1.0),
+                tone: crate::tone::targets(
+                    ChannelSettings {
+                        lpf_hz: Some(20.0),
+                        ..ChannelSettings::default()
+                    },
+                    rate,
+                ),
+                sample_rate: rate,
+            })
+            .unwrap();
+        for _ in 0..400 {
+            output.sample();
+        }
+        assert!(output.tracks[0].active.as_ref().unwrap().elapsed > before + 0.049);
+        let mut energy = 0.0;
+        for _ in 0..80 {
+            let (l, r) = output.sample();
+            energy += l.abs() + r.abs();
+        }
+        assert!(energy < 0.5);
+        sender
+            .send(OutputCommand::Trigger {
+                track: 0,
+                voice: GatedVoice::new(sine_event(0, Duration::from_secs(1)), rate, true, 43),
+            })
+            .unwrap();
+        output.sample();
+        assert!(output.tracks[0].releasing.is_some());
+        // Muting after the filters must not discard their stored tail.
+        let mixer = &mut output.tracks[0].mixer;
+        mixer.current = (0.0, 0.0);
+        mixer.remaining = 0;
+        assert_eq!(mixer.process((1.0, 0.0)), (0.0, 0.0));
+        mixer.current = (1.0, 1.0);
+        assert!(mixer.process((0.0, 0.0)).0.abs() > 0.0);
+        let (_, renderer) = prepare(rate);
+        sender.send(OutputCommand::Replace(renderer)).unwrap();
+        assert_eq!(output.sample(), (0.0, 0.0));
+    }
+
+    #[test]
+    fn preview_renders_without_stealing_song_voice_and_expires() {
+        let (_, renderer) = prepare(8_000.0);
+        let (sender, receiver) = mpsc::channel();
+        let (retired, _rx) = mpsc::channel();
+        let mut output = Output::new(renderer, receiver, retired);
+        sender
+            .send(OutputCommand::Trigger {
+                track: 0,
+                voice: GatedVoice::new(sine_event(0, Duration::from_secs(10)), 8_000.0, true, 42),
+            })
+            .unwrap();
+        output.sample();
+        for _ in 0..20 {
+            sender
+                .send(OutputCommand::Preview {
+                    track: 0,
+                    voice: GatedVoice::new(sine_event(0, DEFAULT_NOTE_DURATION), 8_000.0, true, 42),
+                })
+                .unwrap();
+        }
+        output.sample();
+        assert!(output.tracks[0].releasing.is_none());
+        assert!(output.tracks[0].active.as_ref().unwrap().elapsed > 0.0);
+        assert!(output.previews[0].active.is_some());
+        assert!(output.previews[0].releasing.is_some());
+        let mut energy = 0.0;
+        for _ in 0..8_000 {
+            let sample = output.previews[0].sample(&output.retired);
+            energy += sample.0.abs() + sample.1.abs();
+        }
+        assert!(energy > 0.0);
+        assert!(output.previews[0].active.is_none());
+        assert!(output.previews[0].releasing.is_none());
+        assert!(output.tracks[0].active.is_some());
+    }
+
+    #[test]
     #[allow(clippy::float_cmp, clippy::cast_precision_loss)]
     fn channel_balance_neutral_endpoints_gain_and_sample_rate_ramps() {
         use crate::project::ChannelSettings;
@@ -564,13 +701,15 @@ mod tests {
         assert_eq!(
             channel_gains(ChannelSettings {
                 volume_db: None,
-                pan: 20.0
+                pan: 20.0,
+                ..ChannelSettings::default()
             }),
             (0.0, 0.0)
         );
         let boosted = channel_gains(ChannelSettings {
             volume_db: Some(6.0),
             pan: 0.0,
+            ..ChannelSettings::default()
         });
         assert!(boosted.0 > 1.99 && boosted.0 < 2.0);
         for rate in [8_000_u32, 44_100, 48_000, 96_000] {
@@ -623,6 +762,7 @@ mod tests {
                 .send(OutputCommand::Channel {
                     track: 0,
                     gains: (0.0, 1.0),
+                    tone: crate::tone::targets(crate::project::ChannelSettings::default(), 48_000.0),
                     sample_rate: f64::from(rate),
                 })
                 .unwrap();
@@ -644,6 +784,7 @@ mod tests {
                 .send(OutputCommand::Channel {
                     track: 0,
                     gains: (1.0, 0.0),
+                    tone: crate::tone::targets(crate::project::ChannelSettings::default(), 48_000.0),
                     sample_rate: f64::from(rate),
                 })
                 .unwrap();
@@ -672,6 +813,7 @@ mod tests {
                 .send(OutputCommand::Channel {
                     track: 0,
                     gains: (0.0, 0.0),
+                    tone: crate::tone::targets(crate::project::ChannelSettings::default(), 48_000.0),
                     sample_rate: f64::from(rate),
                 })
                 .unwrap();
@@ -716,6 +858,7 @@ mod tests {
                 ChannelSettings {
                     volume_db: None,
                     pan: 50.0,
+                    ..ChannelSettings::default()
                 },
             );
         });
@@ -749,6 +892,7 @@ mod tests {
         project.channels[0] = ChannelSettings {
             volume_db: None,
             pan: -100.0,
+            ..ChannelSettings::default()
         };
         crate::project_file::save(&project, &path).unwrap();
         app.execute_prompt(&format!("e! {}", path.display()));
