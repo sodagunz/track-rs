@@ -29,16 +29,20 @@ Ctrl-Space restarts from the beginning; Normal `:restart` is the fallback.
 `-`/`+` adjusts BPM (20–300), and `[`/`]` changes the track's instrument.
 Pad, Drone, and Sustain hold pitched notes; OpenHat rings longer than HiHat. Percussion ignores note pitch.
 
-### Patterns and order
+### Views
 
-Normal `F2` opens the scrolling arrangement view; `F1` returns to the pattern
-editor. The view keeps the selected order entry visible: `]` marks selection,
-`>` marks the playing Song entry. Repeated patterns have separate entries.
-Normal `F3` opens a mixer track overview with voice assignments and note counts
-for the edited pattern (not live audio meters). `F4` opens the selected track's
-built-in instrument editor. In both, `h`/`l` selects a track, `[`/`]` changes its
-voice across all patterns, and `u`/Ctrl-r undoes/redoes. Gain, pan, mute/solo and
-custom synth parameters aren't implemented. In F4, Enter auditions C in the current
+In Normal mode:
+
+| Key | View | Controls |
+| --- | --- | --- |
+| F1 | Pattern editor | Note editing described above |
+| F2 | Arrangement | Order controls below; scrolls with selection |
+| F3 | Track overview | `h`/`l` selects a track; `[`/`]` changes its voice |
+| F4 | Built-in instruments | Same track/voice controls; Enter auditions while stopped |
+
+F3 isn't a working mixer yet: no gain, pan, EQ, mute/solo, or audio meters.
+Voice assignments apply across all patterns; `u`/Ctrl-r undoes/redoes them.
+Custom synth parameters aren't implemented. In F4, Enter auditions C in the current
 entry octave for 200 ms plus release, only while playback is stopped. Holding
 Enter doesn't repeat; percussion keeps its fixed tuning. Audition doesn't edit
 notes or mark the project dirty. Starting playback cancels the preview.
@@ -46,6 +50,11 @@ notes or mark the project dirty. Starting playback cancels the preview.
 Panel switching doesn't stop playback or change the document. Help and `:` keep
 input priority. Hidden note edits and row motions are blocked; the mixer and
 instrument editor retain horizontal track navigation.
+
+### Patterns and order
+
+In the arrangement, `]` marks selection and `>` marks the playing Song entry.
+Repeated patterns have separate entries.
 
 In Normal mode (in the pattern or arrangement view):
 

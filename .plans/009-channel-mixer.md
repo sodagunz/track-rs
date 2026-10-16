@@ -1,0 +1,145 @@
+# 009 — Channel mixer
+
+Status: planned. F3 currently lists tracks; it doesn't mix them.
+
+Build a usable gain/pan mixer first, then add the requested tone controls. No
+parametric EQ, routing graph, sends, automation, or custom effects in this plan.
+Low/high shelves are EQ already; they aren't being replaced with instrument tone
+controls.
+
+## Interaction
+
+Columns are project tracks; rows are controls. Keep channel headers and parameter
+labels visible while scrolling. Each cell shows its value and unit, not just a
+knob drawing. Highlight the selected cell and channel with terminal palette colors.
+Keep the selected control visible on small terminals; don't shrink values to noise.
+
+Modes belong to the view, not to the whole application. Keep each view's mode and
+cursor when switching panels. Pattern Insert/Visual state must not turn into mixer
+input or be modified by mixer navigation. Clear pending counts/prefixes on switching;
+preserve a pattern selection for returning to F1. F1–F4 switch views in every mode,
+except while a prompt or help owns input.
+
+### Mixer Normal
+
+- `h`/`l`: previous/next channel; `j`/`k`: next/previous control.
+- Counts work: `3l`, `2j`. Clamp at edges, don't wrap.
+- `gh`/`gl`: first/last channel; `gj`/`gk`: first/last control.
+- `i`: enter mixer Insert (adjustment) mode on the selected cell.
+- `v`: rectangular Visual selection, using the same inclusive geometry as patterns.
+- `u`/Ctrl-r: undo/redo mixer edits without stopping playback.
+
+### Mixer Insert
+
+- `h`/`l`: decrease/increase the selected value; `j`/`k`: select the next/previous
+  control on that channel. Arrow keys follow the same mapping.
+- Counts multiply the normal increment; `10l` is ten increments, not ten channels.
+- Enter opens a numeric prompt for the selected control, with its unit shown.
+  Accept finite in-range numbers; reject invalid input without changing the project.
+- Esc leaves a numeric prompt first, then returns to mixer Normal.
+
+### Mixer Visual
+
+- `hjkl`, counts, and `g` motions extend the rectangle.
+- `a`/`s`: decrease/increase every selected control by its own increment, atomically.
+  This mirrors pattern transposition without borrowing its octave/semitone meanings.
+- `d`/`x`: reset selected controls to their neutral defaults, atomically.
+- Esc clears selection and returns to mixer Normal. No note clipboard operations.
+
+Normal `d`/`x` resets the current cell. Backspace in Insert does the same.
+No shifted coarse-adjustment keys initially: counts already provide coarse control.
+A held adjustment key forms one undo gesture; close it on release, navigation,
+mode/view change, prompt, or another command. Keep explicit counted edits atomic.
+
+Space/Ctrl-Space, tempo, help, project commands, and quit remain application-level.
+View bindings resolve before unrelated pattern bindings; `a`, `s`, `d`, and `i`
+must never reach hidden pattern edits. Registry-derived help lists only commands
+available in the active view, grouped by its modes. Status shows e.g.
+`MIXER INSERT | T2 Pan R25`, rather than a hidden pattern note or entry octave.
+
+## Channel controls
+
+All settings belong to a project track, shared by every pattern and order entry.
+New tracks and older project files start neutral.
+
+| Control | Range | Default | Increment |
+| --- | --- | --- | --- |
+| Volume | −60 to +6 dB, plus −∞ | 0 dB | 1 dB |
+| Pan | L100 through centre to R100 | Centre | 1 percentage point |
+| Low shelf | −12 to +12 dB at 200 Hz | 0 dB | 1 dB |
+| High shelf | −12 to +12 dB at 4 kHz | 0 dB | 1 dB |
+| HPF | Off; 20 Hz–20 kHz | Off | One semitone in frequency |
+| LPF | Off; 20 Hz–20 kHz | Off | One semitone in frequency |
+
+Volume below −60 dB becomes −∞; increasing from −∞ returns to −60 dB.
+For filters, decreasing below 20 Hz turns HPF off; increasing above 20 kHz turns
+LPF off. Increasing HPF from Off starts at 20 Hz; decreasing LPF from Off starts
+at 20 kHz. Movement away from the active range while Off does nothing. Numeric
+entry accepts `off` for filters and `-inf` for volume. Display cutoff values in Hz
+or kHz without changing their stored value. Use fixed, non-resonant filter shapes;
+no exposed Q or resonance. HPF and LPF remain independent and may overlap.
+
+Pan is stereo balance: centre preserves the existing stereo signal, endpoints
+silence the opposite side. Don't fold chorus to mono or boost the surviving side.
+Label this in help. Neutral settings must preserve today's output level and width.
+
+Use 12 dB/octave HPF/LPF and fixed gentle shelves. Clamp effective frequencies
+below Nyquist for the actual output sample rate, including shelf frequencies;
+retain the requested setting in the document. Off means bypass, not an extreme
+cutoff. Gain/pan and bypass transitions must be smoothed; filter sweeps must stay
+stable. Don't claim click-free changes until measured and listened to.
+
+Boost can overload the master sum. Show a clip indicator when metering lands;
+don't silently add a limiter or change global gain. Initially document that boosts
+can clip and test finite output even when it exceeds the device range.
+
+## Implementation seams
+
+- `src/project.rs`: validated channel settings beside shared instrument assignments.
+  Keep one settings value per track. No DSP memory in the document.
+- `src/history.rs`: channel-setting mutations through existing document transactions.
+  Include track append/undo/redo and dirty tracking. Parameter edits aren't structural
+  edits and must not cancel playback.
+- `src/project_file.rs`: version 3 with explicit v1/v2 migration to neutral settings;
+  preserve existing v1 note migration. Validate lengths, finite values, and ranges.
+- `src/audio.rs`: one persistent channel processor after each track's active/releasing
+  voice sum and before the master sum. Filters and smoothers survive retriggers and
+  process release tails. Use the same track path for instrument audition.
+- Deliver changed targets through the existing output-command seam. Coalesce unchanged
+  settings on the control side; don't rebuild voices, allocate filter graphs, or send
+  complete project snapshots per sample. Keep processing state on the audio side.
+- `src/main.rs`: synchronize load, undo/redo, track creation, and edits—not just key
+  handlers. Reset old DSP memory on project replacement/transport cancellation without
+  losing current targets. Install settings before new note triggers.
+- `src/bindings.rs`, `src/state.rs`: explicit view-local command resolution, mode and
+  cursor state. Keep count/prefix, prompt/help priority and repeat handling centralized.
+- `src/ui.rs`, `src/ui/presentation.rs`: channel grid and view-specific status/help.
+  Audit the legacy sequencer/example path so any bypass of channel processing is explicit.
+
+## Stack and acceptance
+
+1. **View-local interaction foundation.** Separate view modes/cursors and binding
+   contexts; make F1–F4 available across modes. Tests cover real keys, counts,
+   prefixes, switching with a Visual selection, help/prompt priority, and no hidden
+   edits. Update README and help together.
+2. **Working volume/pan mixer.** Add settings, v3 migration, history, live channel
+   processing and the F3 grid. Implement Normal/Insert, numeric entry and reset.
+   Verify held notes and tails respond without retriggering, track isolation,
+   centre/endpoints, neutral equivalence, smoothing at several sample rates,
+   append/history/load synchronization, and project round trips. This PR must
+   actually change audio; don't ship another control-only shell.
+3. **Tone controls.** Add shelves and HPF/LPF to that same processor and grid.
+   Verify frequency response, bypass neutrality, cutoff limits at low sample rates,
+   rapid sweeps, silence/tails, and stable finite output. Keep the first usable
+   mixer if this slice takes longer; don't block gain/pan on filters.
+4. **Bulk adjustment and polish.** Visual rectangles, per-parameter increments,
+   grouped repeat undo, scrolling and narrow-terminal tests. Add per-channel stereo
+   peak meters and a master clip indicator only after the controls work; meters
+   must not allocate or lock the callback and aren't saved or undoable.
+
+Each slice gets a short plan update, focused tests, formatting, strict Clippy and
+all-target nextest before committing/pushing a stacked PR. Run docs and the null
+output example when audio interfaces change. A null sink checks setup, not sound.
+Finish with manual listening for pan, gain sweeps, filter sweeps and release tails,
+and a real-terminal check of navigation, value readability and mode cues. Record
+those checks as pending until somebody actually performs them.

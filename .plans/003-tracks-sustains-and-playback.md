@@ -136,12 +136,14 @@ Touches: instrument definitions, voice factory, preset selection, audio tests.
 - [x] Pad: softly detuned oscillators with a gentle attack/release. Drone: a low,
   slowly moving sustained tone. Sustain: a plain stable pitched voice with a short
   attack/release. Keep these small fixed presets, not a parameter editor.
-- [x] OpenHat uses a slower-decaying filtered noise envelope than HiHat. The gate
-  still bounds the sound; use longer note lengths to let the open tail ring.
+- [x] OpenHat uses a slower-decaying filtered noise envelope than HiHat. Note-off
+  starts its release; longer lengths let more of its natural decay ring.
 - [x] Give presets their own attack/release defaults rather than one global fade.
-  Scale fades for short gates; long pitched gates hold instead of decaying to
+  Scale attack for short gates; long pitched gates hold instead of decaying to
   silence early. Retain short percussion attacks and measured level checks.
-- [x] Budget release inside the note's total gate length for predictable timing.
+- [x] Note length ends at note-off; the preset's full release follows afterward.
+  This supersedes the original inside-gate release rule after the reported
+  512-tick Pad/Drone early-fade bug.
   Retrigger, stop, restart, and structural cancellation must all honor per-track
   voice ownership without resurrecting old notes or leaving tails running.
 - [x] Add seeded offline tests for finite/non-silent output, held-note energy,
