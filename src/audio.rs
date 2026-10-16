@@ -57,6 +57,12 @@ fn prepare(sample_rate: f64) -> (Sequencer, Renderer) {
     (sequencer, BlockRateAdapter::new(Box::new(net.backend())))
 }
 
+fn replace_graph(sequencer: &mut Sequencer, replacements: &Sender<Renderer>, sample_rate: f64) {
+    let (next, renderer) = prepare(sample_rate);
+    *sequencer = next;
+    let _ = replacements.send(renderer);
+}
+
 pub struct AudioEngine {
     sequencer: Sequencer,
     replacements: Sender<Renderer>,
@@ -149,9 +155,7 @@ impl AudioEngine {
     /// The callback switches before its next sample; retired graphs are freed here.
     pub fn stop(&mut self) {
         self.collect_retired();
-        let (sequencer, renderer) = prepare(self.sample_rate);
-        self.sequencer = sequencer;
-        let _ = self.replacements.send(renderer);
+        replace_graph(&mut self.sequencer, &self.replacements, self.sample_rate);
     }
 
     fn collect_retired(&self) {
@@ -445,6 +449,62 @@ mod tests {
             for _ in 0..100_000 {
                 assert_eq!(output.sample(), (0.0, 0.0));
             }
+        }
+    }
+
+    #[test]
+    fn runtime_restart_cancels_old_audio_before_new_notes_and_stopped_time_does_not_seek() {
+        use crate::{bindings::handle_key, state::App, transport::Transport};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let (mut sequencer, renderer) = prepare(48_000.0);
+        let (tx, replacements) = mpsc::channel();
+        let (retired, _rx) = mpsc::channel();
+        let mut output = Output {
+            renderer,
+            replacements,
+            retired,
+        };
+        let mut app = App::default();
+        let note = Note {
+            pitch: NotePitch::C,
+            octave: 4,
+        };
+        app.project.patterns[0].set_step(0, 8, Some(note)).unwrap();
+        // A long old gate must not be reconstructed when starting later.
+        schedule_instrument(&mut sequencer, note, Instrument::Pluck, Duration::from_secs(10), false);
+        assert!((0..10_000).any(|_| {
+            let (l, r) = output.sample();
+            l.abs() + r.abs() > 1e-6
+        }));
+        let mut transport = Transport::default();
+        let now = std::time::Instant::now();
+        handle_key(KeyEvent::new(KeyCode::Null, KeyModifiers::CONTROL), &mut app);
+        let notes = transport.update_app(now, &mut app, || replace_graph(&mut sequencer, &tx, 48_000.0));
+        assert!(notes.is_empty());
+        for _ in 0..20_000 {
+            assert_eq!(output.sample(), (0.0, 0.0));
+        }
+        handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE), &mut app);
+        app.cursor_row = 8;
+        handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE), &mut app);
+        let notes = transport.update_app(now + Duration::from_secs(50), &mut app, || {
+            replace_graph(&mut sequencer, &tx, 48_000.0);
+        });
+        assert_eq!(app.playback_row, 8);
+        assert_eq!(notes.len(), 1);
+        for event in notes {
+            schedule_instrument(&mut sequencer, event.note, event.instrument, event.duration, false);
+        }
+        assert!((0..10_000).any(|_| {
+            let (l, r) = output.sample();
+            l.abs() + r.abs() > 1e-6
+        }));
+        handle_key(KeyEvent::new(KeyCode::Null, KeyModifiers::CONTROL), &mut app);
+        assert!(transport
+            .update_app(now, &mut app, || replace_graph(&mut sequencer, &tx, 48_000.0))
+            .is_empty());
+        for _ in 0..100_000 {
+            assert_eq!(output.sample(), (0.0, 0.0));
         }
     }
 

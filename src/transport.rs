@@ -61,9 +61,41 @@ pub struct Transport {
     deadline: Option<Instant>,
     row: usize,
     route: Option<PlaybackRoute>,
+    start_offset: usize,
 }
 
 impl Transport {
+    /// Cancel the old graph before collecting any notes for a new run.
+    pub fn update_app(
+        &mut self,
+        now: Instant,
+        app: &mut crate::state::App,
+        stop_audio: impl FnOnce(),
+    ) -> Vec<NoteEvent> {
+        let playing = !app.shutdown && matches!(app.playback_state, crate::state::PlaybackState::Playing);
+        if app.take_stop_request() || (!playing && self.deadline.is_some()) || app.shutdown {
+            self.stop();
+            stop_audio();
+        }
+        let route = if app.playback_mode == crate::state::PlaybackMode::Song {
+            PlaybackRoute::Song
+        } else {
+            PlaybackRoute::Pattern(app.playing_pattern)
+        };
+        self.start_at(&app.project, route, app.playing_order, app.playback_row);
+        let Some(event) = self.update_project(now, playing, &app.project, route, DEFAULT_ROWS_PER_BEAT) else {
+            return Vec::new();
+        };
+        app.playback_row = event.row.row;
+        app.playing_pattern = event.pattern;
+        app.playing_order = event.order.unwrap_or(0);
+        collect_row(
+            &app.project.patterns[event.pattern],
+            app.project.instruments(),
+            event.row,
+        )
+    }
+
     /// Flatten one cycle, skip elapsed cycles arithmetically, then locate one row.
     /// Work is bounded by order length, never by the number of missed deadlines.
     pub fn update_project(
@@ -115,6 +147,35 @@ impl Transport {
         }
     }
 
+    /// Set the initial flattened row only before a run; active routes stay pinned.
+    pub fn start_at(&mut self, project: &crate::project::Project, route: PlaybackRoute, order: usize, row: usize) {
+        if self.deadline.is_some() {
+            return;
+        }
+        self.start_offset = match route {
+            PlaybackRoute::Pattern(index) => project
+                .patterns
+                .get(index)
+                .map_or(0, |pattern| row.min(pattern.num_rows.saturating_sub(1))),
+            PlaybackRoute::Song => {
+                let order = order.min(project.order.len().saturating_sub(1));
+                let prefix: usize = project
+                    .order
+                    .iter()
+                    .take(order)
+                    .filter_map(|&index| project.patterns.get(index))
+                    .map(|pattern| pattern.num_rows)
+                    .sum();
+                prefix
+                    + project
+                        .order
+                        .get(order)
+                        .and_then(|&index| project.patterns.get(index))
+                        .map_or(0, |pattern| row.min(pattern.num_rows.saturating_sub(1)))
+            }
+        };
+    }
+
     #[must_use]
     pub const fn deadline(&self) -> Option<Instant> {
         self.deadline
@@ -123,9 +184,10 @@ impl Transport {
     pub const fn stop(&mut self) {
         self.deadline = None;
         self.route = None;
+        self.start_offset = 0;
     }
 
-    /// Invalid rates or empty patterns stop the clock. A new start emits row zero.
+    /// Invalid rates or empty patterns stop the clock. A new start emits its chosen row.
     /// Tempo changes apply at the already scheduled boundary. Late updates emit
     /// only the current row, skipping stale rows in constant time. Unrepresentable
     /// deadlines stop the clock without emitting a row.
@@ -146,9 +208,9 @@ impl Transport {
         let Some(boundary) = self.deadline else {
             self.deadline = now.checked_add(period);
             self.deadline?;
-            self.row = 0;
+            self.row = self.start_offset.min(rows - 1);
             return Some(RowEvent {
-                row: 0,
+                row: self.row,
                 beats: 1.0 / f64::from(rows_per_beat),
                 duration: period,
             });

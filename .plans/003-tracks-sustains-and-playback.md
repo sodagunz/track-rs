@@ -1,7 +1,8 @@
 # Tracks, sustained sounds, and playback
 
 Status: Phase 1 implemented and validated on `feat/add-tracks`, based on develop
-`f0a7ea7` after the earlier stacks merged. Phases 2–5 pending.
+`f0a7ea7` after the earlier stacks merged. Phase 2 implemented on
+`feat/cursor-playback`, stacked on `feat/add-tracks` (PR #17). Phases 3–5 pending.
 
 One phase per PR. Preserve the existing modal editor, history, and project
 files. No mixer, arbitrary synth editor, or track removal in this pass.
@@ -38,35 +39,42 @@ five, save, Song start/stop, help, reload, and clean quit.
 
 Touches: transport, runtime orchestration, audio output, state, input metadata.
 
-- [ ] Keep Stopped/Playing. Space stops a playing transport; from Stopped it starts
+- [x] Keep Stopped/Playing. Space stops a playing transport; from Stopped it starts
   at the current cursor. No frozen-voice pause/resume checkpoint.
-- [ ] In Pattern mode, Space starts the edited pattern at the cursor row. In Song
+- [x] In Pattern mode, Space starts the edited pattern at the cursor row. In Song
   mode, start at the selected order entry and cursor row, clamped to that entry's
   pattern length. The selected order entry determines the pattern even if the
   editor currently shows another one; show the playing target clearly.
-- [ ] Ctrl-Space always restarts and plays: row zero of the edited pattern in
+- [x] Ctrl-Space always restarts and plays: row zero of the edited pattern in
   Pattern mode, or order zero/row zero in Song mode. Cancel old voices/deadlines
   first, even if already playing.
-- [ ] Decode Ctrl-Space as delivered by supported terminals, including legacy NUL
+- [x] Decode Ctrl-Space as delivered by supported terminals, including legacy NUL
   where applicable. Test real Crossterm events; ignore releases/repeated toggles.
   Add Normal `:restart` as a fallback for terminals that intercept Ctrl-Space.
-- [ ] Emit the starting row immediately, then advance from anchored deadlines.
+- [x] Emit the starting row immediately, then advance from anchored deadlines.
   Don't replay earlier notes whose gates overlap the cursor: start with the notes
   on the chosen row. Pin the route for this playback run; moving the edit cursor
   or switching the edited pattern doesn't seek or retarget active playback.
-- [ ] Space stop, file load, structural edits/history, route changes, and quit
+- [x] Space stop, file load, structural edits/history, route changes, and quit
   cancel voices and effect tails. Already-buffered device samples may finish;
   don't promise zero output latency. A later Space start uses the new cursor,
   not the old playback position or time elapsed while stopped.
-- [ ] Playback controls never dirty the document or enter edit history. Keep the
+- [x] Playback controls never dirty the document or enter edit history. Keep the
   existing next-row tempo-change behavior. Help/prompt input must not accidentally
   trigger playback; show stopped/playing position separately from the edit cursor.
-- [ ] Test nonzero cursor starts, song entry selection, repeated patterns,
+- [x] Test nonzero cursor starts, song entry selection, repeated patterns,
   variable lengths, row clamping, stop/move/start, and Ctrl-Space while playing or
   stopped. Render through cancellation to prove old notes don't leak into a new
   start. Exercise both shortcuts through actual input.
 
 Done: Space auditions from the cursor; Ctrl-Space plays from the mode's beginning.
+
+Evidence: 80 nextest tests pass (75 baseline + 5 new), including offline callback
+cancellation through runtime orchestration. Full CI gate and null-audio example
+pass; cargo-deny retains existing duplicate-dependency warnings. A 100×24 PTY
+passed Space at row 16, stop/move/start, actual Ctrl-Space NUL while stopped and
+playing, `:restart`, and clean quit with ALSA null output. Listening and subjective
+UI checks remain pending.
 
 ## 3. Editable note length
 

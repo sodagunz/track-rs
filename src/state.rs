@@ -185,6 +185,10 @@ impl App {
                 self.stop_requested = true;
                 self.status = "Loaded".into();
             }
+            "restart" => {
+                anyhow::ensure!(remainder.is_empty(), "Expected :restart");
+                self.restart_playback();
+            }
             "q" | "q!" => {
                 anyhow::ensure!(remainder.is_empty(), "Expected :q or :q!");
                 if command == "q!" {
@@ -193,7 +197,7 @@ impl App {
                     self.shutdown();
                 }
             }
-            _ => anyhow::bail!("Unknown command; use :w [path], :e[!] <path>, :q[!], :wq"),
+            _ => anyhow::bail!("Unknown command; use :w [path], :e[!] <path>, :q[!], :wq, :restart"),
         }
         Ok(())
     }
@@ -236,16 +240,7 @@ impl App {
             | Command::ToggleSong
             | Command::Undo
             | Command::Redo => self.handle_arrangement(command),
-            Command::AddTrack => {
-                if self.project.can_append_track() {
-                    self.edit(|edit| {
-                        edit.append_track();
-                    });
-                    self.cursor_track = self.project.instruments().len() - 1;
-                } else {
-                    self.status = "Track/cell limit reached (128 tracks, 1,000,000 cells)".into();
-                }
-            }
+            Command::AddTrack => self.add_track(),
             Command::OpenPrompt => self.open_prompt(),
             Command::EnterInsert => {
                 self.mode = Mode::Insert;
@@ -277,6 +272,7 @@ impl App {
                 self.offset_cursor(&offset(rows), &offset(tracks));
             }
             Command::TogglePlayback => self.toggle_playback(),
+            Command::RestartPlayback => self.restart_playback(),
             Command::MoveCursorUp => self.offset_cursor(&CursorOffset::Neg(1), &CursorOffset::None),
             Command::MoveCursorDown => self.offset_cursor(&CursorOffset::Pos(1), &CursorOffset::None),
             Command::MoveCursorLeft => self.offset_cursor(&CursorOffset::None, &CursorOffset::Neg(1)),
@@ -309,6 +305,17 @@ impl App {
             Command::DeleteNote => self.clear_selection(),
             Command::DecreaseOctave => self.octave = self.octave.saturating_sub(1).min(9),
             Command::IncreaseOctave => self.octave = self.octave.saturating_add(1).min(9),
+        }
+    }
+
+    fn add_track(&mut self) {
+        if self.project.can_append_track() {
+            self.edit(|edit| {
+                edit.append_track();
+            });
+            self.cursor_track = self.project.instruments().len() - 1;
+        } else {
+            self.status = "Track/cell limit reached (128 tracks, 1,000,000 cells)".into();
         }
     }
 
@@ -572,19 +579,39 @@ impl App {
     pub fn toggle_playback(&mut self) {
         match self.playback_state {
             PlaybackState::Stopped => {
-                self.playback_state = PlaybackState::Playing;
-                self.playing_order = 0;
-                self.playing_pattern = if self.playback_mode == PlaybackMode::Song {
-                    self.project.order[0]
-                } else {
-                    self.selected_pattern
-                };
-                self.playback_row = 0; // TODO: feat(Loop) loop_start_cursor/playback_start_cursor
+                self.begin_playback(false);
             }
             PlaybackState::Playing => {
                 self.stop_playback();
             }
         }
+    }
+
+    pub fn restart_playback(&mut self) {
+        self.stop_playback();
+        self.begin_playback(true);
+    }
+
+    fn begin_playback(&mut self, beginning: bool) {
+        self.playing_order = if beginning || self.playback_mode == PlaybackMode::Pattern {
+            0
+        } else {
+            self.selected_order
+        }
+        .min(self.project.order.len().saturating_sub(1));
+        self.playing_pattern = if self.playback_mode == PlaybackMode::Song {
+            let Some(&pattern) = self.project.order.get(self.playing_order) else {
+                return;
+            };
+            pattern
+        } else {
+            self.selected_pattern
+        };
+        let Some(pattern) = self.project.patterns.get(self.playing_pattern) else {
+            return;
+        };
+        self.playback_row = if beginning { 0 } else { self.cursor_row }.min(pattern.num_rows.saturating_sub(1));
+        self.playback_state = PlaybackState::Playing;
     }
 
     /// Apply one document transaction, including future multi-cell operations.
@@ -860,14 +887,17 @@ mod tests {
     }
 
     #[test]
-    fn playback_commands_restart_at_row_zero_and_quit() {
+    fn playback_commands_start_at_cursor_restart_at_zero_and_quit() {
         let mut app = App::default();
         app.handle_command(Command::TogglePlayback);
         assert!(matches!(app.playback_state, PlaybackState::Playing));
         app.advance_playback_row();
         app.handle_command(Command::TogglePlayback);
         assert!(matches!(app.playback_state, PlaybackState::Stopped));
+        app.cursor_row = 7;
         app.handle_command(Command::TogglePlayback);
+        assert_eq!(app.playback_row, 7);
+        app.handle_command(Command::RestartPlayback);
         assert_eq!(app.playback_row, 0);
         app.handle_command(Command::Quit);
         assert!(app.shutdown);

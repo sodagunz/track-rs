@@ -8,6 +8,8 @@ pub mod command;
 pub mod history;
 #[cfg(test)]
 mod history_tests;
+#[cfg(test)]
+mod playback_tests;
 pub mod state;
 #[cfg(test)]
 mod track_tests;

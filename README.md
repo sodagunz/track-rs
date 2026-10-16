@@ -18,8 +18,11 @@ Normal `y` copies, `d` cuts, `p` pastes, and `x`/Delete clears. Visual `y`/`d`/`
 acts on the rectangle and returns to Normal. Paste includes empty cells and clips
 at pattern edges. `u` undoes; Ctrl-r redoes. Bulk edits undo together.
 
-Space toggles playback, `-`/`+` adjusts BPM (20–300), and `[`/`]` changes the track's
-instrument. Percussion ignores note pitch.
+Space stops playback, or starts from the cursor: the edited pattern in Pattern
+mode, the selected order entry in Song mode (row clamped to its pattern).
+Ctrl-Space restarts from the beginning; Normal `:restart` is the fallback.
+`-`/`+` adjusts BPM (20–300), and `[`/`]` changes the track's instrument.
+Percussion ignores note pitch.
 
 ### Patterns and order
 
@@ -32,7 +35,9 @@ In Normal mode:
 - `O` toggles Pattern/Song playback, stopping audio; Space starts it again.
 
 Pattern playback loops the pattern selected at start; Song loops the order.
-Switching the edited pattern doesn't retarget playback. Order edits and
+Moving the cursor or switching the edited pattern doesn't retarget playback.
+Starting midway doesn't replay earlier notes. Stop/restart cancels voices and tails;
+already-buffered device samples may finish. Order edits and
 undo/redo of structural edits stop audio. The order must keep at least one entry.
 
 For A/A/B: write A, Ctrl-a, Ctrl-d, edit B, Ctrl-a, then `O` and Space.
