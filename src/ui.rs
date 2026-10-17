@@ -178,9 +178,13 @@ fn draw_instrument(f: &mut Frame, area: Rect, state: &App) {
 }
 
 fn draw_mixer(f: &mut Frame, area: Rect, state: &App) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title("Mixer | i adjust | v select | Esc normal");
+    let block = Block::default().borders(Borders::ALL).title(if state.meters.invalid {
+        "Mixer | MASTER ERR/CLIP | Boost can clip"
+    } else if state.meters.clipped {
+        "Mixer | MASTER CLIP | Boost can clip"
+    } else {
+        "Mixer | i adjust | v select | Boost can clip"
+    });
     let inner = block.inner(area);
     f.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {
@@ -191,7 +195,8 @@ fn draw_mixer(f: &mut Frame, area: Rect, state: &App) {
     let count = (usize::from(inner.width).saturating_sub(label_width) / cell_width).max(1);
     let first = state.cursor_track.saturating_sub(count - 1);
     // Keep the header, selected parameter and its label even at two rows tall.
-    let visible = usize::from(inner.height.saturating_sub(1)).max(1);
+    let meter_rows = u16::from(inner.height >= 5) * 2;
+    let visible = usize::from(inner.height.saturating_sub(1 + meter_rows)).max(1);
     let first_row = state.cursor_row.saturating_sub(visible - 1);
     let rows = first_row..(first_row + visible).min(crate::project::CHANNEL_ROWS);
     let mut lines = Vec::new();
@@ -230,6 +235,40 @@ fn draw_mixer(f: &mut Frame, area: Rect, state: &App) {
             ));
         }
         lines.push(Line::from(spans));
+    }
+    if meter_rows > 0 {
+        for side in 0..2 {
+            let mut spans = vec![Span::raw(format!(
+                "{:<label_width$}",
+                if side == 0 { "Peak L" } else { "Peak R" }
+            ))];
+            for track in first..(first + count).min(state.project.channels().len()) {
+                let peak = state.meters.channels.get(track).map_or(0.0, |peak| peak[side]);
+                let width = cell_width.saturating_sub(2);
+                let bars = (0..width)
+                    .map(|i| {
+                        #[allow(clippy::cast_precision_loss)]
+                        let threshold = 10.0_f32.powf((-48.0 + 48.0 * (i + 1) as f32 / width as f32) / 20.0);
+                        if peak >= threshold {
+                            '|'
+                        } else {
+                            '.'
+                        }
+                    })
+                    .collect::<String>();
+                spans.push(Span::styled(
+                    format!(" {bars}{}", if peak > 1.0 { '!' } else { ' ' }),
+                    Style::default().fg(if peak > 1.0 {
+                        Color::Red
+                    } else if track == state.cursor_track {
+                        Color::Cyan
+                    } else {
+                        Color::DarkGray
+                    }),
+                ));
+            }
+            lines.push(Line::from(spans));
+        }
     }
     f.render_widget(Paragraph::new(lines), inner);
 }
@@ -666,6 +705,48 @@ mod tests {
     use super::*;
     use crate::tracker::{Note, NotePitch};
     use ratatui::backend::{Backend, TestBackend};
+
+    #[test]
+    fn mixer_peaks_preserve_cells_selection_and_narrow_layout() {
+        let mut app = App::default();
+        app.handle_command(Command::ShowMixer);
+        app.meters.channels = vec![[0.5, 1.2]; 4];
+        app.meters.clipped = true;
+        for (width, height) in [(80, 20), (40, 10), (24, 7), (12, 6), (1, 1), (0, 0)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|f| render(f, &app)).unwrap();
+            if width == 80 {
+                let text = screen(&terminal);
+                for label in [
+                    "MASTER CLIP",
+                    "Boost can clip",
+                    "Peak L",
+                    "Peak R",
+                    "Vol dB",
+                    "Pan %",
+                    "T1",
+                    "!",
+                ] {
+                    assert!(text.contains(label), "{text}");
+                }
+                assert!(terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .iter()
+                    .any(|cell| cell.bg == Color::Cyan));
+            }
+            if width == 24 {
+                assert!(screen(&terminal).contains("Vol dB"));
+                assert!(!screen(&terminal).contains("Peak L"));
+            }
+        }
+        app.meters.invalid = true;
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal.draw(|f| render(f, &app)).unwrap();
+        assert!(screen(&terminal).contains("MASTER ERR/CLIP"));
+        assert!(!app.is_dirty());
+    }
 
     #[test]
     fn instrument_keys_cycle_history_and_scroll_actual_assignment() {

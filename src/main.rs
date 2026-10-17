@@ -30,6 +30,7 @@ fn main_loop<W: std::io::Write>(
 ) {
     let frame_period = Duration::from_millis(50);
     let mut next_frame = Instant::now();
+    let mut last_meter_sample = next_frame;
     let mut transport = track_rs::transport::Transport::default();
 
     let mut pending = None;
@@ -49,6 +50,12 @@ fn main_loop<W: std::io::Write>(
             break;
         }
         if now >= next_frame {
+            audio_engine.sample_meters(
+                &mut app_state.meters,
+                app_state.project.channels().len(),
+                now.saturating_duration_since(last_meter_sample),
+            );
+            last_meter_sample = now;
             tui.draw(app_state);
             next_frame = Instant::now() + frame_period;
         }

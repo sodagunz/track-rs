@@ -91,7 +91,12 @@ Visual `a`/`s` decrease/increase each selected control by its own increment;
 Repeated adjustment keys share one undo entry until release, another key/command,
 or a 400 ms idle gap, with a maximum two-second group. Legacy terminals don't
 report releases reliably: quick separate taps may group, and long holds split.
-Mute/solo and meters aren't implemented.
+F3 shows stereo channel peaks after tone/gain/pan, including previews. Meters
+fall at 24 dB/s; `!` marks a channel above unity. `MASTER CLIP` holds for two
+seconds when the summed output exceeds unity; `MASTER ERR/CLIP` also flags
+non-finite audio. Stop/restart and successful load clear the meters and hold.
+Short panels hide meters before editable cells. This is telemetry, not a limiter;
+boosts and summed channels can still clip. Mute/solo isn't implemented.
 Voice assignments in F1/F4 apply across all patterns; `u`/Ctrl-r undoes/redoes them.
 Custom synth parameters aren't implemented. In F4, Enter auditions C in the current
 entry octave for 200 ms plus release, only while playback is stopped. Holding
