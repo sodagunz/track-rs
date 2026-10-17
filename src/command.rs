@@ -3,6 +3,8 @@ use crate::tracker::{Instrument, NotePitch};
 /// User actions, independent of terminal input and the current editor state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
+    MixerValue,
+    MixerReset,
     ShowPattern,
     ShowArrangement,
     ShowMixer,
@@ -65,6 +67,51 @@ pub enum Command {
 }
 
 impl Command {
+    pub(crate) const fn available_in_view(self, view: crate::state::View) -> bool {
+        use crate::state::View;
+        if matches!(
+            self,
+            Self::ShowPattern
+                | Self::ShowArrangement
+                | Self::ShowMixer
+                | Self::ShowInstrument
+                | Self::Quit
+                | Self::ToggleHelp
+                | Self::DismissHelp
+                | Self::ScrollHelpUp
+                | Self::ScrollHelpDown
+                | Self::CountDigit(_)
+        ) {
+            return true;
+        }
+        match view {
+            View::Pattern => !matches!(self, Self::AuditionInstrument | Self::MixerValue | Self::MixerReset),
+            View::Arrangement => self.available_in_arrangement(),
+            View::Mixer => {
+                (self.available_in_voice_view()
+                    && !matches!(
+                        self,
+                        Self::AuditionInstrument
+                            | Self::PreviousInstrument
+                            | Self::NextInstrument
+                            | Self::SetInstrument(_)
+                    ))
+                    || matches!(
+                        self,
+                        Self::EnterInsert
+                            | Self::MoveCursorUp
+                            | Self::MoveCursorDown
+                            | Self::MoveCursor { .. }
+                            | Self::FirstRow
+                            | Self::LastRow
+                            | Self::MixerValue
+                            | Self::MixerReset
+                    )
+            }
+            View::Instrument => self.available_in_voice_view(),
+        }
+    }
+
     pub(crate) const fn ignores_count(self) -> bool {
         matches!(
             self,

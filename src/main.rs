@@ -37,6 +37,7 @@ fn main_loop<W: std::io::Write>(
         if let Some(key) = pending.take() {
             bindings::handle_key(key, app_state);
         }
+        audio_engine.sync_channels(app_state.project.channels());
         let now = Instant::now();
         for event in transport.update_app(now, app_state, || audio_engine.stop()) {
             audio_engine.play_event(event);

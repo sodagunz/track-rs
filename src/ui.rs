@@ -106,6 +106,20 @@ fn render(f: &mut Frame, state: &App) {
         let line = state.prompt.as_ref().map_or_else(
             || state.status.clone(),
             |text| {
+                let labeled;
+                let text = if state.view == View::Mixer && state.mode == Mode::Insert {
+                    labeled = format!(
+                        "{}: {text}",
+                        if state.cursor_row == 0 {
+                            "Volume dB (-inf allowed)"
+                        } else {
+                            "Pan % (-100 L, +100 R)"
+                        }
+                    );
+                    &labeled
+                } else {
+                    text
+                };
                 let (visible, cursor) = presentation::prompt_view(text, area.width);
                 if area.width > 0 {
                     f.set_cursor_position((area.x + cursor, area.bottom() - 1));
@@ -163,38 +177,57 @@ fn draw_instrument(f: &mut Frame, area: Rect, state: &App) {
 fn draw_mixer(f: &mut Frame, area: Rect, state: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .title("Mixer | h/l track | [/] voice | u/Ctrl-r undo/redo");
+        .title("Mixer | i adjust | Enter value | Esc normal");
     let inner = block.inner(area);
     f.render_widget(block, area);
-    let height = usize::from(inner.height);
-    let first = state.cursor_track.saturating_sub(height.saturating_sub(1));
-    let pattern = &state.project.patterns[state.selected_pattern];
-    let lines: Vec<_> = state
-        .project
-        .instruments()
-        .iter()
-        .enumerate()
-        .skip(first)
-        .take(height)
-        .map(|(track, instrument)| {
-            let notes = pattern.tracks[track].iter().filter(|step| step.note.is_some()).count();
-            let selected = track == state.cursor_track;
-            Line::styled(
-                format!(
-                    "{} Track {}  {:<8}  {} notes (edit pattern)",
-                    if selected { ">" } else { " " },
-                    track_number(track),
-                    instrument.label(),
-                    notes
-                ),
-                if selected {
-                    Style::default().fg(Color::Black).bg(Color::Cyan)
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let label_width = 7usize.min(usize::from(inner.width).saturating_sub(8));
+    let cell_width = 12usize.min(usize::from(inner.width).saturating_sub(label_width)).max(1);
+    let count = (usize::from(inner.width).saturating_sub(label_width) / cell_width).max(1);
+    let first = state.cursor_track.saturating_sub(count - 1);
+    // Keep the header, selected parameter and its label even at two rows tall.
+    let rows: Vec<usize> = if inner.height < 3 {
+        vec![state.cursor_row]
+    } else {
+        vec![0, 1]
+    };
+    let mut lines = Vec::new();
+    if inner.height > 1 {
+        let mut header = vec![Span::raw(format!("{:label_width$}", ""))];
+        for track in first..(first + count).min(state.project.channels().len()) {
+            header.push(Span::styled(
+                format!("{:^cell_width$}", format!("T{}", track_number(track))),
+                if track == state.cursor_track {
+                    Style::default().fg(Color::Cyan)
                 } else {
                     Style::default()
                 },
-            )
-        })
-        .collect();
+            ));
+        }
+        lines.push(Line::from(header));
+    }
+    for row in rows {
+        let mut spans = vec![Span::raw(format!(
+            "{:<label_width$}",
+            if row == 0 { "Vol dB" } else { "Pan %" }
+        ))];
+        for track in first..(first + count).min(state.project.channels().len()) {
+            let style = if track == state.cursor_track && row == state.cursor_row {
+                Style::default().fg(Color::Black).bg(Color::Cyan)
+            } else if track == state.cursor_track {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default()
+            };
+            spans.push(Span::styled(
+                format!("{:^cell_width$}", state.project.channels()[track].label(row)),
+                style,
+            ));
+        }
+        lines.push(Line::from(spans));
+    }
     f.render_widget(Paragraph::new(lines), inner);
 }
 
@@ -204,6 +237,7 @@ fn key_label(key: crossterm::event::KeyCode) -> String {
         KeyCode::Char(' ') => "Space".into(),
         KeyCode::Char(c) => c.to_string(),
         KeyCode::Esc => "Esc".into(),
+        KeyCode::F(number) => format!("F{number}"),
         KeyCode::Up => "Up".into(),
         KeyCode::Down => "Down".into(),
         KeyCode::Delete => "Delete".into(),
@@ -239,14 +273,14 @@ fn command_keys(command: Command) -> String {
 }
 
 /// Group aliases only when their action and presentation metadata agree.
-fn help_groups(mode: Option<Mode>) -> Vec<Vec<&'static crate::bindings::Binding>> {
+fn help_groups(view: View, mode: Option<Mode>) -> Vec<Vec<&'static crate::bindings::Binding>> {
     let mut bindings: Vec<_> = DEFAULT_BINDINGS
         .iter()
         .filter(|binding| {
             let shared = [Mode::Normal, Mode::Insert, Mode::Visual]
                 .iter()
                 .all(|mode| binding.modes.contains(mode));
-            mode.map_or(shared, |mode| !shared && binding.modes.contains(&mode))
+            binding.available_in_view(view) && mode.map_or(shared, |mode| !shared && binding.modes.contains(&mode))
         })
         .collect();
     bindings.sort_by_key(|binding| binding.category);
@@ -286,7 +320,7 @@ fn group_keys(group: &[&crate::bindings::Binding]) -> String {
     }
 }
 
-fn help_lines(mode: Mode, width: u16) -> Vec<Line<'static>> {
+fn help_lines(view: View, mode: Mode, width: u16) -> Vec<Line<'static>> {
     let sections = [
         (None, "Shared"),
         (Some(Mode::Normal), "Normal"),
@@ -295,12 +329,23 @@ fn help_lines(mode: Mode, width: u16) -> Vec<Line<'static>> {
     ];
     let key_width = sections
         .iter()
-        .flat_map(|(mode, _)| help_groups(*mode))
+        .flat_map(|(mode, _)| help_groups(view, *mode))
         .map(|group| Line::from(group_keys(&group)).width())
         .max()
         .unwrap_or(0);
     let mut lines = Vec::new();
+    if view == View::Mixer {
+        lines.push(Line::from(
+            "Normal: h/l channel; j/k parameter. Insert: h/l adjust; j/k parameter.",
+        ));
+        lines.push(Line::from(
+            "Counts multiply steps. Pan is stereo balance; centre preserves width, no boost.",
+        ));
+    }
     for (section, label) in sections {
+        if view == View::Mixer && section == Some(Mode::Visual) {
+            continue;
+        }
         let active = section == Some(mode);
         lines.push(Line::styled(
             if active {
@@ -311,7 +356,7 @@ fn help_lines(mode: Mode, width: u16) -> Vec<Line<'static>> {
             Style::default().add_modifier(if active { Modifier::BOLD } else { Modifier::empty() }),
         ));
         let mut category = "";
-        for group in help_groups(section) {
+        for group in help_groups(view, section) {
             if category != group[0].category {
                 category = group[0].category;
                 lines.push(Line::styled(category, Style::default().add_modifier(Modifier::DIM)));
@@ -322,11 +367,11 @@ fn help_lines(mode: Mode, width: u16) -> Vec<Line<'static>> {
                 lines.push(Line::from(vec![
                     Span::raw(keys),
                     Span::raw(padding),
-                    Span::raw(group[0].description),
+                    Span::raw(group[0].description_in_view(view)),
                 ]));
             } else {
                 lines.push(Line::from(keys));
-                lines.push(Line::from(format!("  {}", group[0].description)));
+                lines.push(Line::from(format!("  {}", group[0].description_in_view(view))));
             }
         }
     }
@@ -360,7 +405,7 @@ fn draw_help(f: &mut Frame, state: &App) {
     );
     let footer_rows = inner.height.saturating_sub(1).min(2);
     let content = Rect::new(inner.x, inner.y + 1, inner.width, inner.height - 1 - footer_rows);
-    let paragraph = Paragraph::new(help_lines(state.mode, content.width)).wrap(Wrap { trim: false });
+    let paragraph = Paragraph::new(help_lines(state.view, state.mode, content.width)).wrap(Wrap { trim: false });
     let max = paragraph
         .line_count(content.width)
         .saturating_sub(usize::from(content.height));
@@ -616,11 +661,11 @@ mod tests {
                 }
             }
         }
-        for ch in ['i', 'v', 'j', 'x'] {
+        for ch in ['v', 'a', 's', 'x'] {
             key(&mut app, KeyCode::Char(ch), KeyModifiers::NONE);
         }
         assert_eq!(app.mode, Mode::Normal);
-        assert_eq!(app.cursor_row, 17);
+        assert_eq!(app.cursor_row, 0);
         key(&mut app, KeyCode::Char('l'), KeyModifiers::NONE);
         assert_eq!(app.cursor_track, 1);
         assert_eq!(app.project.instrument(1), Instrument::Pluck);
@@ -641,7 +686,34 @@ mod tests {
     }
 
     #[test]
-    fn mixer_keys_edit_shared_voices_without_hidden_note_edits() {
+    fn voice_view_help_and_status_hide_pattern_commands_and_context() {
+        for view in [View::Mixer, View::Instrument, View::Arrangement] {
+            let app = App {
+                view,
+                octave: 9,
+                ..App::default()
+            };
+            let text = help_lines(view, app.mode, 80)
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(!text.contains("Insert C"));
+            assert!(!text.contains("Lower notes"));
+            assert!(!text.contains("Halve note length"));
+            assert_eq!(text.contains("Audition voice"), view == View::Instrument);
+            for key in ["F1", "F2", "F3", "F4"] {
+                assert!(text.contains(key));
+            }
+            let status = presentation::Presentation(&app).status_line(120).to_string();
+            assert!(!status.contains("Oct:"));
+            assert!(!status.contains("Empty"));
+            assert!(!status.contains("R0"));
+        }
+    }
+
+    #[test]
+    fn mixer_keys_edit_settings_without_hidden_note_edits() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = App::default();
         let key = |app: &mut App, code| crate::bindings::handle_key(KeyEvent::new(code, KeyModifiers::NONE), app);
@@ -651,14 +723,14 @@ mod tests {
         assert_eq!(app.view, View::Mixer);
         assert_eq!(app.pending_count, None);
         assert!(!app.is_dirty());
-        for ch in ['i', 'v', 'j', 'x'] {
+        for ch in ['v', 'a', 's', 'x'] {
             key(&mut app, KeyCode::Char(ch));
         }
         assert_eq!(app.mode, Mode::Normal);
-        assert_eq!(app.cursor_row, 17);
+        assert_eq!(app.cursor_row, 0);
         key(&mut app, KeyCode::Char('l'));
         key(&mut app, KeyCode::Char(']'));
-        assert_eq!(app.project.instrument(1), crate::tracker::Instrument::Sine);
+        assert_eq!(app.project.instrument(1), crate::tracker::Instrument::Pluck);
         assert_eq!(app.project.instrument(0), crate::tracker::Instrument::Pluck);
         key(&mut app, KeyCode::Char('u'));
         assert!(!app.is_dirty());
@@ -666,7 +738,9 @@ mod tests {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             terminal.draw(|f| render(f, &app)).unwrap();
             if width == 80 {
-                assert!(screen(&terminal).contains("> Track 2"));
+                assert!(screen(&terminal).contains("T2"));
+                assert!(screen(&terminal).contains("Vol dB"));
+                assert!(screen(&terminal).contains("Pan %"));
             }
         }
         key(&mut app, KeyCode::Char('?'));
@@ -959,13 +1033,14 @@ mod tests {
     #[test]
     fn help_sections_cover_every_registry_binding_and_alias() {
         for section in [None, Some(Mode::Normal), Some(Mode::Insert), Some(Mode::Visual)] {
-            let groups = help_groups(section);
+            let groups = help_groups(View::Pattern, section);
             assert!(groups.windows(2).all(|pair| pair[0][0].category <= pair[1][0].category));
             for binding in DEFAULT_BINDINGS {
                 let shared = [Mode::Normal, Mode::Insert, Mode::Visual]
                     .iter()
                     .all(|mode| binding.modes.contains(mode));
-                let expected = section.map_or(shared, |mode| !shared && binding.modes.contains(&mode));
+                let expected = binding.available_in_view(View::Pattern)
+                    && section.map_or(shared, |mode| !shared && binding.modes.contains(&mode));
                 assert_eq!(
                     groups
                         .iter()
@@ -979,7 +1054,7 @@ mod tests {
                 );
             }
         }
-        let lines = help_lines(Mode::Insert, 62);
+        let lines = help_lines(View::Pattern, Mode::Insert, 62);
         let text = lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
         let positions: Vec<_> = ["Shared", "Normal", "Insert (active)", "Visual"]
             .iter()
@@ -1003,7 +1078,7 @@ mod tests {
             let mut terminal = Terminal::new(TestBackend::new(24, 6)).unwrap();
             terminal.draw(|f| render(f, &app)).unwrap();
             assert!(terminal.backend().buffer()[(0, 0)].modifier.contains(Modifier::BOLD));
-            let lines = help_lines(mode, 24);
+            let lines = help_lines(View::Pattern, mode, 24);
             let index = lines
                 .iter()
                 .position(|line| line.to_string().ends_with("(active)"))
@@ -1062,7 +1137,7 @@ mod tests {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             let inner_width = width.min(64) - if width >= 40 { 2 } else { 0 };
             let content_height = height.min(24) - if width >= 40 { 5 } else { 3 };
-            let paragraph = Paragraph::new(help_lines(app.mode, inner_width)).wrap(Wrap { trim: false });
+            let paragraph = Paragraph::new(help_lines(app.view, app.mode, inner_width)).wrap(Wrap { trim: false });
             let count = paragraph.line_count(inner_width);
             let mut reference = Terminal::new(TestBackend::new(inner_width, u16::try_from(count).unwrap())).unwrap();
             reference.draw(|f| f.render_widget(paragraph, f.area())).unwrap();
@@ -1183,7 +1258,7 @@ mod tests {
             crate::bindings::handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &mut app);
         }
         app.handle_command(Command::ToggleHelp);
-        let lines = help_lines(app.mode, 62);
+        let lines = help_lines(app.view, app.mode, 62);
         let index = lines
             .iter()
             .position(|line| line.to_string().contains("0/1/2/4"))
@@ -1285,7 +1360,7 @@ mod tests {
             press(&mut app, code);
         }
         assert_eq!(app.mode, Mode::Normal);
-        assert_eq!(app.cursor_row, 17);
+        assert_eq!(app.cursor_row, 0);
         assert!(!app.is_dirty());
         assert!(matches!(app.playback_state, crate::state::PlaybackState::Playing));
         press(&mut app, KeyCode::Char('?'));

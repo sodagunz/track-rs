@@ -29,23 +29,53 @@ Ctrl-Space restarts from the beginning; Normal `:restart` is the fallback.
 `-`/`+` adjusts BPM (20–300), and `[`/`]` changes the track's instrument.
 Pad, Drone, and Sustain hold pitched notes; OpenHat rings longer than HiHat. Percussion ignores note pitch.
 
-### Patterns and order
+### Views
 
-Normal `F2` opens the scrolling arrangement view; `F1` returns to the pattern
-editor. The view keeps the selected order entry visible: `]` marks selection,
-`>` marks the playing Song entry. Repeated patterns have separate entries.
-Normal `F3` opens a mixer track overview with voice assignments and note counts
-for the edited pattern (not live audio meters). `F4` opens the selected track's
-built-in instrument editor. In both, `h`/`l` selects a track, `[`/`]` changes its
-voice across all patterns, and `u`/Ctrl-r undoes/redoes. Gain, pan, mute/solo and
-custom synth parameters aren't implemented. In F4, Enter auditions C in the current
+F1–F4 switch views in every mode, except while help or a prompt owns input.
+The controls below apply in each panel's Normal mode.
+
+| Key | View | Controls |
+| --- | --- | --- |
+| F1 | Pattern editor | Note editing described above |
+| F2 | Arrangement | Order controls below; scrolls with selection |
+| F3 | Channel mixer | Volume and stereo balance; controls below |
+| F4 | Built-in instruments | Same track/voice controls; Enter auditions while stopped |
+
+In F3 Normal, `h`/`l` selects a channel and `j`/`k` selects Volume or Pan.
+`i` enters adjustment mode: `h`/`l` decreases/increases the value, while `j`/`k`
+changes parameter. Arrow keys do the same. Counts work in both modes (`10l`
+adjusts ten steps in Insert). `gh`/`gl` selects first/last channel; `gj`/`gk`
+selects first/last parameter. Enter in Insert opens numeric entry; Esc cancels the
+prompt first, then returns to Normal. Normal `d`/`x` or Insert Backspace resets
+the selected cell. Normal `u`/Ctrl-r undoes/redoes without stopping playback.
+
+Volume is −60..+6 dB in 1 dB steps, plus `-inf` for silence; neutral is 0 dB.
+Pan is −100 (L100)..+100 (R100), in one-point steps. Centre preserves the existing
+stereo signal; endpoints silence the opposite side without boosting or folding
+to mono. Numeric entry rejects non-finite/out-of-range values without an edit.
+Settings are shared across patterns and affect held notes, release tails and F4
+audition, with a 10 ms gain ramp. Boosts can clip; there is no limiter. Listening
+checks are still pending, so smoothing isn't a claim of click-free output.
+
+Mixer Visual/bulk edits, grouped held-key undo, EQ, mute/solo and meters aren't
+implemented. Counted edits undo atomically; key repeats currently undo separately.
+Voice assignments in F1/F4 apply across all patterns; `u`/Ctrl-r undoes/redoes them.
+Custom synth parameters aren't implemented. In F4, Enter auditions C in the current
 entry octave for 200 ms plus release, only while playback is stopped. Holding
 Enter doesn't repeat; percussion keeps its fixed tuning. Audition doesn't edit
 notes or mark the project dirty. Starting playback cancels the preview.
 
-Panel switching doesn't stop playback or change the document. Help and `:` keep
-input priority. Hidden note edits and row motions are blocked; the mixer and
-instrument editor retain horizontal track navigation.
+Panel switching doesn't stop playback or change the document. Each view keeps
+its own cursor and mode; returning to F1 restores Insert or a Visual rectangle.
+Switching clears pending counts and `g` prefixes. Structural edits still cancel
+selections. Space starts from the preserved pattern row, not another panel's cursor.
+Help lists only the active view's commands. Mixer keys never edit hidden notes;
+F4 supports counted `h`/`l` and `gh`/`gl` track navigation.
+
+### Patterns and order
+
+In the arrangement, `]` marks selection and `>` marks the playing Song entry.
+Repeated patterns have separate entries.
 
 In Normal mode (in the pattern or arrangement view):
 
@@ -73,8 +103,12 @@ Esc cancels the prompt. `:wq` saves and quits.
 it. A failed load leaves your project alone; a successful load stops playback and
 clears undo history. The footer marks unsaved changes with `*`.
 
-The JSON format is experimental: saves use v2; v1 files load with one-row notes. Unsupported versions are rejected;
+The JSON format is experimental: saves use v3; v1/v2 files load with neutral mixer
+settings, and v1 notes receive one-row lengths. Unsupported versions are rejected;
 [format limits](src/project_file.rs) keep malformed files from allocating huge projects.
+
+The legacy `AudioEngine::play`/sequencer example path has no project track and
+intentionally bypasses the mixer. The tracker and F4 audition use `play_event`.
 
 ### Dev
 
