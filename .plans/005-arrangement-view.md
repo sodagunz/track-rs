@@ -1,5 +1,17 @@
 # Arrangement view
 
+## Current status — 2026-10-17
+
+Arrangement view implemented. Plan 009 extends F1–F4 switching to every view-local mode, not just Normal.
+
+Implementation is complete; full manual terminal/theme acceptance and listening
+remain pending. User feedback was “so far looks good”, not a full sign-off.
+Automated checkpoint results are recorded in [015](015-test-performance.md).
+The implementation notes and test counts below are historical; README and the
+binding registry describe current controls. MIDI and live recording remain deferred.
+
+## Original scope and implementation record
+
 A bounded slice of `.ideas/ui.md`: F1/F2 panel switching, not a panel framework.
 
 - Normal F2 opens a vertically scrolling song order; F1 returns to the grid.

@@ -1,5 +1,17 @@
 # Tracker controls, audio, and UI
 
+## Current status — 2026-10-17
+
+Steps 1–6 implemented. Later plans extend voices, note gates and panels.
+
+Implementation is complete; full manual terminal/theme acceptance and listening
+remain pending. User feedback was “so far looks good”, not a full sign-off.
+Automated checkpoint results are recorded in [015](015-test-performance.md).
+The implementation notes and test counts below are historical; README and the
+binding registry describe current controls. MIDI and live recording remain deferred.
+
+## Original scope and implementation record
+
 Status: Steps 1–6 implemented; full manual terminal/audio acceptance pass remains pending.
 
 ## Goal

@@ -1,5 +1,17 @@
 # Pattern length
 
+## Current status — 2026-10-17
+
+Pattern resizing implemented, including forced trimming, structural cleanup and atomic undo.
+
+Implementation is complete; full manual terminal/theme acceptance and listening
+remain pending. User feedback was “so far looks good”, not a full sign-off.
+Automated checkpoint results are recorded in [015](015-test-performance.md).
+The implementation notes and test counts below are historical; README and the
+binding registry describe current controls. MIDI and live recording remain deferred.
+
+## Original scope and implementation record
+
 Add `:resize N` / `:resize! N` in Pattern and Arrangement Normal mode.
 Resize the edited pattern across all tracks; repeated order entries still refer to
 that same pattern. Keep gate lengths unchanged, including gates crossing its end.

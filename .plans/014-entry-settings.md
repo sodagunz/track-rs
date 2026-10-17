@@ -1,5 +1,17 @@
 # Numeric entry settings
 
+## Current status — 2026-10-17
+
+Numeric entry settings implemented and covered by prompt/key, history/load and responsive presentation tests.
+
+Implementation is complete; full manual terminal/theme acceptance and listening
+remain pending. User feedback was “so far looks good”, not a full sign-off.
+Automated checkpoint results are recorded in [015](015-test-performance.md).
+The implementation notes and test counts below are historical; README and the
+binding registry describe current controls. MIDI and live recording remain deferred.
+
+## Original scope and implementation record
+
 Add F1 Pattern Normal `:step N` (0..=4096 rows) and `:length Nt` / `:length Nr`
 (1..=4096 ticks; 16 ticks per row). Require ASCII decimal integers and explicit
 lowercase length units; reject signs, fractions, extra arguments and overflow

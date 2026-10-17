@@ -1,5 +1,17 @@
 # Custom themes
 
+## Current status — 2026-10-17
+
+Custom themes and the alternating-row shading follow-up (PR #42) implemented. Both are included in this continuation.
+
+Implementation is complete; full manual terminal/theme acceptance and listening
+remain pending. User feedback was “so far looks good”, not a full sign-off.
+Automated checkpoint results are recorded in [015](015-test-performance.md).
+The implementation notes and test counts below are historical; README and the
+binding registry describe current controls. MIDI and live recording remain deferred.
+
+## Original scope and implementation record
+
 Keep terminal-palette defaults; custom RGB is explicit opt-in. Store presentation
 settings on App, outside project serialization/history. No audio changes or deps.
 

@@ -1,5 +1,17 @@
 # Tracks, sustained sounds, and playback
 
+## Current status — 2026-10-17
+
+All five phases implemented, including track creation, cursor playback, explicit note lengths, sustained presets and mode-first help.
+
+Implementation is complete; full manual terminal/theme acceptance and listening
+remain pending. User feedback was “so far looks good”, not a full sign-off.
+Automated checkpoint results are recorded in [015](015-test-performance.md).
+The implementation notes and test counts below are historical; README and the
+binding registry describe current controls. MIDI and live recording remain deferred.
+
+## Original scope and implementation record
+
 Status: Phase 1 implemented and validated on `feat/add-tracks`, based on develop
 `f0a7ea7` after the earlier stacks merged. Phase 2 implemented on
 `feat/cursor-playback`, stacked on `feat/add-tracks` (PR #17). Phase 3 implemented
