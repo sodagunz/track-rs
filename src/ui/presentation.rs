@@ -135,9 +135,14 @@ impl Presentation<'_> {
             |note| format!("{} Len:{}", pitch_label(note), length_label(note.length_ticks)),
         );
         if app.mode == Mode::Insert {
-            format!("Oct:{} Step:{}r {cell}", app.octave, app.edit_step)
+            format!(
+                "{} Oct:{} New:1r Step:{}r Cell:{cell}",
+                app.project.instrument(app.cursor_track).label(),
+                app.octave,
+                app.edit_step
+            )
         } else {
-            cell
+            format!("{} {cell}", app.project.instrument(app.cursor_track).label())
         }
     }
 
@@ -187,13 +192,19 @@ impl Presentation<'_> {
         )
     }
 
+    #[cfg(test)]
     pub(super) fn status_line(&self, width: u16) -> Line<'static> {
+        self.status_with_buffer(width, false)
+    }
+
+    pub(super) fn status_with_buffer(&self, width: u16, buffer_visible: bool) -> Line<'static> {
         let width = usize::from(width);
         let app = self.0;
-        let base = Style::default().bg(Color::Black).fg(Color::Gray);
-
-        let dirty = if app.is_dirty() { "*" } else { "" };
-        let cursor = self.cursor().replace(' ', "");
+        let base = Style::default();
+        let dirty = if app.is_dirty() && !buffer_visible { "*" } else { "" };
+        let piano = app.view == crate::state::View::Pattern && app.mode == Mode::Insert;
+        let mut mode = if piano { "INSERT WRITE".into() } else { self.mode() };
+        let mut cursor = self.cursor().replace(' ', "");
         let compact = format!(
             "{} {}",
             if app.playback_mode == PlaybackMode::Song {
@@ -207,77 +218,76 @@ impl Presentation<'_> {
                 "■"
             }
         );
-        let mut mode = self.mode();
-        let minimum = Line::from(format!("{mode} …{dirty} {cursor} {compact}")).width();
-        if minimum > width {
-            app.mode.label().clone_into(&mut mode);
+        if Line::from(format!("{mode}{dirty} {cursor} {compact}")).width() > width {
+            mode = if piano { "I:W".into() } else { app.mode.label().into() };
         }
-        if Line::from(format!("{mode} …{dirty} {cursor} {compact}")).width() > width {
-            app.mode.label()[..1].clone_into(&mut mode);
-        }
-        let mut right = compact;
-        let context = self.context();
-        let help = format!("{} Help", super::command_keys(crate::command::Command::ToggleHelp));
-        let fixed = Line::from(format!("{mode} [unsaved]{dirty} {cursor} ")).width()
-            + if width >= 60 {
-                Line::from(context.as_str()).width() + 3
+        if Line::from(format!("{mode}{dirty} {cursor} {compact}")).width() > width {
+            mode = if piano {
+                "I:W".into()
             } else {
-                Line::from(help.as_str()).width() + 3
+                app.mode.label()[..1].into()
             };
+            if app.view == crate::state::View::Pattern {
+                cursor = format!("R{}T{}", app.cursor_row, track_number(app.cursor_track));
+            }
+        }
+        let mut right = if width < 24 { compact.replace(' ', "") } else { compact };
+        let mut spans = vec![
+            Span::styled(format!("{mode}{dirty}"), self.mode_style()),
+            Span::raw(format!(" {cursor}")),
+        ];
+        let fields = if piano {
+            vec![
+                app.project.instrument(app.cursor_track).label().to_owned(),
+                format!("Oct:{}", app.octave),
+                format!("New:1r Step:{}r", app.edit_step),
+            ]
+        } else {
+            vec![self.context()]
+        };
+        // Editor context owns only the space it needs; transport gets everything left.
+        for field in fields {
+            let used = Line::from(spans.clone()).width() + Line::from(right.as_str()).width();
+            if used + Line::from(field.as_str()).width() + 4 <= width {
+                spans.push(Span::raw(format!(" | {field}")));
+            }
+        }
+        let used = Line::from(spans.clone()).width() + 1;
         let positioned = format!(
-            "{} O{} P{} R{}",
-            right,
+            "{right} O{} P{} R{}",
             app.playing_order,
             app.playing_pattern,
             row_label(app.playback_row)
         );
-        let minimum = Line::from(format!("{mode} …{dirty} {cursor} ")).width();
-        for (candidate, reserved, enabled) in [
-            (self.transport(), fixed, true),
-            (
-                positioned,
-                minimum,
-                matches!(app.playback_state, PlaybackState::Playing),
-            ),
-        ] {
-            if enabled && reserved + Line::from(candidate.as_str()).width() <= width {
+        for candidate in [self.transport(), positioned] {
+            if used + Line::from(candidate.as_str()).width() <= width {
                 right = candidate;
                 break;
             }
         }
-        let name_budget = width.saturating_sub(Line::from(format!("{mode} {dirty} {cursor} {right}")).width());
-        let name = elide(&self.basename(), name_budget.min(18));
-        let mut spans = vec![
-            Span::styled(mode, self.mode_style()),
-            Span::raw(" "),
-            Span::styled(
-                format!("{name}{dirty}"),
-                base.fg(Color::White).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" "),
-            Span::styled(cursor, base.fg(Color::White)),
-        ];
-
-        // Spend spare columns on whole fields; essentials never depend on context size.
-        let bpm = format!("BPM: {:.1}", app.project.bpm);
-        let mut fields = [(context, false, 4), (help, true, 4), (bpm, true, 14)];
-        if width < 60 {
-            fields.swap(0, 1);
-        }
-        for (field, on_right, reserve) in fields {
-            let used = Line::from(spans.clone()).width() + Line::from(right.as_str()).width();
-            if used + Line::from(field.as_str()).width() + reserve <= width {
-                if on_right {
-                    right = format!("{field} | {right}");
-                } else {
-                    spans.push(Span::styled(format!(" | {field}"), base));
+        if piano {
+            let context = self.context();
+            if let Some((_, cell)) = context.split_once(" Cell:") {
+                let field = format!(" | Cell:{cell}");
+                if used + Line::from(right.as_str()).width() + Line::from(field.as_str()).width() <= width {
+                    spans.push(Span::raw(field));
                 }
+            }
+        }
+        for field in ["? Help".to_owned(), format!("BPM: {:.1}", app.project.bpm)] {
+            if Line::from(spans.clone()).width() + Line::from(right.as_str()).width() + field.len() + 4 <= width {
+                spans.push(Span::raw(format!(" | {field}")));
             }
         }
         let gap = width.saturating_sub(Line::from(spans.clone()).width() + Line::from(right.as_str()).width());
         spans.extend(self.transport_bar(gap, base));
-        spans.push(Span::styled(right, base.fg(Color::White)));
-        Line::from(spans).style(base)
+        spans.push(Span::styled(right, base.add_modifier(Modifier::BOLD)));
+        let line = Line::from(spans).style(base);
+        if line.width() > width {
+            Line::from(elide(&line.to_string(), width))
+        } else {
+            line
+        }
     }
 
     fn transport_bar(&self, width: usize, base: Style) -> Vec<Span<'static>> {
@@ -326,14 +336,6 @@ impl Presentation<'_> {
             .fg(foreground)
             .bg(background)
             .add_modifier(Modifier::BOLD)
-    }
-
-    fn basename(&self) -> String {
-        self.0
-            .path
-            .as_ref()
-            .and_then(|path| path.file_name())
-            .map_or_else(|| "[unsaved]".to_owned(), |name| name.to_string_lossy().into_owned())
     }
 
     pub(super) fn buffer_line(&self, width: u16) -> Line<'static> {
@@ -668,14 +670,17 @@ mod tests {
     #[test]
     fn contexts_follow_actual_notes_not_entry_octave_after_transpose() {
         let mut app = App::default();
-        assert_eq!(Presentation(&app).context(), "Empty");
+        assert_eq!(Presentation(&app).context(), "Pluck Empty");
         app.insert_note_under_cursor(Some(note(1)));
         app.handle_command(Command::RaiseNote);
         assert_eq!(app.octave, 4);
-        assert_eq!(Presentation(&app).context(), "C#4 Len:1t/0.0625r");
+        assert_eq!(Presentation(&app).context(), "Pluck C#4 Len:1t/0.0625r");
         app.octave = 7;
         app.handle_command(Command::EnterInsert);
-        assert_eq!(Presentation(&app).context(), "Oct:7 Step:0r C#4 Len:1t/0.0625r");
+        assert_eq!(
+            Presentation(&app).context(),
+            "Pluck Oct:7 New:1r Step:0r Cell:C#4 Len:1t/0.0625r"
+        );
         app.mode = Mode::Normal;
         assert!(!Presentation(&app).context().contains("Oct"));
         assert!(!Presentation(&app).context().contains("Step"));
@@ -730,6 +735,33 @@ mod tests {
     }
 
     #[test]
+    fn write_context_has_one_owner_and_narrow_essential_cues() {
+        let mut app = App::default();
+        app.handle_command(Command::IncreaseTempo);
+        app.handle_command(Command::EnterInsert);
+        app.path = Some("界👩‍💻 long project.json".into());
+        for width in [0, 12, 24, 40, 80, 120] {
+            for buffer_visible in [false, true] {
+                let line = Presentation(&app).status_with_buffer(width, buffer_visible);
+                assert!(line.width() <= usize::from(width));
+                let text = line.to_string();
+                assert!(!text.contains("project.json"));
+                if width >= 12 {
+                    assert!(text.contains("WRITE") || text.contains("I:W"), "{text}");
+                    assert!(text.contains("T1"));
+                    assert_eq!(text.contains('*'), !buffer_visible);
+                }
+                if width >= 80 {
+                    assert_eq!(text.matches("New:1r").count(), 1);
+                    assert_eq!(text.matches("Step:0r").count(), 1);
+                    assert!(text.contains("Pluck"));
+                    assert!(text.contains("Oct:4"));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn status_prioritizes_dirty_cursor_and_right_aligned_transport() {
         let mut app = App::default();
         app.handle_command(Command::IncreaseTempo);
@@ -744,11 +776,11 @@ mod tests {
                 let line = Presentation(&app).status_line(width);
                 let text = line.to_string();
                 assert_eq!(line.width(), usize::from(width));
-                assert!(text.starts_with(mode.label()));
+                assert!(text.starts_with(mode.label()) || (mode == Mode::Insert && text.starts_with("I:W")));
                 assert!(text.contains('*'));
                 assert!(text.contains("T1"));
-                if width == 24 {
-                    assert!(text.ends_with("S >"));
+                if width <= 40 {
+                    assert!(text.ends_with("S >") || text.ends_with("O3 P7 R19"));
                 } else {
                     assert!(text.ends_with("O3 P7 R19"), "{width}: {text}");
                 }
