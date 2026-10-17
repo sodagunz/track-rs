@@ -13,6 +13,7 @@ mod history_tests;
 #[cfg(test)]
 mod playback_tests;
 pub mod state;
+pub mod theme;
 #[cfg(test)]
 mod track_tests;
 pub mod tracker;
