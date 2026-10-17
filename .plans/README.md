@@ -27,7 +27,7 @@ planning update.
 | 3 | [017 — Quantized live recording](017-quantized-live-recording.md) | One pinned Pattern track, musical-grid quantization, fixed gate, undo per pass |
 | 4 | [018 — MIDI input](018-midi-input.md) | Optional device preview, then step/live input through the same recording decisions |
 
-019's core implementation gate is complete (239-test integration checkpoint;
+019's core implementation gate is complete (240-test integration/UI checkpoint;
 manual listening remains pending), so 016 may proceed. Delivered: sparse 960-PPQ events and
 v4 migration, stable runtime IDs, tick-based history/clipboard, anchored tick
 scheduling, non-4/4 meter and mixed per-bar grids. Exact gate/end controls admit

@@ -373,28 +373,33 @@ impl Presentation<'_> {
             return vec![Span::raw(" ".repeat(width))];
         }
         let app = self.0;
-        let rows = |index: usize| {
+        let ticks = |index: usize| {
             app.project
                 .patterns
                 .get(index)
-                .map_or(0, crate::tracker::Pattern::num_rows)
+                .map_or(0, |pattern| pattern.length_ticks().0)
         };
+        let local = app.playback_tick.0.min(ticks(app.playing_pattern).saturating_sub(1));
         let (position, total) = match app.playback_mode {
-            PlaybackMode::Pattern => (app.playback_row, rows(app.playing_pattern)),
+            PlaybackMode::Pattern => (local, ticks(app.playing_pattern)),
             PlaybackMode::Song => {
-                let before: usize = app
+                let before: u64 = app
                     .project
                     .order
                     .iter()
                     .take(app.playing_order)
-                    .map(|&index| rows(index))
+                    .map(|&index| ticks(index))
                     .sum();
-                let total = app.project.order.iter().map(|&index| rows(index)).sum();
-                (before.saturating_add(app.playback_row), total)
+                let total = app.project.order.iter().map(|&index| ticks(index)).sum();
+                (before.saturating_add(local), total)
             }
         };
         let cells = width - 2;
-        let head = position.min(total.saturating_sub(1)) * (cells - 1) / total.saturating_sub(1).max(1);
+        let head = usize::try_from(
+            u128::from(position.min(total.saturating_sub(1))) * (cells - 1) as u128
+                / u128::from(total.saturating_sub(1).max(1)),
+        )
+        .unwrap_or(cells - 1);
         let cue = if matches!(app.playback_state, PlaybackState::Playing) {
             "▶"
         } else {
@@ -677,6 +682,33 @@ mod tests {
     }
 
     #[test]
+    fn transport_progress_and_highlight_follow_ticks_not_grid_density() {
+        let mut app = App::default();
+        app.execute_prompt("end 5761t");
+        app.playback_state = PlaybackState::Playing;
+        app.playback_tick = crate::musical_time::Tick(2880);
+        app.playback_row = 12;
+        let before = Line::from(Presentation(&app).transport_bar(41, Style::default())).to_string();
+        app.execute_prompt("grid 64");
+        assert_eq!(app.playback_row, 192);
+        assert_eq!(
+            Line::from(Presentation(&app).transport_bar(41, Style::default())).to_string(),
+            before
+        );
+        assert!(matches!(app.playback_state, PlaybackState::Playing));
+        app.project.order = vec![0, 0, 0];
+        app.playback_mode = PlaybackMode::Song;
+        app.playing_order = 1;
+        let before = Line::from(Presentation(&app).transport_bar(41, Style::default())).to_string();
+        app.execute_prompt("grid 3");
+        assert_eq!(app.playback_row, 9);
+        assert_eq!(
+            Line::from(Presentation(&app).transport_bar(41, Style::default())).to_string(),
+            before
+        );
+    }
+
+    #[test]
     fn transport_bar_scales_pattern_and_song_positions() {
         let mut app = App::default();
         app.project.patterns[0].resize_rows(4);
@@ -687,15 +719,18 @@ mod tests {
         let bar = |app: &App, width| Line::from(Presentation(app).transport_bar(width, Style::default())).to_string();
         assert_eq!(bar(&app, 9), " ▶────── ");
         app.playback_row = 3;
+        app.playback_tick = crate::musical_time::Tick(959);
         assert_eq!(bar(&app, 9), " ┃┃┃┃┃┃▶ ");
         app.playback_mode = PlaybackMode::Song;
         app.playing_order = 1;
         app.playing_pattern = 1;
         app.playback_row = 4;
+        app.playback_tick = crate::musical_time::Tick(960);
         assert_eq!(bar(&app, 9), " ┃┃┃▶─── ");
         app.playing_order = 2;
         app.playing_pattern = 0;
         app.playback_row = 3;
+        app.playback_tick = crate::musical_time::Tick(959);
         assert_eq!(bar(&app, 9), " ┃┃┃┃┃┃▶ ");
         app.playback_state = PlaybackState::Stopped;
         assert_eq!(bar(&app, 9), " ┃┃┃┃┃┃Ⅱ ");
@@ -723,6 +758,7 @@ mod tests {
             }
         }
         app.playback_row = app.project.patterns[0].num_rows() - 1;
+        app.playback_tick = crate::musical_time::Tick(app.project.patterns[0].length_ticks().0 - 1);
         let bar = Line::from(Presentation(&app).transport_bar(100, Style::default()));
         assert_eq!(bar.to_string(), format!(" {}Ⅱ ", "┃".repeat(97)));
     }

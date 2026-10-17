@@ -97,6 +97,8 @@ pub struct App {
     pub cursor_track: usize,
     /// UI mirror of the transport row; the runtime transport owns advancement.
     pub playback_row: usize,
+    /// Exact local tick of the last transport boundary, independent of view density.
+    pub playback_tick: Tick,
     pub(crate) playback_start_tick: Option<Tick>,
     pub playback_state: PlaybackState,
     pub octave: u8,
@@ -169,6 +171,7 @@ impl Default for App {
             cursor_track: 0,
             octave: 4,
             playback_row: 0,
+            playback_tick: Tick(0),
             playback_start_tick: None,
             playback_state: PlaybackState::Stopped,
             shutdown: false,
@@ -282,6 +285,7 @@ impl App {
                 self.mode = Mode::Normal;
                 self.playback_state = PlaybackState::Stopped;
                 self.playback_row = 0;
+                self.playback_tick = Tick(0);
                 self.stop_requested = true;
                 self.status = format!("Loaded {}", self.path.as_ref().unwrap().display());
             }
@@ -460,6 +464,9 @@ impl App {
         if self.project.patterns[index].grid() != &grid {
             self.edit(|edit| edit.set_grid(index, grid));
             self.remap_cursor(tick);
+            if index == self.playing_pattern {
+                self.playback_row = self.project.patterns[index].row_at(self.playback_tick);
+            }
         }
         self.status = format!("{}; starts, gates and end unchanged", self.grid_context());
         Ok(())
@@ -1385,6 +1392,7 @@ impl App {
         } else {
             pattern.row_tick(self.playback_row).unwrap_or(Tick(0))
         });
+        self.playback_tick = self.playback_start_tick.unwrap_or(Tick(0));
         self.playback_state = PlaybackState::Playing;
     }
 

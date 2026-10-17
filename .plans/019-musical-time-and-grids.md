@@ -170,7 +170,8 @@ Expose immutable run generation, absolute unwrapped tick/cycle, tempo segments a
 
 - Audited the delivered controls against storage, editing, meter/grid, scheduling and resource-limit requirements. No remaining core implementation blocker for 016: general tick starts/gates/ends, mixed-grid projection, protected hidden events, explicit collision rejection, compatible migration, stable runtime identity and event budgets are implemented. No arbitrary tuplets or continuous Song meter map are promised.
 - Added an end-to-end device-free regression combining 3/4 triplets and 256ths, an untouched off-grid event, explicit quantization, exact clipboard translation/clipping, 7/8 destination, file reload and repeated Song occurrences with 5761/3361-tick partial lengths. It compares exact onset deadlines and one-tick/long gates before and after grid changes; no row/bar padding or gate retiming.
-- Full locked all-target nextest: 239 passed; strict Clippy, formatting, doctests (zero cases), warning-free docs and whitespace checks passed. Physical click/note alignment, device latency and listening remain unchecked. Count-in/capture/MIDI acceptance below belongs to 016–018, not this completed core gate. 016 may now proceed; 020 remains reserved.
+- The UI audit found legacy row-count accounting in the transport progress bar. Progress now follows an exact transport tick mirror, and changing the playing pattern's grid remaps its row highlight immediately without retiming. A density-invariance regression covers Pattern and repeated Song routes.
+- Full locked all-target nextest: 240 passed; strict Clippy, formatting, doctests (zero cases), warning-free docs and whitespace checks passed. Physical click/note alignment, device latency and listening remain unchecked. Count-in/capture/MIDI acceptance below belongs to 016–018, not this completed core gate. 016 may now proceed; 020 remains reserved.
 
 ## Acceptance
 
