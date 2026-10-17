@@ -27,12 +27,12 @@ planning update.
 | 3 | [017 — Quantized live recording](017-quantized-live-recording.md) | One pinned Pattern track, musical-grid quantization, fixed gate, undo per pass |
 | 4 | [018 — MIDI input](018-midi-input.md) | Optional device preview, then step/live input through the same recording decisions |
 
-These are proposed contracts, not implemented commands. Implement in small
+019's device-free timing/projection foundation is in progress; storage, playback and UI integration remain. These are proposed contracts, not implemented commands. Implement in small
 reviewable slices; 019's timing/storage foundation precedes full metronome and recording integration. Preview-only MIDI work can proceed independently. 016/017 share the first armed-recording integration checkpoint.
 Audition always means no note writes. Stopped Insert still step-edits; playing
 Insert previews when unarmed and live-records only when armed and eligible.
 
-Musical-time scope is resolved in favor of 019's proposed sparse event timeline and fixed 960 PPQ, separating meter, pattern length, grid, edit step and duration. Per-bar grid changes must not retime music. Pattern-local meter first; arbitrary tuplets and continuous song meter automation remain deferred. These design choices need approval before implementation, not an implemented-status label.
+Musical-time scope is resolved in favor of 019's proposed sparse event timeline and fixed 960 PPQ, separating meter, pattern length, grid, edit step and duration. Per-bar grid changes must not retime music. Pattern-local meter first; arbitrary tuplets and continuous song meter automation remain deferred. The user approved starting implementation in this order. Approval is not an implemented-status label.
 
 ## Planned separately / exploratory drafts
 

@@ -1,6 +1,6 @@
 # 019 — Musical time, meter and local grids
 
-Status: planned, 2026-10-17. Recommended foundation before [016](016-metronome-and-record-arming.md), [017](017-quantized-live-recording.md) and recording integration in [018](018-midi-input.md). No implementation or new dependency in this planning change. [Primary-source research](../.ideas/musical-time.md).
+Status: in progress, 2026-10-17. Implementation order and recommended design approved by “Let's start implementing in order.” Foundation before [016](016-metronome-and-record-arming.md), [017](017-quantized-live-recording.md) and recording integration in [018](018-midi-input.md). First device-free foundation slice implemented; no new dependency. Persistence, editing and playback still use the legacy timeline. [Primary-source research](../.ideas/musical-time.md).
 
 ## Outcome and vocabulary
 
@@ -70,6 +70,15 @@ Expose immutable run generation, absolute unwrapped tick/cycle, tempo segments a
 3. Tick scheduler and Song traversal; offline density/latency tests and cancellation regressions. Do not release a format capable of events the player silently skips.
 4. Non-4/4 pattern meter, per-bar grids, off-grid navigation and explicit snapping UI. Deliver mixed grids before calling 019 complete.
 5. Integrate 016/017 and then 018. Preview-only MIDI adapter work may proceed independently; recording waits for this shared timing seam.
+
+## Implementation checkpoint
+
+- Added `src/musical_time.rs`: checked tick arithmetic, validated 1–61440-tick durations, exact legacy row/gate conversions, bounded meter and subdivision presets.
+- Added pattern-local bar overrides, surrounding grid points and ties-forward snapping, including partial bars and explicit pattern-end boundaries. End is a navigation boundary, never an admissible note start.
+- Added a device-free bucket projection prototype: multiple exact positions remain separate under coarse views. It scans supplied events; this is not yet a production viewport index or editor integration.
+- Deterministic fixtures cover legacy gate values, mixed-grid projection, invalid input, overflow and grid-neighbor invariants. Full v1/v2/v3 project migration fixtures remain part of the persistence slice.
+- Validation: all-target locked nextest passed (195 tests, zero skipped); strict all-target/all-feature Clippy, formatting, doctests (zero cases) and whitespace checks passed. No hardware/listening check ran for this device-free slice.
+- No file version, note storage, command, playback behavior or New length unit changed. Slice 1 is underway; canonical event storage/persistence/history/clipboard compatibility comes next, before metronome or recording work. Mixed-grid UI and tick scheduling are not delivered yet.
 
 ## Acceptance
 
