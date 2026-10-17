@@ -267,7 +267,7 @@ impl Presentation<'_> {
                 (before.saturating_add(app.playback_row), total)
             }
         };
-        let cells = (width - 2).min(30);
+        let cells = width - 2;
         let head = position.min(total.saturating_sub(1)) * (cells - 1) / total.saturating_sub(1).max(1);
         let cue = if matches!(app.playback_state, PlaybackState::Playing) {
             "▶"
@@ -597,6 +597,24 @@ mod tests {
         }
         app.project.order.clear();
         assert_eq!(bar(&app, 9), " Ⅱ────── ");
+    }
+
+    #[test]
+    fn wide_transport_fills_remaining_status_width() {
+        let mut app = App::default();
+        for width in [40, 80, 160, 240] {
+            let bar = Line::from(Presentation(&app).transport_bar(width, Style::default()));
+            assert_eq!(bar.width(), width);
+            assert_eq!(bar.to_string(), format!(" Ⅱ{} ", "─".repeat(width - 3)));
+            let status = Presentation(&app).status_line(u16::try_from(width).unwrap());
+            assert_eq!(status.width(), width);
+            if width >= 160 {
+                assert!(status.to_string().contains(&"─".repeat(31)));
+            }
+        }
+        app.playback_row = app.project.patterns[0].num_rows - 1;
+        let bar = Line::from(Presentation(&app).transport_bar(100, Style::default()));
+        assert_eq!(bar.to_string(), format!(" {}Ⅱ ", "┃".repeat(97)));
     }
 
     #[test]
