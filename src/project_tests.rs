@@ -77,7 +77,7 @@ fn version_one_fixture_and_multi_pattern_round_trip_preserve_shared_voices() {
     assert_eq!(project.bpm, 137.5);
     assert_eq!(project.order, [0, 0, 1]);
     assert_eq!(project.patterns.len(), 2);
-    assert_eq!(project.patterns[1].num_rows, 3);
+    assert_eq!(project.patterns[1].num_rows(), 3);
     assert_eq!(project.instrument(2), Instrument::Sine);
     assert_eq!(project.patterns[0].get_step(2, 0).unwrap().note.unwrap().octave, 9);
     let directory = tempfile::tempdir().unwrap();
@@ -585,7 +585,7 @@ fn legacy_versions_upgrade_to_exact_tick_events() {
         assert_eq!(stored["version"], 4);
         assert_eq!(stored["ppq"], 960);
         for (pattern, encoded) in project.patterns.iter().zip(stored["patterns"].as_array().unwrap()) {
-            assert_eq!(encoded["end_tick"], pattern.num_rows * 240);
+            assert_eq!(encoded["end_tick"], pattern.num_rows() * 240);
             assert_eq!(encoded["meter"], json!([4, 4]));
             for (track, events) in pattern.tracks.iter().zip(encoded["tracks"].as_array().unwrap()) {
                 let expected: Vec<Value> = track
