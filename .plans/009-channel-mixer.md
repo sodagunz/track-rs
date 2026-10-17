@@ -4,11 +4,12 @@
 
 All four slices implemented: volume/pan, shelves and filters, Visual bulk edits/grouped undo, stereo peak meters and master clip. Meters are no longer deferred. Mute/solo follows in 011.
 
-Implementation is complete; full manual terminal/theme acceptance and listening
-remain pending. User feedback was “so far looks good”, not a full sign-off.
-Automated checkpoint results are recorded in [015](015-test-performance.md).
-The implementation notes and test counts below are historical; README and the
-binding registry describe current controls. MIDI and live recording remain deferred.
+Implementation is complete and merged. The user provisionally accepts the current
+build’s general manual UI/audio gate for now (2026-10-17); the UI still feels
+clunky. This does not certify every specialized historical check below.
+See the [canonical backlog](README.md) for acceptance scope and next priorities,
+and [015](015-test-performance.md) for the automated checkpoint. Original scope,
+pending checks and test counts below are historical, not current blockers.
 
 ## Original scope and implementation record
 

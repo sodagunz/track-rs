@@ -36,4 +36,5 @@ mod mixer_tests;
 mod resize_tests;
 
 pub mod meter;
+pub mod musical_time;
 mod tone;
