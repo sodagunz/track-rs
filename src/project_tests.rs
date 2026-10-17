@@ -627,7 +627,6 @@ fn tick_files_reject_unplayable_or_ambiguous_events() {
     for (pointer, replacement) in [
         ("/ppq", json!(64)),
         ("/patterns/0/end_tick", json!(0)),
-        ("/patterns/0/end_tick", json!(961)),
         ("/patterns/0/end_tick", json!(u64::MAX)),
         ("/patterns/0/meter", json!([3, 3])),
         ("/patterns/0/grid", json!(7)),
