@@ -1,6 +1,6 @@
 # 019 — Musical time, meter and local grids
 
-Status: in progress, 2026-10-17. Implementation order and recommended design approved by “Let's start implementing in order.” Foundation before [016](016-metronome-and-record-arming.md), [017](017-quantized-live-recording.md) and recording integration in [018](018-midi-input.md). Device-free foundation and v4 tick-event persistence adapter implemented; no new dependency. Runtime notes use sparse tick events; editing, history, clipboard and playback still use legacy row compatibility interfaces. [Primary-source research](../.ideas/musical-time.md).
+Status: in progress, 2026-10-17. Implementation order and recommended design approved by “Let's start implementing in order.” Foundation before [016](016-metronome-and-record-arming.md), [017](017-quantized-live-recording.md) and recording integration in [018](018-midi-input.md). Device-free foundation and v4 tick-event persistence adapter implemented; no new dependency. Runtime notes, history patches and clipboard snapshots use tick events/ranges; UI entry and playback still use the straight-row compatibility interfaces. [Primary-source research](../.ideas/musical-time.md).
 
 ## Outcome and vocabulary
 
@@ -95,6 +95,14 @@ Expose immutable run generation, absolute unwrapped tick/cycle, tempo segments a
 - Track append, duplication, resize and structural history snapshots use sparse storage. Shrinking examines event starts, not gates; long gates and undo restoration keep their previous behavior. Conservative row/cell allocation and history budgets remain until the exact-event editing migration.
 - Added dense-reference operation checks, empty-pattern storage/projection checks and start-only truncation tests. Full locked all-target nextest: 201 passed, zero skipped; strict Clippy, formatting, doctests and whitespace checks passed. No hardware/listening check ran.
 - Still outstanding: tick-addressed history/clipboard, stable event identity, explicit tick-based runtime pattern length, event budgets, tick scheduler and mixed-grid editor. This checkpoint replaces the runtime-storage limitation above, not the remaining 019 acceptance criteria.
+
+### Tick history and clipboard checkpoint
+
+- History value patches now store exact `PatternEvent` before/after values keyed by tick position. The row edit interface translates once into the event interface; mixed writes coalesce without losing no-op, redo or revision behavior. Structural history barriers and conservative bounded retention remain unchanged.
+- Clipboard snapshots own relative tick events plus an explicit tick span and track extent. Empty space remains part of paste without allocating empty cells. Cut/clear traverse starts in a half-open tick interval; paste preflights translated events, clips starts at the destination end and leaves gate durations untouched. Overlapping paste uses an owned snapshot and remains one transaction.
+- Runtime event replacement validates bounds, exact-position consistency and the current legacy timing contract before mutation. Unsupported sub-row starts/gates are still rejected; no new music becomes loadable before scheduling/editor support. No implicit quantization was added.
+- Added exact-event history/no-op/redo checks, half-open deletion and sparse clipboard extent/translation/clipping/atomicity tests. Full locked all-target nextest: 206 passed, zero skipped; strict all-target/all-feature Clippy, formatting, doctests and whitespace checks passed. No hardware/listening check ran.
+- Still outstanding: stable event IDs, explicit tick-based runtime pattern length, event budgets, general duration entry, tick scheduler, local meter/grid persistence and projected editing. Clipboard/history no longer store projected row addresses, but this is not completion of slice 2 or 019.
 
 ## Acceptance
 
