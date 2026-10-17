@@ -1,6 +1,6 @@
 # 017 — Quantized live recording
 
-Status: planned, 2026-10-17. Depends on [019](019-musical-time-and-grids.md)'s event timeline and [016](016-metronome-and-record-arming.md); shares its input contract with [018](018-midi-input.md). Proposed behavior, not current controls.
+Status: first Pattern terminal-capture slice implemented, 2026-10-17. Uses [019](019-musical-time-and-grids.md)'s event timeline and [016](016-metronome-and-record-arming.md)'s armed count-in. MIDI remains planned in [018](018-midi-input.md); manual play-along/listening acceptance remains pending.
 
 ## Modes and eligibility
 
@@ -25,7 +25,7 @@ First slice records **Pattern playback only**, onto one pinned track in the play
 - Quantize on an unwrapped tick timeline, then map into the pinned pattern; a hit near the final boundary can belong to tick zero of the next loop. Never clamp that hit to the last displayed row. Reject timestamps before this run/count-in completion, from an old generation, or older than the snapshot's previous admitted musical boundary at ingestion; report dropped/late input rather than silently placing it elsewhere. Process admitted events in timestamp order, with arrival order breaking ties.
 - Last admitted event wins when multiple notes address the same track and exact start tick; different starts in one projected row survive. Replace pitch **and gate** using the current New length (019's migrated units and limits); unlike step entry, live replacement doesn't preserve an old gate. Empty/nonempty cells follow the same rule. Unchanged cells are history no-ops.
 - Terminal recording uses fixed New length, not held-key duration: release events are unreliable. Preserve Press-only note filtering and reject reported Repeat/Release. Legacy terminals may still retrigger held keys; document that limit.
-- Preview immediately through the existing separate bounded preview voices. Never trigger both a new song voice and a preview for the same input. The stored event plays on the next eligible scheduler visit; already-dispatched events aren't retroactively replayed. This is quantized storage, not sample-accurate monitoring or lookahead playback.
+- Preview immediately through the existing separate bounded preview voices. Never trigger both a new song voice and a preview for the same input. A newly monitored future occurrence is suppressed once (also when snapped into the next loop); the following occurrence plays normally. Already-dispatched events aren't retroactively replayed. This is quantized storage, not sample-accurate monitoring or lookahead playback.
 
 ## History and lifecycle
 
@@ -40,6 +40,17 @@ Stop leaves arming on; load disarms as specified in 016. Ordinary navigation doe
 3. Integrate terminal input, history, status and commands with 016. Add MIDI as the second adapter in 018; don't build a generic plugin framework first.
 
 Touch `src/transport.rs`, `src/state.rs`, `src/history.rs`, `src/main.rs`, input bindings and presentation. 019 first migrates row-addressed storage, history/clipboard and project files to exact event positions and new duration units. Reuse that migration; recording needs no velocity field or additional schema change.
+
+## Implementation checkpoint
+
+- Added `src/recording.rs` for eligibility, pinned targets, quantized write/preview decisions, deferred local-grid activation, monitored-occurrence suppression and pass closure. Terminal listener events carry receipt `Instant`s; the runtime advances transport before admitting each key. Clock snapshots include previous/next unwrapped scheduled ticks and the immutable tempo segment/generation. No cursor-derived or independently recomputed BPM clock is used for capture.
+- Enabled `:record` and `:countin` with genuine eligible REC status. Stopped Insert retains step entry; playing unarmed Insert previews only. Count-in/Audition never write. Normal counts/motions, other views, help and prompts don't become musical input. Starting/arming pins the playing Pattern and selected track; changing the edit cursor doesn't retarget it. Eligibility loss closes a take; returning resumes on the same valid target.
+- Nearest local-grid placement uses ties forward, including exact partial-end wrapping to next-loop zero. Last admitted same-lane/exact-tick hit replaces pitch and fixed New gate; unrelated off-grid events and IDs are retained. Stale/pre-run/out-of-order receipts are rejected with feedback. Capacity rejection preserves document/history and still previews.
+- Preview is immediate on the pinned track. The newly monitored future scheduler occurrence is suppressed once, including a snap into the next loop, so it isn't also triggered as a song voice; its next occurrence plays normally. This explicitly chooses monitoring without a doubled quantized echo, not sample-accurate monitoring.
+- Value-diff history joins only adjacent recording writes on the pinned lane within the same input pass. Wrap, stop/restart, disarm, eligibility loss, save and unrelated edits close the take. Dirty state updates with writes; unchanged and net-no-op takes don't add history. Undo/redo while armed and playing stops first. Existing retention limits apply.
+- Deterministic key/clock tests cover count-in, fixed gates/replacement, collisions, off-grid preservation, stale/order rejection, tempo segments, pinned targets, suspension/resumption, budgets, retention, save/dirty state, per-pass undo/redo and narrow UI. Existing offline audio/mixer isolation tests remain part of the full checkpoint.
+- Validation: locked all-target nextest 284 passed (263 baseline plus 20 recording tests and narrow status coverage); strict all-target Clippy, formatting, warning-free docs, doctests (zero cases), whitespace checks and ALSA-null `just_a_note` passed. Null output checks stream setup, not physical timing or listening.
+- Deliberate limits: one Pattern track, fixed terminal gate and receipt timestamps. Song capture, MIDI, held durations, velocity/chord allocation, swing, latency compensation and hardware alignment remain outside this slice. No new dependency or project schema.
 
 ## Acceptance
 

@@ -126,6 +126,8 @@ pub enum MetronomeEvent {
 pub struct ClockSnapshot {
     generation: u64,
     segment: clock::TickClock,
+    previous: u64,
+    next: u64,
 }
 
 impl ClockSnapshot {
@@ -139,6 +141,16 @@ impl ClockSnapshot {
         (self.segment.time, self.segment.tick)
     }
 
+    #[must_use]
+    pub const fn previous_tick(self) -> u64 {
+        self.previous
+    }
+
+    #[must_use]
+    pub const fn next_tick(self) -> u64 {
+        self.next
+    }
+
     /// Map a timestamp through this segment, never the current UI tempo or cursor.
     #[must_use]
     pub fn tick_at(self, time: Instant) -> Option<u64> {
@@ -147,10 +159,14 @@ impl ClockSnapshot {
 }
 
 /// Clock phase, independent of record arming and editor mode.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TransportPhase {
+    #[default]
     Stopped,
-    Counting { beat: u64, total: u64 },
+    Counting {
+        beat: u64,
+        total: u64,
+    },
     Playing,
 }
 
@@ -162,6 +178,7 @@ pub struct Transport {
     start_offset: usize,
     tick_start: u64,
     next_tick: u64,
+    previous_tick: u64,
     clock: Option<clock::TickClock>,
     generation: u64,
     metronome: click::Metronome,
@@ -188,6 +205,18 @@ impl Transport {
         } else {
             PlaybackRoute::Pattern(app.playing_pattern)
         };
+        if playing
+            && self.clock.is_none()
+            && self.count_in.is_none()
+            && app.recording.armed
+            && app.recording.count_in
+            && matches!(route, PlaybackRoute::Pattern(_))
+        {
+            self.start_count_in(now, &app.project, app.playing_pattern, app.playback_row);
+            if let Some(tick) = app.playback_start_tick {
+                self.tick_start = tick.0;
+            }
+        }
         self.start_at(&app.project, route, app.playing_order, app.playback_row);
         if self.deadline.is_none() && self.count_in.is_none() {
             if let Some(start) = app.playback_start_tick {
@@ -213,11 +242,11 @@ impl Transport {
             app.playback_row = app.project.patterns[event.pattern].row_at(event.tick);
             app.playing_pattern = event.pattern;
             app.playing_order = event.order.unwrap_or(0);
-            notes.extend(collect_tick(
-                &app.project.patterns[event.pattern],
-                app.project.instruments(),
-                event,
-            ));
+            notes.extend(
+                collect_tick(&app.project.patterns[event.pattern], app.project.instruments(), event)
+                    .into_iter()
+                    .filter(|note| app.recording.audible(note.track, event.tick, event.absolute_tick)),
+            );
             if self.deadline.is_none_or(|deadline| deadline > now) {
                 break;
             }
@@ -231,6 +260,7 @@ impl Transport {
                 self.route.unwrap_or(route),
             );
         }
+        app.sync_recording(self.phase(), self.clock_snapshot(), now);
         notes
     }
 
@@ -330,6 +360,7 @@ impl Transport {
             self.stop();
             return None;
         };
+        self.previous_tick = absolute;
         self.next_tick = next;
         self.deadline = Some(deadline);
         Some(PlaybackEvent {
@@ -449,6 +480,8 @@ impl Transport {
         Some(ClockSnapshot {
             generation: self.generation,
             segment: self.clock?,
+            previous: self.previous_tick,
+            next: self.next_tick,
         })
     }
 
@@ -470,6 +503,7 @@ impl Transport {
         self.clock = None;
         self.tick_start = 0;
         self.next_tick = 0;
+        self.previous_tick = 0;
         self.deadline = None;
         self.route = None;
         self.start_offset = 0;

@@ -576,7 +576,7 @@ pub const DEFAULT_BINDINGS: &[Binding] = &[
     Binding::new(
         KeyCode::Char(':'),
         Command::OpenPrompt,
-        "w/e[!]/q[!]/wq; metronome on/off/toggle; selection: quantize[?] only; Esc cancels",
+        "w/e[!]/q[!]/wq; record/metronome on/off/toggle; countin 0/1; selection: quantize[?] only; Esc cancels",
         "Files",
     ),
     Binding {
@@ -975,7 +975,8 @@ pub fn handle_key(key: KeyEvent, state: &mut App) {
     handle_key_at(key, state, Instant::now());
 }
 
-pub(crate) fn handle_key_at(key: KeyEvent, state: &mut App, now: Instant) {
+pub fn handle_key_at(key: KeyEvent, state: &mut App, now: Instant) {
+    state.recording.input_time = Some(now);
     let previous = state.mixer_gesture.take();
     let eligible = state.view == crate::state::View::Mixer
         && !state.help_visible
@@ -989,6 +990,8 @@ pub(crate) fn handle_key_at(key: KeyEvent, state: &mut App, now: Instant) {
             || (state.mode == Mode::Visual && matches!(key.code, KeyCode::Char('a' | 's'))));
     let before = state.revision();
     dispatch_key(key, state);
+    state.reconcile_recording();
+    state.recording.input_time = None;
     if eligible && state.revision() != before {
         let prior = previous.filter(|gesture| {
             gesture.key == (key.code, key.modifiers)
@@ -1061,12 +1064,12 @@ fn dispatch_key(key: KeyEvent, state: &mut App) {
 ///
 /// The listener thread panics if the terminal cannot be polled or read.
 #[must_use]
-pub fn listen() -> Receiver<KeyEvent> {
+pub fn listen() -> Receiver<(KeyEvent, Instant)> {
     let (tx, rx) = channel();
     spawn(move || loop {
         if event::poll(Duration::from_millis(100)).expect("Polling should be fine") {
             if let Event::Key(key) = event::read().expect("Reading an event as well") {
-                if tx.send(key).is_err() {
+                if tx.send((key, Instant::now())).is_err() {
                     break;
                 }
             }
@@ -1076,9 +1079,9 @@ pub fn listen() -> Receiver<KeyEvent> {
     rx
 }
 
-pub fn handle(rx: &Receiver<KeyEvent>, state: &mut App) {
-    if let Ok(key) = rx.try_recv() {
-        handle_key(key, state);
+pub fn handle(rx: &Receiver<(KeyEvent, Instant)>, state: &mut App) {
+    if let Ok((key, at)) = rx.try_recv() {
+        handle_key_at(key, state, at);
     }
 }
 

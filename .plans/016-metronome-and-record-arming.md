@@ -1,12 +1,12 @@
 # 016 — Metronome, count-in, and record arming
 
-Status: in progress, 2026-10-17. Playback metronome implemented after 019's completed core gate; count-in and record arming below remain proposed, not implemented controls. See the [backlog](README.md). Depends on [019](019-musical-time-and-grids.md)'s meter and clock foundation before full click/count-in integration.
+Status: implemented, 2026-10-17, including session controls, count-in UI and working Pattern capture with 017. Physical listening/alignment acceptance remains pending; this isn't latency certification. See the [backlog](README.md). Depends on [019](019-musical-time-and-grids.md)'s meter and clock foundation before full click/count-in integration.
 
 ## Contract
 
 Record arming is session state, independent of transport and Pattern Insert/Audition. Default off; never serialize it or add it to undo. Stop retains arming; successful project load disarms, failed load changes nothing. Show `REC ARMED` while stopped, meter-aware `COUNT …` during count-in, and `REC` only when live capture is actually eligible. Show `PREVIEW` when notes cannot write. Text must work without color and at narrow widths.
 
-Proposed Normal commands: `:record on|off|toggle`, `:metronome on|off|toggle`, `:countin 0|1` (bars). Reject extra arguments and invalid values atomically. These commands should work in each view's Normal mode, subject to existing prompt/help ownership. Keep Space, Ctrl-Space and `:restart` unchanged. Do not assign a new shortcut until the binding registry's per-view/mode collision tests and actual terminal events are checked; command fallbacks are sufficient initially.
+Normal commands: `:record on|off|toggle`, `:metronome on|off|toggle`, `:countin 0|1` (bars). Reject extra arguments and invalid values atomically. These commands should work in each view's Normal mode, subject to existing prompt/help ownership. Keep Space, Ctrl-Space and `:restart` unchanged. Do not assign a new shortcut until the binding registry's per-view/mode collision tests and actual terminal events are checked; command fallbacks are sufficient initially.
 
 Arming alone never writes notes. Deliver the control with 017's first working capture slice, or explicitly show capture as unavailable until then; never show a false active REC indicator.
 
@@ -43,7 +43,14 @@ Keep clock/count-in decisions device-free in `src/transport.rs`; runtime orchest
 - Pending beat deadlines survive tempo edits; subsequent intervals use the new tempo. Late wakes skip stale clicks arithmetically without bursts or shifting the musical-start anchor. Stop/restart clears count state and pending clicks; existing app cancellation paths also cover structural edits, route changes, successful load and shutdown. Failed load retains the count. Count clicks work independently of the ongoing metronome; the destination click isn't swallowed by tail cancellation.
 - Ten deterministic count-in tests cover the tempo/meter matrix, pinned cursor, partial extent, pre-deadline silence, first-note single dispatch, exact off-grid onset/gate timing, delayed wake, tempo transition, cancellation, generations and app orchestration without dirty/history changes.
 - Combined checkpoint: locked all-target nextest 263 passed; strict all-target Clippy, formatting, doctests (zero cases), warning-free docs and whitespace checks passed. ALSA-null `just_a_note` smoke passed (stream setup only); no physical listening or output-latency claim.
-- This is an implemented **transport seam, not an enabled terminal feature**. Session arming, `:countin`, eligibility, count status/progress and preview-only input during counting still need integration with working 017 capture. No `:record` / `:countin` commands or false REC indicator were added. Current playing Insert still step-edits. 016 is not complete; 020 remains untouched.
+- Historical checkpoint: this initially shipped only as a transport seam. The integration below now enables its terminal controls.
+
+## Armed capture integration
+
+- `:record on|off|toggle` and `:countin 0|1` now work in every view's Normal mode with atomic argument validation and no new shortcuts. Session preferences stay outside files/history. Stop retains arming; successful load disarms, failed load preserves the session.
+- Armed Pattern starts use the full destination-meter bar, with clicks even when the ongoing metronome is off. Unarmed/Song starts don't count. Space cancels; restart recounts; disarming during count-in stops. The app exposes the actual transport phase, with separate count progress, meter/beat labels and narrow COUNT/ARM/REC cues. REC is shown only when capture is eligible; Song says unavailable.
+- Insert input during count-in previews only. Stopped Insert still step-writes; playing unarmed Insert now previews without writes. Armed eligible F1 Insert captures onto the pinned playing Pattern/track; Audition always remains NO WRITE. See 017 for timestamps, storage, monitoring and pass history.
+- Validation: locked all-target nextest 284 passed; strict all-target Clippy, formatting, warning-free docs, doctests (zero cases), whitespace checks and ALSA-null `just_a_note` passed. Regressions cover real key commands, count input, all-tempo 3/4/7/8/6/8 starts, stop/restart/disarm, load/preferences, narrow status and the existing offline audio paths. Physical listening and perceived count/start alignment remain manual checks, not claimed evidence. 020 remains untouched.
 
 ## Acceptance
 
