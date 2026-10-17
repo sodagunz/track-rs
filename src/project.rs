@@ -28,23 +28,22 @@ impl Project {
         }
     }
 
-    /// Check the resulting rectangular cell count before allocating columns.
+    #[must_use]
+    pub fn event_count(&self) -> usize {
+        self.patterns.iter().map(Pattern::event_count).sum()
+    }
+
+    /// Empty sparse columns do not allocate projected cells.
     #[must_use]
     pub fn can_append_track(&self) -> bool {
-        use crate::project_file::{MAX_CELLS, MAX_ROWS, MAX_TRACKS};
+        use crate::project_file::{MAX_PATTERN_TICKS, MAX_TRACKS};
         let tracks = self.instruments.len();
         if !(1..MAX_TRACKS).contains(&tracks) || self.patterns.is_empty() {
             return false;
         }
-        self.patterns
-            .iter()
-            .try_fold(0usize, |total, pattern| {
-                if !(1..=MAX_ROWS).contains(&pattern.num_rows()) || pattern.tracks.len() != tracks {
-                    return None;
-                }
-                total.checked_add(pattern.num_rows().checked_mul(tracks + 1)?)
-            })
-            .is_some_and(|total| total <= MAX_CELLS)
+        self.patterns.iter().all(|pattern| {
+            (1..=MAX_PATTERN_TICKS).contains(&pattern.length_ticks().0) && pattern.tracks.len() == tracks
+        })
     }
 
     #[must_use]
