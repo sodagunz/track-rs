@@ -271,6 +271,30 @@ impl App {
                 self.stop_requested = true;
                 self.status = format!("Loaded {}", self.path.as_ref().unwrap().display());
             }
+            "resize" | "resize!" => {
+                anyhow::ensure!(
+                    self.mode == Mode::Normal && matches!(self.view, View::Pattern | View::Arrangement),
+                    "Resize requires Pattern or Arrangement Normal mode"
+                );
+                let input = remainder.trim();
+                anyhow::ensure!(
+                    !input.is_empty() && input.bytes().all(|b| b.is_ascii_digit()),
+                    "Expected :resize[!] <rows> (integer)"
+                );
+                let rows = input
+                    .parse::<usize>()
+                    .map_err(|_| anyhow::anyhow!("Rows must be 1..={}", crate::project_file::MAX_ROWS))?;
+                let index = self.selected_pattern;
+                let before = self.project.patterns[index].num_rows;
+                let mut result = Ok(());
+                self.edit(|edit| result = edit.resize_pattern(index, rows, command == "resize!"));
+                result?;
+                self.status = if before == rows {
+                    format!("Pattern {index} already has {rows} rows")
+                } else {
+                    format!("Pattern {index}: {before} → {rows} rows")
+                };
+            }
             "restart" => {
                 anyhow::ensure!(remainder.is_empty(), "Expected :restart");
                 self.restart_playback();
@@ -283,7 +307,7 @@ impl App {
                     self.shutdown();
                 }
             }
-            _ => anyhow::bail!("Unknown command; use :w [path], :e[!] <path>, :q[!], :wq, :restart"),
+            _ => anyhow::bail!("Unknown command; use :w [path], :e[!] <path>, :q[!], :wq, :restart, :resize[!] <rows>"),
         }
         Ok(())
     }
@@ -889,7 +913,14 @@ impl App {
     }
 
     fn invalidate_view_selections(&mut self) {
-        for saved in &mut self.view_states {
+        let pattern = &self.project.patterns[self.selected_pattern.min(self.project.patterns.len() - 1)];
+        for (index, saved) in self.view_states.iter_mut().enumerate() {
+            saved.row = saved.row.min(if index == View::Mixer as usize {
+                crate::project::CHANNEL_ROWS - 1
+            } else {
+                pattern.num_rows - 1
+            });
+            saved.track = saved.track.min(pattern.tracks.len() - 1);
             saved.anchor = None;
             if saved.mode == Mode::Visual {
                 saved.mode = Mode::Normal;
