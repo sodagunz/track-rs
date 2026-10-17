@@ -11,6 +11,7 @@ pub enum View {
     Pattern,
     Arrangement,
     Mixer,
+    Instrument,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -259,6 +260,7 @@ impl App {
         self.view = match command {
             Command::ShowArrangement => View::Arrangement,
             Command::ShowMixer => View::Mixer,
+            Command::ShowInstrument => View::Instrument,
             _ => View::Pattern,
         };
         self.pending_count = None;
@@ -283,9 +285,11 @@ impl App {
             Command::CountDigit(_) => {}
             _ if self.help_visible => {}
 
-            Command::ShowPattern | Command::ShowArrangement | Command::ShowMixer => self.show_view(command),
+            Command::ShowPattern | Command::ShowArrangement | Command::ShowMixer | Command::ShowInstrument => {
+                self.show_view(command);
+            }
             _ if self.view == View::Arrangement && !command.available_in_arrangement() => {}
-            _ if self.view == View::Mixer && !command.available_in_voice_view() => {}
+            _ if matches!(self.view, View::Mixer | View::Instrument) && !command.available_in_voice_view() => {}
             Command::PreviousPattern
             | Command::NextPattern
             | Command::NewPattern

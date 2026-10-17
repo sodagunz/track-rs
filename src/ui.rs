@@ -82,6 +82,7 @@ fn render(f: &mut Frame, state: &App) {
         View::Pattern => draw_pattern_editor,
         View::Arrangement => draw_arrangement,
         View::Mixer => draw_mixer,
+        View::Instrument => draw_instrument,
     };
     draw_panel(
         f,
@@ -120,6 +121,43 @@ fn render(f: &mut Frame, state: &App) {
     if state.help_visible {
         draw_help(f, state);
     }
+}
+
+fn draw_instrument(f: &mut Frame, area: Rect, state: &App) {
+    use crate::tracker::Instrument;
+    let current = state.project.instrument(state.cursor_track);
+    let block = Block::default().borders(Borders::ALL).title(format!(
+        "Instrument | Track {} | {} | [/] voice | h/l track",
+        track_number(state.cursor_track),
+        current.label()
+    ));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let height = usize::from(inner.height);
+    let selected = Instrument::ALL.iter().position(|&voice| voice == current).unwrap_or(0);
+    let first = selected.saturating_sub(height.saturating_sub(1));
+    let lines: Vec<_> = Instrument::ALL
+        .iter()
+        .skip(first)
+        .take(height)
+        .map(|&voice| {
+            let selected = voice == current;
+            Line::styled(
+                format!(
+                    "{} {}{}",
+                    if selected { ">" } else { " " },
+                    voice.label(),
+                    if selected { " (all patterns)" } else { "" }
+                ),
+                if selected {
+                    Style::default().fg(Color::Black).bg(Color::Cyan)
+                } else {
+                    Style::default()
+                },
+            )
+        })
+        .collect();
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
 fn draw_mixer(f: &mut Frame, area: Rect, state: &App) {
@@ -551,6 +589,56 @@ mod tests {
     use super::*;
     use crate::tracker::{Note, NotePitch};
     use ratatui::backend::{Backend, TestBackend};
+
+    #[test]
+    fn instrument_keys_cycle_history_and_scroll_actual_assignment() {
+        use crate::tracker::Instrument;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::default();
+        let key = |app: &mut App, code, modifiers| crate::bindings::handle_key(KeyEvent::new(code, modifiers), app);
+        app.cursor_row = 17;
+        key(&mut app, KeyCode::F(4), KeyModifiers::NONE);
+        assert_eq!(app.view, View::Instrument);
+        assert!(!app.is_dirty());
+        key(&mut app, KeyCode::Char('['), KeyModifiers::NONE);
+        assert_eq!(app.project.instrument(0), Instrument::OpenHat);
+        key(&mut app, KeyCode::Char('u'), KeyModifiers::NONE);
+        assert!(!app.is_dirty());
+        key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert_eq!(app.project.instrument(0), Instrument::OpenHat);
+        for voice in Instrument::ALL {
+            app.handle_command(Command::SetInstrument(voice));
+            for (width, height) in [(100, 20), (40, 6), (1, 1), (0, 0)] {
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal.draw(|f| render(f, &app)).unwrap();
+                if width >= 40 {
+                    assert!(screen(&terminal).contains(&format!("> {} (all patterns)", voice.label())));
+                }
+            }
+        }
+        for ch in ['i', 'v', 'j', 'x'] {
+            key(&mut app, KeyCode::Char(ch), KeyModifiers::NONE);
+        }
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.cursor_row, 17);
+        key(&mut app, KeyCode::Char('l'), KeyModifiers::NONE);
+        assert_eq!(app.cursor_track, 1);
+        assert_eq!(app.project.instrument(1), Instrument::Pluck);
+        key(&mut app, KeyCode::Char('?'), KeyModifiers::NONE);
+        key(&mut app, KeyCode::F(3), KeyModifiers::NONE);
+        assert_eq!(app.view, View::Instrument);
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Char(':'), KeyModifiers::NONE);
+        key(&mut app, KeyCode::F(3), KeyModifiers::NONE);
+        assert_eq!(app.view, View::Instrument);
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        key(&mut app, KeyCode::F(3), KeyModifiers::NONE);
+        assert_eq!(app.view, View::Mixer);
+        key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+        assert_eq!(app.view, View::Arrangement);
+        key(&mut app, KeyCode::F(1), KeyModifiers::NONE);
+        assert_eq!(app.view, View::Pattern);
+    }
 
     #[test]
     fn mixer_keys_edit_shared_voices_without_hidden_note_edits() {
