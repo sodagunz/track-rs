@@ -117,7 +117,7 @@ fn visual_mixer_rectangles_counts_off_reset_and_saved_pattern() {
         assert_eq!(setting.lpf_hz, Some(20.0));
     }
     text(&mut app, "ypi{A");
-    assert_eq!(app.project.patterns[0].num_rows, 1);
+    assert_eq!(app.project.patterns[0].num_rows(), 1);
     key(&mut app, KeyCode::Esc);
     assert_eq!((app.mode, app.selection_anchor), (Mode::Normal, None));
     app.project.patterns = notes;

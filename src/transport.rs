@@ -24,7 +24,7 @@ pub struct NoteEvent {
 /// Collect notes without constructing voices or opening an output device.
 #[must_use]
 pub fn collect_row(pattern: &Pattern, instruments: &[Instrument], event: RowEvent) -> Vec<NoteEvent> {
-    if event.row >= pattern.num_rows {
+    if event.row >= pattern.num_rows() {
         return Vec::new();
     }
     pattern
@@ -116,7 +116,10 @@ impl Transport {
         self.route = Some(route);
         match route {
             PlaybackRoute::Pattern(pattern) => {
-                let rows = project.patterns.get(pattern).map_or(0, |p| p.num_rows);
+                let rows = project
+                    .patterns
+                    .get(pattern)
+                    .map_or(0, crate::tracker::Pattern::num_rows);
                 let row = self.update(now, playing, rows, project.bpm, rows_per_beat)?;
                 Some(PlaybackEvent {
                     pattern,
@@ -126,7 +129,7 @@ impl Transport {
             }
             PlaybackRoute::Song => {
                 let rows = project.order.iter().try_fold(0_usize, |total, &index| {
-                    total.checked_add(project.patterns.get(index)?.num_rows)
+                    total.checked_add(project.patterns.get(index)?.num_rows())
                 });
                 let Some(rows) = rows.filter(|&rows| rows > 0) else {
                     self.stop();
@@ -134,7 +137,7 @@ impl Transport {
                 };
                 let mut row = self.update(now, playing, rows, project.bpm, rows_per_beat)?;
                 for (order, &pattern) in project.order.iter().enumerate() {
-                    let length = project.patterns[pattern].num_rows;
+                    let length = project.patterns[pattern].num_rows();
                     if row.row < length {
                         return Some(PlaybackEvent {
                             pattern,
@@ -158,7 +161,7 @@ impl Transport {
             PlaybackRoute::Pattern(index) => project
                 .patterns
                 .get(index)
-                .map_or(0, |pattern| row.min(pattern.num_rows.saturating_sub(1))),
+                .map_or(0, |pattern| row.min(pattern.num_rows().saturating_sub(1))),
             PlaybackRoute::Song => {
                 let order = order.min(project.order.len().saturating_sub(1));
                 let prefix: usize = project
@@ -166,14 +169,14 @@ impl Transport {
                     .iter()
                     .take(order)
                     .filter_map(|&index| project.patterns.get(index))
-                    .map(|pattern| pattern.num_rows)
+                    .map(crate::tracker::Pattern::num_rows)
                     .sum();
                 prefix
                     + project
                         .order
                         .get(order)
                         .and_then(|&index| project.patterns.get(index))
-                        .map_or(0, |pattern| row.min(pattern.num_rows.saturating_sub(1)))
+                        .map_or(0, |pattern| row.min(pattern.num_rows().saturating_sub(1)))
             }
         };
     }

@@ -332,7 +332,12 @@ impl Presentation<'_> {
             return vec![Span::raw(" ".repeat(width))];
         }
         let app = self.0;
-        let rows = |index: usize| app.project.patterns.get(index).map_or(0, |pattern| pattern.num_rows);
+        let rows = |index: usize| {
+            app.project
+                .patterns
+                .get(index)
+                .map_or(0, crate::tracker::Pattern::num_rows)
+        };
         let (position, total) = match app.playback_mode {
             PlaybackMode::Pattern => (app.playback_row, rows(app.playing_pattern)),
             PlaybackMode::Song => {
@@ -633,9 +638,9 @@ mod tests {
     #[test]
     fn transport_bar_scales_pattern_and_song_positions() {
         let mut app = App::default();
-        app.project.patterns[0].num_rows = 4;
+        app.project.patterns[0].resize_rows(4);
         app.project.patterns.push(app.project.patterns[0].clone());
-        app.project.patterns[1].num_rows = 8;
+        app.project.patterns[1].resize_rows(8);
         app.project.order = vec![0, 1, 0];
         app.playback_state = PlaybackState::Playing;
         let bar = |app: &App, width| Line::from(Presentation(app).transport_bar(width, Style::default())).to_string();
@@ -676,7 +681,7 @@ mod tests {
                 assert!(status.to_string().contains(&"─".repeat(31)));
             }
         }
-        app.playback_row = app.project.patterns[0].num_rows - 1;
+        app.playback_row = app.project.patterns[0].num_rows() - 1;
         let bar = Line::from(Presentation(&app).transport_bar(100, Style::default()));
         assert_eq!(bar.to_string(), format!(" {}Ⅱ ", "┃".repeat(97)));
     }
