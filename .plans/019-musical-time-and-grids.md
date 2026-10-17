@@ -1,6 +1,6 @@
 # 019 — Musical time, meter and local grids
 
-Status: in progress, 2026-10-17. Implementation order and recommended design approved by “Let's start implementing in order.” Foundation before [016](016-metronome-and-record-arming.md), [017](017-quantized-live-recording.md) and recording integration in [018](018-midi-input.md). First device-free foundation slice implemented; no new dependency. Persistence, editing and playback still use the legacy timeline. [Primary-source research](../.ideas/musical-time.md).
+Status: in progress, 2026-10-17. Implementation order and recommended design approved by “Let's start implementing in order.” Foundation before [016](016-metronome-and-record-arming.md), [017](017-quantized-live-recording.md) and recording integration in [018](018-midi-input.md). Device-free foundation and v4 tick-event persistence adapter implemented; no new dependency. Editing, history, clipboard and playback still use the legacy row timeline. [Primary-source research](../.ideas/musical-time.md).
 
 ## Outcome and vocabulary
 
@@ -79,6 +79,14 @@ Expose immutable run generation, absolute unwrapped tick/cycle, tempo segments a
 - Deterministic fixtures cover legacy gate values, mixed-grid projection, invalid input, overflow and grid-neighbor invariants. Full v1/v2/v3 project migration fixtures remain part of the persistence slice.
 - Validation: all-target locked nextest passed (195 tests, zero skipped); strict all-target/all-feature Clippy, formatting, doctests (zero cases) and whitespace checks passed. No hardware/listening check ran for this device-free slice.
 - No file version, note storage, command, playback behavior or New length unit changed. Slice 1 is underway; canonical event storage/persistence/history/clipboard compatibility comes next, before metronome or recording work. Mixed-grid UI and tick scheduling are not delivered yet.
+
+### Persistence compatibility checkpoint
+
+- Saves now upgrade to v4: fixed PPQ 960, explicit pattern end, pattern-local 4/4 meter and ordered per-track tick events. v1/v2/v3 loads retain their defaults; starts scale by 240 and legacy gate ticks by 15. Empty cells produce no events. Channels, instruments, order/repeats and gates crossing the pattern end round-trip unchanged.
+- This is a bounded intermediate adapter, not completion of slice 2. The only writable in-memory timeline remains dense rows. v4 loading explicitly rejects sub-row starts, gates not divisible by 15, other meters and non-row-aligned ends rather than loading music the player would skip. Existing row/cell budgets remain compatibility limits alongside the encoded-byte limit.
+- The UI New length units remain unchanged and are documented separately from file ticks. Saving upgrades the format; older app versions cannot open v4. Atomic validated loading/saving remains in place.
+- Added exact migration fixtures across all three legacy versions, invalid event/order/resolution checks and forced-load atomicity coverage. All-target locked nextest: 198 passed, zero skipped; strict all-target/all-feature Clippy, formatting, doctests (zero cases) and whitespace checks passed. No hardware/listening check ran.
+- Next: replace dense runtime storage and row-addressed history/clipboard with stable exact events, then tick scheduling and projected editing. Stable event identity, local grid persistence, sparse event budgets and general-duration entry are not delivered by this adapter. 019 remains in progress; do not start 016 yet.
 
 ## Acceptance
 

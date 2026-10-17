@@ -1,5 +1,5 @@
-//! Version 3 JSON with explicit version 1/2 migration. Decode and validate completely before
-//! installation.
+//! Tick-event JSON with explicit version 1–3 migration. Decode and validate before installation.
+//! The row editor adapter rejects timing it cannot yet preserve or play.
 use std::{
     fs::File,
     io::{Read, Write},
@@ -122,10 +122,13 @@ pub fn load(path: &Path) -> anyhow::Result<Project> {
     File::open(path)?.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes)?;
     ensure!(bytes.len() as u64 <= MAX_FILE_BYTES, "Project exceeds 16 MiB");
     let header: Header = serde_json::from_slice(&bytes)?;
-    if !matches!(header.version, 1..=3) {
+    if !matches!(header.version, 1..=4) {
         bail!("Unsupported project version {}", header.version);
     }
-    let document = if header.version == 1 {
+    let document = if header.version == 4 {
+        let stored: EventDocument = serde_json::from_slice(&bytes)?;
+        stored.into_legacy()?
+    } else if header.version == 1 {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct LegacyNote {
@@ -226,7 +229,7 @@ pub fn save(project: &Project, path: &Path) -> anyhow::Result<()> {
         order: project.order.clone(),
     };
     document.validate()?;
-    let bytes = serde_json::to_vec_pretty(&document)?;
+    let bytes = serde_json::to_vec_pretty(&EventDocument::from_legacy(document))?;
     ensure!(bytes.len() as u64 <= MAX_FILE_BYTES, "Project exceeds 16 MiB encoded");
     let parent = path
         .parent()
@@ -238,4 +241,156 @@ pub fn save(project: &Project, path: &Path) -> anyhow::Result<()> {
     temporary.as_file().sync_all()?;
     temporary.persist(path).map_err(|error| error.error)?;
     Ok(())
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EventDocument {
+    version: u32,
+    ppq: u64,
+    bpm: f64,
+    instruments: Vec<Instrument>,
+    channels: Vec<crate::project::ChannelSettings>,
+    patterns: Vec<EventPattern>,
+    order: Vec<usize>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EventPattern {
+    end_tick: u64,
+    meter: [u8; 2],
+    tracks: Vec<Vec<StoredEvent>>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredEvent {
+    start_tick: u64,
+    duration_ticks: u32,
+    pitch: crate::tracker::NotePitch,
+    octave: u8,
+}
+
+impl EventDocument {
+    fn from_legacy(document: Document) -> Self {
+        Self {
+            version: 4,
+            ppq: crate::musical_time::PPQ,
+            bpm: document.bpm,
+            instruments: document.instruments,
+            channels: document.channels,
+            order: document.order,
+            patterns: document
+                .patterns
+                .into_iter()
+                .map(|pattern| EventPattern {
+                    end_tick: pattern.rows as u64 * crate::musical_time::LEGACY_ROW_TICKS,
+                    meter: [4, 4],
+                    tracks: pattern
+                        .cells
+                        .into_iter()
+                        .map(|track| {
+                            track
+                                .into_iter()
+                                .enumerate()
+                                .filter_map(|(row, note)| {
+                                    note.map(|note| StoredEvent {
+                                        start_tick: row as u64 * crate::musical_time::LEGACY_ROW_TICKS,
+                                        duration_ticks: u32::from(note.length_ticks.ticks()) * 15,
+                                        pitch: note.pitch,
+                                        octave: note.octave,
+                                    })
+                                })
+                                .collect()
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+
+    // One writable timeline: this temporary adapter materializes rows only after checking
+    // every event is exactly representable. Never round or drop unsupported positions.
+    fn into_legacy(self) -> anyhow::Result<Document> {
+        use crate::musical_time::{DurationTicks, LEGACY_ROW_TICKS, PPQ};
+        ensure!(
+            self.version == 4 && self.ppq == PPQ,
+            "Unsupported project tick resolution"
+        );
+        ensure!(
+            (1..=MAX_TRACKS).contains(&self.instruments.len()),
+            "Invalid track count"
+        );
+        ensure!(
+            (1..=MAX_PATTERNS).contains(&self.patterns.len()),
+            "Invalid pattern count"
+        );
+        let mut total = 0usize;
+        let mut patterns = Vec::with_capacity(self.patterns.len());
+        for pattern in self.patterns {
+            ensure!(
+                pattern.meter == [4, 4],
+                "Pattern meter requires the upcoming grid editor"
+            );
+            ensure!(
+                pattern.end_tick > 0
+                    && pattern.end_tick <= MAX_ROWS as u64 * LEGACY_ROW_TICKS
+                    && pattern.end_tick % LEGACY_ROW_TICKS == 0,
+                "Pattern end is not supported by the row editor"
+            );
+            let rows = usize::try_from(pattern.end_tick / LEGACY_ROW_TICKS)?;
+            let tracks = pattern.tracks.len();
+            ensure!(tracks == self.instruments.len(), "Inconsistent track dimensions");
+            total = total
+                .checked_add(rows.checked_mul(tracks).context("Cell count overflow")?)
+                .context("Cell count overflow")?;
+            ensure!(total <= MAX_CELLS, "Project exceeds {MAX_CELLS} compatibility cells");
+            let mut cells = Vec::with_capacity(tracks);
+            for events in pattern.tracks {
+                ensure!(events.len() <= rows, "Too many events for the row editor");
+                let mut previous = None;
+                for event in &events {
+                    ensure!(event.start_tick < pattern.end_tick, "Event starts outside pattern");
+                    ensure!(
+                        previous.is_none_or(|start| start < event.start_tick),
+                        "Events must have unique ordered starts"
+                    );
+                    previous = Some(event.start_tick);
+                    ensure!(
+                        event.start_tick % LEGACY_ROW_TICKS == 0,
+                        "Sub-row events require the upcoming tick scheduler"
+                    );
+                    ensure!(
+                        DurationTicks::new(event.duration_ticks).is_ok(),
+                        "Invalid event duration"
+                    );
+                    ensure!(
+                        event.duration_ticks % 15 == 0,
+                        "Gate resolution requires the upcoming tick scheduler"
+                    );
+                    ensure!(event.octave <= 9, "Note octave must be 0..=9");
+                }
+                let mut track = vec![None; rows];
+                for event in events {
+                    track[usize::try_from(event.start_tick / LEGACY_ROW_TICKS)?] = Some(Note {
+                        length_ticks: crate::tracker::NoteLength::try_from(u16::try_from(event.duration_ticks / 15)?)
+                            .map_err(anyhow::Error::msg)?,
+                        pitch: event.pitch,
+                        octave: event.octave,
+                    });
+                }
+                cells.push(track);
+            }
+            patterns.push(StoredPattern { rows, tracks, cells });
+        }
+        Ok(Document {
+            version: 3,
+            bpm: self.bpm,
+            instruments: self.instruments,
+            channels: self.channels,
+            patterns,
+            order: self.order,
+        })
+    }
 }
