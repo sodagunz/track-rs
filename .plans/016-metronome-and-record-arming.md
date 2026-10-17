@@ -35,7 +35,15 @@ Keep clock/count-in decisions device-free in `src/transport.rs`; runtime orchest
 - Added a separate fixed-size, control-thread-prepared procedural voice: ten-millisecond gate, fixed conservative gain, no callback allocation/graph construction for clicks. It bypasses channel processing and joins the master meter sum. Disabling cancels only click; graph cancellation also clears it. Notes/previews are not retriggered or reset by click commands.
 - Added deterministic meter/tempo, exact deadline, cursor/toggle, late-wake, partial Song, cancellation, command/load/overlay, narrow-status and offline audio/meter regressions. Existing combined 019 timing trace also remains identical with clicks enabled.
 - Validation: full locked all-target nextest 252 passed; strict Clippy, formatting, doctests (zero cases), warning-free docs and whitespace checks passed. ALSA-null note-example smoke passed (stream setup, not a physical click audition). No hardware listening, latency or sample-accuracy certification.
-- Still outstanding: explicit Counting transport phase, count-in controls and full-bar cancellation/tempo policy, and honest arming/eligibility integrated with 017 capture. No `:record` / `:countin` commands yet. 020 remains untouched.
+- Compound grouping checkpoint: default 3-unit groups in compound meters; deterministic 20/120/300 BPM coverage also includes 9/8, 12/8, 6/16, simple 3/8 and 6/4, mid-group starts and exact partial Song resets.
+
+## Count-in clock checkpoint
+
+- Implemented device-free `Transport::start_count_in` and explicit Stopped/Counting/Playing phase reporting. It pins the destination Pattern/cursor and counts a full destination-meter bar independently of the pattern's partial length. The same anchored tick clock supplies grouped clicks, the main-loop deadline and the exact musical-start anchor; song ticks and snapshots don't advance during the count.
+- Pending beat deadlines survive tempo edits; subsequent intervals use the new tempo. Late wakes skip stale clicks arithmetically without bursts or shifting the musical-start anchor. Stop/restart clears count state and pending clicks; existing app cancellation paths also cover structural edits, route changes, successful load and shutdown. Failed load retains the count. Count clicks work independently of the ongoing metronome; the destination click isn't swallowed by tail cancellation.
+- Ten deterministic count-in tests cover the tempo/meter matrix, pinned cursor, partial extent, pre-deadline silence, first-note single dispatch, exact off-grid onset/gate timing, delayed wake, tempo transition, cancellation, generations and app orchestration without dirty/history changes.
+- Combined checkpoint: locked all-target nextest 263 passed; strict all-target Clippy, formatting, doctests (zero cases), warning-free docs and whitespace checks passed. ALSA-null `just_a_note` smoke passed (stream setup only); no physical listening or output-latency claim.
+- This is an implemented **transport seam, not an enabled terminal feature**. Session arming, `:countin`, eligibility, count status/progress and preview-only input during counting still need integration with working 017 capture. No `:record` / `:countin` commands or false REC indicator were added. Current playing Insert still step-edits. 016 is not complete; 020 remains untouched.
 
 ## Acceptance
 

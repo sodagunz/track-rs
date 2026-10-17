@@ -3,6 +3,8 @@
 mod click;
 #[path = "transport_clock.rs"]
 mod clock;
+#[path = "transport_count_in.rs"]
+mod count_in;
 use std::time::{Duration, Instant};
 
 use crate::tracker::{Instrument, Note, Pattern};
@@ -144,6 +146,14 @@ impl ClockSnapshot {
     }
 }
 
+/// Clock phase, independent of record arming and editor mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransportPhase {
+    Stopped,
+    Counting { beat: u64, total: u64 },
+    Playing,
+}
+
 #[derive(Default)]
 pub struct Transport {
     deadline: Option<Instant>,
@@ -155,6 +165,8 @@ pub struct Transport {
     clock: Option<clock::TickClock>,
     generation: u64,
     metronome: click::Metronome,
+    count_in: Option<count_in::CountIn>,
+    count_click: Option<MetronomeEvent>,
 }
 
 impl Transport {
@@ -166,7 +178,8 @@ impl Transport {
         stop_audio: impl FnOnce(),
     ) -> Vec<NoteEvent> {
         let playing = !app.shutdown && matches!(app.playback_state, crate::state::PlaybackState::Playing);
-        if app.take_stop_request() || (!playing && self.deadline.is_some()) || app.shutdown {
+        if app.take_stop_request() || (!playing && (self.deadline.is_some() || self.count_in.is_some())) || app.shutdown
+        {
             self.stop();
             stop_audio();
         }
@@ -176,7 +189,7 @@ impl Transport {
             PlaybackRoute::Pattern(app.playing_pattern)
         };
         self.start_at(&app.project, route, app.playing_order, app.playback_row);
-        if self.deadline.is_none() {
+        if self.deadline.is_none() && self.count_in.is_none() {
             if let Some(start) = app.playback_start_tick {
                 let pattern = &app.project.patterns[app.playing_pattern];
                 let projected = pattern.row_tick(app.playback_row).map_or(0, |tick| tick.0);
@@ -209,19 +222,27 @@ impl Transport {
                 break;
             }
         }
-        self.metronome.update(
-            now,
-            app.metronome,
-            self.clock,
-            &app.project,
-            self.route.unwrap_or(route),
-        );
+        if self.count_in.is_none() {
+            self.metronome.update(
+                now,
+                app.metronome,
+                self.clock,
+                &app.project,
+                self.route.unwrap_or(route),
+            );
+        }
         notes
     }
 
     /// Consume at most one click/cancellation per update; notes remain on their own path.
     pub const fn take_metronome_event(&mut self) -> Option<MetronomeEvent> {
-        self.metronome.take_event()
+        let count = self.count_click.take();
+        // An ongoing click on the destination boundary replaces the count tail;
+        // don't swallow it with the count-in's cancellation event.
+        match self.metronome.take_event() {
+            Some(event) => Some(event),
+            None => count,
+        }
     }
 
     /// Locate the latest elapsed musical boundary; skip whole cycles arithmetically.
@@ -244,6 +265,20 @@ impl Transport {
         if !playing {
             self.stop();
             return None;
+        }
+        if let Some(count) = &mut self.count_in {
+            let Some(update) = count.update(now, project.bpm) else {
+                self.stop();
+                return None;
+            };
+            self.count_click = update.click.map(MetronomeEvent::Click);
+            let at = update.complete?;
+            self.count_in = None;
+            self.clock = clock::TickClock::new(at, self.tick_start, project.bpm);
+            self.generation = self.generation.checked_add(1)?;
+            self.next_tick = self.tick_start;
+            self.deadline = Some(at);
+            self.count_click = Some(MetronomeEvent::Stop);
         }
         let route = if self.clock.is_some() {
             self.route.unwrap_or(route)
@@ -315,7 +350,7 @@ impl Transport {
 
     /// Set the initial flattened row only before a run; active routes stay pinned.
     pub fn start_at(&mut self, project: &crate::project::Project, route: PlaybackRoute, order: usize, row: usize) {
-        if self.deadline.is_some() {
+        if self.deadline.is_some() || self.count_in.is_some() {
             return;
         }
         self.tick_start = match route {
@@ -369,6 +404,46 @@ impl Transport {
         };
     }
 
+    /// Prepare one full bar before a Pattern run. The caller must cancel audio
+    /// before replacing a run; session arming/eligibility belongs to the caller.
+    /// Returns false without changing the current run for an invalid target.
+    pub fn start_count_in(
+        &mut self,
+        now: Instant,
+        project: &crate::project::Project,
+        pattern: usize,
+        row: usize,
+    ) -> bool {
+        let Some(target) = project.patterns.get(pattern) else {
+            return false;
+        };
+        let Some(count) = count_in::CountIn::new(now, project.bpm, target.grid().meter(), pattern) else {
+            return false;
+        };
+        self.stop();
+        self.start_at(project, PlaybackRoute::Pattern(pattern), 0, row);
+        self.route = Some(PlaybackRoute::Pattern(pattern));
+        self.count_in = Some(count);
+        true
+    }
+
+    #[must_use]
+    pub fn phase(&self) -> TransportPhase {
+        self.count_in.as_ref().map_or_else(
+            || {
+                if self.clock.is_some() {
+                    TransportPhase::Playing
+                } else {
+                    TransportPhase::Stopped
+                }
+            },
+            |count| {
+                let (beat, total) = count.beat();
+                TransportPhase::Counting { beat, total }
+            },
+        )
+    }
+
     #[must_use]
     pub fn clock_snapshot(&self) -> Option<ClockSnapshot> {
         Some(ClockSnapshot {
@@ -379,6 +454,9 @@ impl Transport {
 
     #[must_use]
     pub fn deadline(&self) -> Option<Instant> {
+        if let Some(count) = &self.count_in {
+            return count.deadline();
+        }
         match (self.deadline, self.metronome.deadline(self.clock)) {
             (Some(note), Some(click)) => Some(note.min(click)),
             (note, click) => note.or(click),
@@ -387,6 +465,8 @@ impl Transport {
 
     pub const fn stop(&mut self) {
         self.metronome.clear();
+        self.count_in = None;
+        self.count_click = None;
         self.clock = None;
         self.tick_start = 0;
         self.next_tick = 0;
