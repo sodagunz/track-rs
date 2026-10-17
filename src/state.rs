@@ -397,11 +397,7 @@ impl App {
             Command::MoveCursorDown => self.offset_cursor(&CursorOffset::Pos(1), &CursorOffset::None),
             Command::MoveCursorLeft => self.offset_cursor(&CursorOffset::None, &CursorOffset::Neg(1)),
             Command::MoveCursorRight => self.offset_cursor(&CursorOffset::None, &CursorOffset::Pos(1)),
-            Command::InsertNote { pitch, octave_offset } => self.enter_note(Note {
-                length_ticks: crate::tracker::NoteLength::default(),
-                pitch,
-                octave: self.octave.saturating_add(octave_offset).min(9),
-            }),
+            Command::InsertNote { pitch, octave_offset } => self.enter_pitch(pitch, octave_offset),
             Command::HalveLength | Command::DoubleLength => self.adjust_length(command == Command::DoubleLength),
             Command::CycleEditStep => self.cycle_edit_step(),
             Command::Copy | Command::Cut => self.copy_or_cut(command == Command::Cut),
@@ -708,6 +704,16 @@ impl App {
         {
             note.length_ticks = note.length_ticks.adjusted(double);
             self.insert_note_under_cursor(Some(note));
+        }
+    }
+
+    fn enter_pitch(&mut self, pitch: crate::tracker::NotePitch, octave_offset: u8) {
+        if let Some(octave) = self.octave.checked_add(octave_offset).filter(|octave| *octave <= 9) {
+            self.enter_note(Note {
+                length_ticks: crate::tracker::NoteLength::default(),
+                pitch,
+                octave,
+            });
         }
     }
 
@@ -1166,15 +1172,11 @@ mod tests {
             pitch: NotePitch::C,
             octave_offset: 1,
         });
-        assert_eq!(
-            app.project.patterns[app.selected_pattern]
-                .get_step(0, 0)
-                .unwrap()
-                .note
-                .unwrap()
-                .octave,
-            9
-        );
+        assert!(app.project.patterns[app.selected_pattern]
+            .get_step(0, 0)
+            .unwrap()
+            .note
+            .is_none());
         for _ in 0..20 {
             app.handle_command(Command::DecreaseOctave);
         }

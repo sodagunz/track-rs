@@ -263,7 +263,10 @@ fn actual_history_keys_respect_mode_modifiers_counts_help_and_event_kind() {
     key(&mut app, 'i', KeyModifiers::NONE);
     key(&mut app, 'z', KeyModifiers::NONE);
     let edited = app.revision();
-    key(&mut app, 'u', KeyModifiers::NONE);
+    key(&mut app, 'u', KeyModifiers::NONE); // Upper B, not undo in Insert.
+    assert_ne!(app.revision(), edited);
+    key(&mut app, 'z', KeyModifiers::NONE);
+    let edited = app.revision();
     key(&mut app, 'r', KeyModifiers::CONTROL);
     assert_eq!(app.revision(), edited);
     handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut app);

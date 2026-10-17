@@ -53,7 +53,7 @@ fn real_insert_keys_clamp_preserve_pitch_replacement_and_do_not_move_cursor() {
     text(&mut app, "z");
     assert_eq!(note(&app, 0, 4).unwrap().length_ticks.ticks(), 16);
     app.cursor_row = 0;
-    text(&mut app, "rf");
+    text(&mut app, "if");
     assert_eq!(ticks(&app), 64);
     for _ in 0..20 {
         text(&mut app, "{");
@@ -96,7 +96,9 @@ fn whole_notes_survive_rectangle_cut_clip_paste_duplicate_and_atomic_history() {
         project: Project::new(8, 2),
         ..App::default()
     };
-    text(&mut app, "iz}}jz{{");
+    text(&mut app, "iz}}");
+    handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &mut app);
+    text(&mut app, "z{{");
     app.handle_command(Command::EnterNormal);
     app.cursor_row = 0;
     let source = app.project.patterns[0].clone();
