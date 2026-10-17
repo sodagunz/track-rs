@@ -27,10 +27,21 @@ planning update.
 | 3 | [017 — Quantized live recording](017-quantized-live-recording.md) | One pinned Pattern track, musical-grid quantization, fixed gate, undo per pass |
 | 4 | [018 — MIDI input](018-midi-input.md) | Optional device preview, then step/live input through the same recording decisions |
 
-019 has device-free timing/projection, sparse tick-event runtime storage and direct v4 persistence with strict legacy-row timing guards. History patches and sparse clipboard ranges now use ticks too; process-local event handles survive edits/history and renew on intentional copies. Pattern end ticks are canonical; row count is now a compatibility projection. Production playback now uses anchored tick deadlines, exact event lookup, tick-based Song traversal and immutable tempo-segment snapshots. The projected editor now supports pattern-local meter, per-bar grids, exact sub-row entry/navigation and hidden-event safeguards, with backward-defaulted v4 grid persistence. Exact duration entry now admits 1–61440 PPQ-tick gates with lossless editing and explicit labels; legacy length units remain compatible. Exact end controls now admit partial rows/bars with protected onset/override truncation and structural undo. Runtime/v4 and history budgets now count actual events/metadata rather than projected cells, with atomic paste preflight; dense legacy imports retain their cell guard. Collision-aware quantization is next. These are proposed contracts, not implemented commands. Implement in small
-reviewable slices; 019's timing/storage foundation precedes full metronome and recording integration. Preview-only MIDI work can proceed independently. 016/017 share the first armed-recording integration checkpoint.
-Audition always means no note writes. Stopped Insert still step-edits; playing
-Insert previews when unarmed and live-records only when armed and eligible.
+019 core editing/storage/time slices are delivered: sparse 960-PPQ events and
+v4 migration, stable runtime IDs, tick-based history/clipboard, anchored tick
+scheduling, non-4/4 meter and mixed per-bar grids. Exact gate/end controls admit
+sub-row starts, general durations and partial bars without rounding. Runtime/v4
+and history budgets count actual events/metadata, not projected cells; dense
+legacy imports retain their input cell guard. Explicit onset quantization now
+previews and rejects collisions/end-boundary snaps atomically, preserving IDs.
+See [019 checkpoints](019-musical-time-and-grids.md#implementation-checkpoint)
+for validation and remaining integration acceptance, not hardware certification.
+
+Count-in, arming, live recording and MIDI in 016–018 are still planned, not
+implemented controls. 016/017 share the first armed-recording checkpoint.
+Audition always means no note writes. The planned recording behavior is: stopped
+Insert step-edits; playing Insert previews when unarmed and live-records only
+when armed and eligible. Current Insert still step-edits during playback.
 
 Musical-time scope is resolved in favor of 019's proposed sparse event timeline and fixed 960 PPQ, separating meter, pattern length, grid, edit step and duration. Per-bar grid changes must not retime music. Pattern-local meter first; arbitrary tuplets and continuous song meter automation remain deferred. The user approved starting implementation in this order. Approval is not an implemented-status label.
 

@@ -233,7 +233,12 @@ impl App {
         let (command, remainder) = text
             .find(char::is_whitespace)
             .map_or((text, ""), |index| (&text[..index], text[index..].trim_start()));
+        anyhow::ensure!(
+            self.mode != Mode::Visual || matches!(command, "quantize" | "quantize?"),
+            "Visual prompt supports :quantize or :quantize? only"
+        );
         match command {
+            "quantize" | "quantize?" => self.quantize(command == "quantize?", remainder.trim())?,
             "w" | "wq" => {
                 let path = if remainder.is_empty() {
                     self.path
@@ -302,6 +307,42 @@ impl App {
                  :length <integer>t/r, :duration <ticks>t, :end[!] <ticks>t"
             ),
         }
+        Ok(())
+    }
+
+    fn quantize(&mut self, preview: bool, input: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.view == View::Pattern && matches!(self.mode, Mode::Normal | Mode::Visual) && input.is_empty(),
+            "Expected :quantize[?] in Pattern Normal/Visual mode"
+        );
+        let pattern = self.selected_pattern;
+        let target = &self.project.patterns[pattern];
+        let (first_row, last_row, first_track, last_track) = self.rectangle();
+        let range = if self.mode == Mode::Visual {
+            target.row_tick(first_row).unwrap()..target.row_tick(last_row + 1).unwrap()
+        } else {
+            let tick = self.cursor_tick();
+            tick..Tick(tick.0 + 1)
+        };
+        let plan = crate::quantize::Quantization::plan(target, first_track..last_track + 1, range);
+        let summary = plan.summary();
+        if preview {
+            self.status = summary;
+            return Ok(());
+        }
+        let tick = self.project.patterns[pattern]
+            .grid()
+            .nearest(self.cursor_tick())
+            .expect("cursor inside grid");
+        let mut result = Ok(0);
+        self.edit(|edit| result = plan.apply(edit, pattern));
+        let moved = result?;
+        if moved > 0 {
+            self.stop_playback();
+            self.remap_cursor(tick);
+            self.finish_selection();
+        }
+        self.status = summary;
         Ok(())
     }
 
