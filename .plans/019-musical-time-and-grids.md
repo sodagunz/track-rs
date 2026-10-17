@@ -1,6 +1,6 @@
 # 019 — Musical time, meter and local grids
 
-Status: in progress, 2026-10-17. Implementation order and recommended design approved by “Let's start implementing in order.” Foundation before [016](016-metronome-and-record-arming.md), [017](017-quantized-live-recording.md) and recording integration in [018](018-midi-input.md). Device-free foundation and v4 tick-event persistence adapter implemented; no new dependency. Runtime notes, history patches and clipboard snapshots use tick events/ranges; UI entry and playback still use the straight-row compatibility interfaces. [Primary-source research](../.ideas/musical-time.md).
+Status: in progress, 2026-10-17. Implementation order and recommended design approved by “Let's start implementing in order.” Foundation before [016](016-metronome-and-record-arming.md), [017](017-quantized-live-recording.md) and recording integration in [018](018-midi-input.md). Device-free foundation and v4 tick-event persistence adapter implemented; no new dependency. Runtime notes, history patches, clipboard snapshots and pattern ends use ticks; production playback uses anchored tick deadlines. UI entry remains on the straight-row compatibility interface, with file/runtime admission guards until projected editing exposes exact events. [Primary-source research](../.ideas/musical-time.md).
 
 ## Outcome and vocabulary
 
@@ -117,6 +117,15 @@ Expose immutable run generation, absolute unwrapped tick/cycle, tempo segments a
 - Tick truncation preserves gates and surviving event handles; tests cover one-tick partial rows and exact-start exclusion at the end. Clipboard no longer needs a fallible row-to-end conversion.
 - Full locked all-target nextest: 209 passed, zero skipped; strict Clippy, formatting, doctests (zero cases), API docs and whitespace checks passed. No hardware/listening check ran.
 - File loading/saving still rejects partial-row ends, and playback still advances rows. General tick-length admission waits for the tick scheduler; this checkpoint does not remove that guard or claim mixed-grid editing.
+
+### Tick scheduler checkpoint
+
+- Production app playback now uses anchored integer-ratio tick deadlines, reduced from the exact binary BPM value. No repeated rounded-period addition. Future starts resolve through the active tempo segment; a tempo edit keeps the committed next boundary. Already-triggered note gates keep their trigger-time duration, including tails across pattern/Song loops.
+- Song traversal sums explicit end ticks, with no padding of partial rows/bars. Exact start lookup and deterministic track ordering replace row-bucket note collection. Deadlines visit events, compatibility view landmarks and pattern ends, not every PPQ tick. Immutable clock snapshots expose run generation, unwrapped tick mapping and tempo-segment anchors for later capture integration.
+- Dispatch catches up at most 256 boundaries per call within a 50 ms jitter window; longer stalls skip stale boundaries/cycles arithmetically. Batches and voice preparation stay outside the unchanged audio callback/DSP. This is soft-deadline dispatch, not sample-accurate output or a hardware latency certification.
+- Canonical fixtures exercise sub-row starts, one-tick gates, partial/repeated Song occurrences and dense 1-tick starts. Admission deliberately remains guarded: these fixtures bypass the editor/file restriction so the scheduler can be tested before projected editing makes such music safely accessible. Existing files still load/edit/play with their original timing contract.
+- Added long-run/remainder, tempo-segment snapshot, generation, exact-once/deterministic dispatch, bounded late-wake and identity-before-structural-snapshot regressions. Full locked all-target nextest: 216 passed, zero skipped; strict all-target/all-feature Clippy, formatting, doctests (zero cases), warning-free API docs, actionlint and whitespace checks passed. Dependency policy passed with duplicate-version warnings from the unchanged lockfile. The example ran with ALSA null output; no physical output or listening check ran.
+- Remaining before 019 completion: projected non-4/4/local-grid editing and persistence, hidden-event visibility/navigation, exact general-duration entry, explicit quantization collision handling and event-based budgets. Remove timing/end admission guards only with that editor integration. The standalone row-clock compatibility helper remains, but production project/app playback no longer uses it. Do not start 016 or 020 here.
 
 ## Acceptance
 
