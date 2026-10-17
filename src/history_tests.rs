@@ -474,13 +474,7 @@ fn exact_event_history_coalesces_row_adapter_writes_and_preserves_redo_on_invali
                     ..event
                 },
             ),
-            (
-                Tick(240),
-                PatternEvent {
-                    duration_ticks: DurationTicks::new(1).unwrap(),
-                    ..event
-                },
-            ),
+            (Tick(240), PatternEvent { octave: 10, ..event }),
             (
                 Tick(240),
                 PatternEvent {

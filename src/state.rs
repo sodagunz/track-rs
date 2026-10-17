@@ -74,6 +74,7 @@ pub struct App {
     pub(crate) clipboard: EventClipboard,
     pub edit_step: usize,
     pub entry_length: crate::tracker::NoteLength,
+    pub(crate) entry_duration: Option<crate::musical_time::DurationTicks>,
     pub mode: Mode,
     pub selection_anchor: Option<(usize, usize)>,
     pub pending_count: Option<u16>,
@@ -145,6 +146,7 @@ impl Default for App {
             clipboard: EventClipboard::default(),
             edit_step: 0,
             entry_length: crate::tracker::NoteLength::default(),
+            entry_duration: None,
             mode: Mode::Normal,
             selection_anchor: None,
             pending_count: None,
@@ -281,7 +283,7 @@ impl App {
             "meter" | "meter!" | "grid" | "next-event" | "prev-event" | "paste!" => {
                 self.execute_time_command(command, remainder.trim())?;
             }
-            "step" | "length" => self.set_entry_setting(command, remainder.trim())?,
+            "step" | "length" | "duration" => self.set_entry_setting(command, remainder.trim())?,
             "resize" | "resize!" => {
                 anyhow::ensure!(
                     self.mode == Mode::Normal && matches!(self.view, View::Pattern | View::Arrangement),
@@ -452,7 +454,21 @@ impl App {
             self.view == View::Pattern && self.mode == Mode::Normal,
             "Entry settings require Pattern Normal mode"
         );
-        if command == "step" {
+        if command == "duration" {
+            let number = input
+                .strip_suffix('t')
+                .ok_or_else(|| anyhow::anyhow!("Expected :duration <integer>t (960 ticks per quarter)"))?;
+            anyhow::ensure!(
+                !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit()),
+                "Expected integer ticks"
+            );
+            let ticks: u32 = number.parse()?;
+            self.entry_duration = Some(
+                crate::musical_time::DurationTicks::new(ticks)
+                    .map_err(|_| anyhow::anyhow!("Duration must be 1..=61440 ticks"))?,
+            );
+            self.status = format!("New note duration: {ticks} PPQ ticks");
+        } else if command == "step" {
             let rows = Self::entry_integer(input)?;
             anyhow::ensure!(
                 usize::from(rows) <= crate::project_file::MAX_ROWS,
@@ -472,6 +488,7 @@ impl App {
                 .checked_mul(multiplier)
                 .ok_or_else(|| anyhow::anyhow!("Length must be 1..=4096 ticks"))?;
             self.entry_length = crate::tracker::NoteLength::try_from(ticks).map_err(anyhow::Error::msg)?;
+            self.entry_duration = None;
             self.status = format!("New note length: {ticks} ticks");
         }
         Ok(())
@@ -812,7 +829,7 @@ impl App {
         let mut notes = Vec::new();
         for (track, values) in source.tracks.iter().enumerate().take(last_track + 1).skip(first_track) {
             for event in values.events_in(start..end) {
-                let note = event.row_note().transpose(semitones);
+                let note = event.transposed(semitones);
                 notes.push((
                     track,
                     crate::tracker::PatternEvent {
@@ -994,12 +1011,23 @@ impl App {
     }
 
     fn adjust_length(&mut self, double: bool) {
-        if let Some(mut note) = self.project.patterns[self.selected_pattern]
-            .event_at(self.cursor_track, self.cursor_tick())
-            .map(crate::tracker::PatternEvent::row_note)
+        if let Some(mut event) =
+            self.project.patterns[self.selected_pattern].event_at(self.cursor_track, self.cursor_tick())
         {
-            note.length_ticks = note.length_ticks.adjusted(double);
-            self.insert_note_under_cursor(Some(note));
+            let ticks = event.row_note().map_or_else(
+                || {
+                    if double {
+                        event.duration_ticks.ticks().saturating_mul(2).min(61440)
+                    } else {
+                        (event.duration_ticks.ticks() / 2).max(1)
+                    }
+                },
+                |note| u32::from(note.length_ticks.adjusted(double).ticks()) * 15,
+            );
+            event.duration_ticks = crate::musical_time::DurationTicks::new(ticks).expect("bounded duration");
+            let pattern = self.selected_pattern;
+            let track = self.cursor_track;
+            self.edit(|edit| edit.set_event(pattern, track, event.start_tick, Some(event)));
         }
     }
 
@@ -1029,18 +1057,20 @@ impl App {
         });
     }
 
-    fn enter_note(&mut self, mut note: Note) {
-        if let Some(previous) = self.project.patterns[self.selected_pattern]
-            .event_at(self.cursor_track, self.cursor_tick())
-            .map(crate::tracker::PatternEvent::row_note)
+    fn enter_note(&mut self, note: Note) {
+        let pattern = self.selected_pattern;
+        let track = self.cursor_track;
+        let tick = self.cursor_tick();
+        if self.cursor_row < self.project.patterns[pattern].view_rows()
+            && track < self.project.patterns[pattern].tracks.len()
         {
-            note.length_ticks = previous.length_ticks;
-        }
-        if self.project.patterns[self.selected_pattern]
-            .view_step(self.cursor_track, self.cursor_row)
-            .is_some()
-        {
-            self.insert_note_under_cursor(Some(note));
+            let mut event = crate::tracker::PatternEvent::from_note(tick, note);
+            event.duration_ticks = self.project.patterns[pattern]
+                .event_at(track, tick)
+                .map(|previous| previous.duration_ticks)
+                .or(self.entry_duration)
+                .unwrap_or(event.duration_ticks);
+            self.edit(|edit| edit.set_event(pattern, track, tick, Some(event)));
             if self.mode == Mode::Insert && self.view == View::Pattern {
                 self.preview_note(note);
             }
