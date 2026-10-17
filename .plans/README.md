@@ -39,7 +39,9 @@ See [019 checkpoints](019-musical-time-and-grids.md#implementation-checkpoint)
 for validation and remaining integration acceptance, not hardware certification.
 
 016 has a working session-only playback metronome, with meter-aware anchored
-clicks, separate bounded audio, cancellation and text status. Count-in, arming,
+clicks (including automatic compound grouping), separate bounded audio,
+cancellation and text status. Its device-free full-bar count-in clock and explicit
+transport phases are tested, but count-in has no terminal control yet. Arming,
 live recording and MIDI in 016–018 are still planned, not implemented controls. 016/017 share the first armed-recording checkpoint.
 Audition always means no note writes. The planned recording behavior is: stopped
 Insert step-edits; playing Insert previews when unarmed and live-records only

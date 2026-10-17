@@ -44,6 +44,8 @@ mod mixer_tests;
 mod resize_tests;
 
 #[cfg(test)]
+mod count_in_tests;
+#[cfg(test)]
 mod grid_tests;
 pub mod meter;
 #[cfg(test)]
