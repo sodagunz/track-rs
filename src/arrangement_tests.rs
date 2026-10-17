@@ -333,8 +333,7 @@ fn pattern_keys_are_normal_press_only_counts_help_and_piano_still_work() {
     assert!(app.project.patterns[1]
         .tracks
         .iter()
-        .flatten()
-        .all(|step| step.note.is_none()));
+        .all(|track| track.events().is_empty()));
     app.project.patterns[0] = Pattern::new(2, 4);
     app.cursor_row = 63;
     app.selection_anchor = Some((63, 0));
