@@ -3,6 +3,8 @@ use crate::tracker::{Instrument, NotePitch};
 /// User actions, independent of terminal input and the current editor state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
+    ShowPattern,
+    ShowArrangement,
     PreviousPattern,
     NextPattern,
     NewPattern,
@@ -60,6 +62,38 @@ pub enum Command {
 }
 
 impl Command {
+    pub(crate) const fn ignores_count(self) -> bool {
+        matches!(
+            self,
+            Self::Quit | Self::ToggleHelp | Self::EnterNormal | Self::ShowPattern | Self::ShowArrangement
+        )
+    }
+
+    pub(crate) const fn available_in_arrangement(self) -> bool {
+        matches!(
+            self,
+            Self::PreviousPattern
+                | Self::NextPattern
+                | Self::NewPattern
+                | Self::DuplicatePattern
+                | Self::AddTrack
+                | Self::PreviousOrder
+                | Self::NextOrder
+                | Self::AppendOrder
+                | Self::RemoveOrder
+                | Self::OrderEarlier
+                | Self::OrderLater
+                | Self::ToggleSong
+                | Self::Undo
+                | Self::Redo
+                | Self::OpenPrompt
+                | Self::TogglePlayback
+                | Self::RestartPlayback
+                | Self::DecreaseTempo
+                | Self::IncreaseTempo
+        )
+    }
+
     /// Whether holding a key should perform this action repeatedly.
     #[must_use]
     pub const fn allows_repeat(self) -> bool {

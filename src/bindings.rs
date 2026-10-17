@@ -53,6 +53,19 @@ impl Binding {
 /// The single source of truth for default controls and their descriptions.
 pub const DEFAULT_BINDINGS: &[Binding] = &[
     Binding {
+        modes: &[Mode::Normal],
+        ..Binding::new(KeyCode::F(1), Command::ShowPattern, "Pattern view", "Application")
+    },
+    Binding {
+        modes: &[Mode::Normal],
+        ..Binding::new(
+            KeyCode::F(2),
+            Command::ShowArrangement,
+            "Arrangement view",
+            "Application",
+        )
+    },
+    Binding {
         prefix: Some(KeyCode::Char('g')),
         ..Binding::new(KeyCode::Char('h'), Command::FirstTrack, "First track", "Navigation")
     },
@@ -550,7 +563,7 @@ pub fn resolve(key: KeyEvent, state: &mut App) -> Option<Command> {
         Command::MoveCursorLeft => (0, -1),
         Command::MoveCursorRight => (0, 1),
         command => {
-            return if count.is_none() || matches!(command, Command::Quit | Command::ToggleHelp | Command::EnterNormal) {
+            return if count.is_none() || command.ignores_count() {
                 Some(command)
             } else {
                 None
