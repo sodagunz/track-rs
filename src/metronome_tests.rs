@@ -39,12 +39,17 @@ fn clicks(app: &mut App, until: Duration) -> Vec<ClickEvent> {
 }
 
 #[test]
-fn denominator_units_and_bar_accents_follow_meter_not_edit_grid_at_all_tempos() {
+fn grouped_clicks_and_bar_accents_follow_meter_not_edit_grid_at_all_tempos() {
     for bpm in [20, 120, 300] {
         for (meter, bar, unit) in [
             ("3/4", 2880, 960),
             ("7/8", 3360, 480),
-            ("6/8", 2880, 480),
+            ("6/8", 2880, 1440),
+            ("9/8", 4320, 1440),
+            ("12/8", 5760, 1440),
+            ("6/16", 1440, 720),
+            ("3/8", 1440, 480),
+            ("6/4", 5760, 960),
             ("1/64", 60, 60),
         ] {
             let mut app = App::default();
@@ -73,6 +78,36 @@ fn denominator_units_and_bar_accents_follow_meter_not_edit_grid_at_all_tempos() 
             }
         }
     }
+}
+
+#[test]
+fn compound_mid_group_start_waits_and_partial_song_resets_without_padding() {
+    let mut app = App::default();
+    app.execute_prompt("meter 6/8");
+    app.execute_prompt("end 1701t");
+    app.metronome = true;
+    app.cursor_row = 1;
+    app.toggle_playback();
+    let mut clock = Transport::default();
+    let now = Instant::now();
+    clock.update_app(now, &mut app, || {});
+    assert!(clock.take_metronome_event().is_none());
+    let at = now + ticks(1200, 120);
+    clock.update_app(at, &mut app, || {});
+    let Some(MetronomeEvent::Click(event)) = clock.take_metronome_event() else {
+        panic!("next grouped beat");
+    };
+    assert_eq!(event.tick.0, 1440);
+    assert!(!event.accent);
+    app.handle_command(Command::ToggleSong);
+    let events = clicks(&mut app, ticks(3402, 120));
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| (event.absolute_tick, event.accent))
+            .collect::<Vec<_>>(),
+        [(0, true), (1440, false), (1701, true), (3141, false)]
+    );
 }
 
 #[test]
