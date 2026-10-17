@@ -16,6 +16,76 @@ fn key(app: &mut App, ch: char, modifiers: KeyModifiers) {
 }
 
 #[test]
+fn event_handles_survive_edits_history_and_snapshots_but_not_copies() {
+    use crate::{clipboard::EventClipboard, history::History, musical_time::Tick, project::Project};
+    let mut project = Project::new(4, 1);
+    let mut history = History::default();
+    let note = Note {
+        pitch: NotePitch::C,
+        octave: 4,
+        length_ticks: crate::tracker::NoteLength::default(),
+    };
+    history.edit(&mut project, |edit| edit.set_cell(0, 0, 0, Some(note)));
+    let id = project.patterns[0].tracks[0].event_id(Tick(0)).unwrap();
+    history.edit(&mut project, |edit| edit.set_cell(0, 0, 0, Some(note.transpose(1))));
+    assert_eq!(project.patterns[0].tracks[0].event_id(Tick(0)), Some(id));
+    history.undo(&mut project);
+    assert_eq!(
+        project.patterns[0].tracks[0].event_by_id(id).unwrap().pitch,
+        NotePitch::C
+    );
+    history.redo(&mut project);
+    assert_eq!(
+        project.patterns[0].tracks[0].event_by_id(id).unwrap().pitch,
+        NotePitch::Cs
+    );
+    history.edit(&mut project, |edit| edit.set_cell(0, 0, 0, None));
+    assert!(project.patterns[0].tracks[0].event_by_id(id).is_none());
+    history.undo(&mut project);
+    assert_eq!(project.patterns[0].tracks[0].event_id(Tick(0)), Some(id));
+
+    let clipboard = EventClipboard::capture(&project.patterns[0], 0..1, Tick(0)..Tick(240));
+    history.edit(&mut project, |edit| clipboard.paste(edit, 0, 0, Tick(240)));
+    let pasted = project.patterns[0].tracks[0].event_id(Tick(240)).unwrap();
+    assert_ne!(id, pasted);
+    history.undo(&mut project);
+    history.redo(&mut project);
+    assert_eq!(project.patterns[0].tracks[0].event_id(Tick(240)), Some(pasted));
+    history.edit(&mut project, |edit| edit.append_pattern(0, true));
+    let duplicated = project.patterns[1].tracks[0].event_id(Tick(0)).unwrap();
+    assert_ne!(id, duplicated);
+    assert_eq!(project.patterns[0], project.patterns[1]);
+    history.undo(&mut project);
+    history.redo(&mut project);
+    assert_eq!(project.patterns[1].tracks[0].event_id(Tick(0)), Some(duplicated));
+    history.edit(&mut project, |edit| edit.resize_pattern(0, 1, true).unwrap());
+    assert!(project.patterns[0].tracks[0].event_by_id(pasted).is_none());
+    history.undo(&mut project);
+    assert_eq!(project.patterns[0].tracks[0].event_id(Tick(240)), Some(pasted));
+}
+
+#[test]
+fn value_round_trip_retains_event_handle_and_redo() {
+    use crate::{history::History, musical_time::Tick, project::Project};
+    let mut project = Project::new(4, 1);
+    let mut history = History::default();
+    let note = Note {
+        pitch: NotePitch::C,
+        octave: 4,
+        length_ticks: crate::tracker::NoteLength::default(),
+    };
+    project.patterns[0].set_step(0, 0, Some(note)).unwrap();
+    let id = project.patterns[0].tracks[0].event_id(Tick(0));
+    let revision = history.revision();
+    history.edit(&mut project, |edit| {
+        edit.set_cell(0, 0, 0, None);
+        edit.set_cell(0, 0, 0, Some(note));
+    });
+    assert_eq!(history.revision(), revision);
+    assert_eq!(project.patterns[0].tracks[0].event_id(Tick(0)), id);
+}
+
+#[test]
 fn every_document_edit_round_trips_with_revision_identity() {
     let mut app = App::default();
     for command in [

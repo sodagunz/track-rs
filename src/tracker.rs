@@ -245,13 +245,59 @@ impl PatternEvent {
     }
 }
 
-/// Sorted unique starts; no empty cells and no mutable dense mirror.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Track {
-    events: Vec<PatternEvent>,
+/// Process-local event identity. Snapshots preserve it; copies and file loads renew it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct EventId(u64);
+
+impl EventId {
+    fn fresh() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self(
+            NEXT.try_update(
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+                |id| id.checked_add(1),
+            )
+            .expect("event identity space exhausted"),
+        )
+    }
 }
 
+/// Sorted unique starts; identities are metadata, not a second timeline.
+#[derive(Clone, Debug, Default)]
+pub struct Track {
+    events: Vec<PatternEvent>,
+    identities: Vec<EventId>,
+}
+
+// Document equality compares music, not process-local handles.
+impl PartialEq for Track {
+    fn eq(&self, other: &Self) -> bool {
+        self.events == other.events
+    }
+}
+
+impl Eq for Track {}
+
 impl Track {
+    #[must_use]
+    pub fn event_id(&self, start: crate::musical_time::Tick) -> Option<EventId> {
+        self.search(start).ok().map(|index| self.identities[index])
+    }
+
+    #[must_use]
+    pub fn event_by_id(&self, id: EventId) -> Option<&PatternEvent> {
+        self.identities
+            .iter()
+            .position(|value| *value == id)
+            .map(|index| &self.events[index])
+    }
+
+    pub(crate) fn restore_id(&mut self, start: crate::musical_time::Tick, id: EventId) {
+        let index = self.search(start).expect("identity target exists");
+        self.identities[index] = id;
+    }
+
     #[must_use]
     pub fn events(&self) -> &[PatternEvent] {
         &self.events
@@ -308,8 +354,19 @@ impl Pattern {
         for track in &mut self.tracks {
             let keep = track.events.partition_point(|event| event.start_tick < end);
             track.events.truncate(keep);
+            track.identities.truncate(keep);
         }
         self.num_rows = rows;
+    }
+
+    pub(crate) fn duplicate(&self) -> Self {
+        let mut copy = self.clone();
+        for track in &mut copy.tracks {
+            for id in &mut track.identities {
+                *id = EventId::fresh();
+            }
+        }
+        copy
     }
 
     /// Replace the note at the specified track and row.
@@ -373,9 +430,13 @@ impl Pattern {
             .ok_or_else(|| anyhow!("Accessing inexistant track"))?;
         let before = match (track.search(start), event) {
             (Ok(index), Some(event)) => Some(std::mem::replace(&mut track.events[index], event)),
-            (Ok(index), None) => Some(track.events.remove(index)),
+            (Ok(index), None) => {
+                track.identities.remove(index);
+                Some(track.events.remove(index))
+            }
             (Err(index), Some(event)) => {
                 track.events.insert(index, event);
+                track.identities.insert(index, EventId::fresh());
                 None
             }
             (Err(_), None) => None,
