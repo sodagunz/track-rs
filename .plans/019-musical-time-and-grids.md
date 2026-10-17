@@ -1,6 +1,6 @@
 # 019 — Musical time, meter and local grids
 
-Status: in progress, 2026-10-17. Implementation order and recommended design approved by “Let's start implementing in order.” Foundation before [016](016-metronome-and-record-arming.md), [017](017-quantized-live-recording.md) and recording integration in [018](018-midi-input.md). Device-free foundation and v4 tick-event persistence adapter implemented; no new dependency. Editing, history, clipboard and playback still use the legacy row timeline. [Primary-source research](../.ideas/musical-time.md).
+Status: in progress, 2026-10-17. Implementation order and recommended design approved by “Let's start implementing in order.” Foundation before [016](016-metronome-and-record-arming.md), [017](017-quantized-live-recording.md) and recording integration in [018](018-midi-input.md). Device-free foundation and v4 tick-event persistence adapter implemented; no new dependency. Runtime notes use sparse tick events; editing, history, clipboard and playback still use legacy row compatibility interfaces. [Primary-source research](../.ideas/musical-time.md).
 
 ## Outcome and vocabulary
 
@@ -87,6 +87,14 @@ Expose immutable run generation, absolute unwrapped tick/cycle, tempo segments a
 - The UI New length units remain unchanged and are documented separately from file ticks. Saving upgrades the format; older app versions cannot open v4. Atomic validated loading/saving remains in place.
 - Added exact migration fixtures across all three legacy versions, invalid event/order/resolution checks and forced-load atomicity coverage. All-target locked nextest: 198 passed, zero skipped; strict all-target/all-feature Clippy, formatting, doctests (zero cases) and whitespace checks passed. No hardware/listening check ran.
 - Next: replace dense runtime storage and row-addressed history/clipboard with stable exact events, then tick scheduling and projected editing. Stable event identity, local grid persistence, sparse event budgets and general-duration entry are not delivered by this adapter. 019 remains in progress; do not start 016 yet.
+
+### Sparse runtime checkpoint
+
+- Replaced dense runtime tracks with private sorted event vectors: exact tick start, validated `u32` tick duration, pitch and octave. Empty rows allocate no cells; row reads return projected values, not mutable references. Row replacement/deletion uses exact-position binary search.
+- v4 loads and saves now traverse sparse events directly, without a dense intermediate document. Legacy files still decode their dense input before conversion. All previous timing/meter guards remain; this does not admit off-row music the player cannot schedule.
+- Track append, duplication, resize and structural history snapshots use sparse storage. Shrinking examines event starts, not gates; long gates and undo restoration keep their previous behavior. Conservative row/cell allocation and history budgets remain until the exact-event editing migration.
+- Added dense-reference operation checks, empty-pattern storage/projection checks and start-only truncation tests. Full locked all-target nextest: 201 passed, zero skipped; strict Clippy, formatting, doctests and whitespace checks passed. No hardware/listening check ran.
+- Still outstanding: tick-addressed history/clipboard, stable event identity, explicit tick-based runtime pattern length, event budgets, tick scheduler and mixed-grid editor. This checkpoint replaces the runtime-storage limitation above, not the remaining 019 acceptance criteria.
 
 ## Acceptance
 

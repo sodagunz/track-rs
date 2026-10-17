@@ -671,7 +671,7 @@ fn draw_pattern_editor(f: &mut Frame, area: Rect, state: &App) {
             && row == state.playback_row;
         let mut spans = vec![pattern_gutter(row, row_width, state.cursor_row, playing)];
         for track in first_track..first_track + visible_tracks {
-            let step = pattern.get_step(track, row).copied().expect("Pattern row must exist");
+            let step = pattern.get_step(track, row).expect("Pattern row must exist");
             let style = if row == state.cursor_row && track == state.cursor_track {
                 state.theme.cursor()
             } else if state.is_selected(row, track) {

@@ -165,14 +165,13 @@ fn strict_v2_lengths_and_legacy_fixture_import() {
     let path = directory.path().join("project.json");
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/project-v1.json");
     let mut project = project_file::load(&fixture).unwrap();
-    for note in project
+    for event in project
         .patterns
         .iter()
-        .flat_map(|p| &p.tracks)
-        .flatten()
-        .filter_map(|step| step.note)
+        .flat_map(|pattern| &pattern.tracks)
+        .flat_map(crate::tracker::Track::events)
     {
-        assert_eq!(note.length_ticks.ticks(), 16);
+        assert_eq!(event.duration_ticks.ticks(), 240);
     }
 
     for (row, ticks) in [(0, 1), (1, 4096)] {
