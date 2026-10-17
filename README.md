@@ -165,6 +165,10 @@ In Normal mode (in the pattern or arrangement view):
 
 - PageUp/PageDown switches patterns; Ctrl-n creates one, Ctrl-d duplicates it.
 - Ctrl-t adds a track to every pattern and selects it.
+- `:resize N` sets the edited pattern to 1–4096 rows across all tracks. New rows
+  are empty; shrinking refuses to drop notes unless you use `:resize! N`.
+  Repeated order entries share the new length. Resizing stops audio and clears
+  selections; undo restores dropped notes together. Existing note gates stay unchanged.
 - Ctrl-Left/Right selects an order entry. Ctrl-a appends the edited pattern,
   Ctrl-x removes an entry, and Ctrl-Up/Down reorders it.
 - `O` toggles Pattern/Song playback, stopping audio; Space starts it again.

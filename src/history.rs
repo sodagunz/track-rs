@@ -22,6 +22,7 @@ enum Mutation {
     Pattern {
         index: usize,
         value: Pattern,
+        before: Option<Pattern>,
     },
     Order {
         before: Vec<usize>,
@@ -53,7 +54,9 @@ enum Mutation {
 impl Mutation {
     fn weight(&self) -> usize {
         match self {
-            Self::Pattern { value, .. } => value.num_rows * value.tracks.len(),
+            Self::Pattern { value, before, .. } => {
+                value.num_rows * value.tracks.len() + before.as_ref().map_or(0, |p| p.num_rows * p.tracks.len())
+            }
             Self::Track { columns, .. } => 1 + columns.iter().map(Vec::len).sum::<usize>(),
             Self::Order { before, after } => before.len() + after.len(),
             _ => 1,
@@ -138,8 +141,14 @@ impl Mutation {
             }
             Self::Channel { track, before, after } => project.channels[track] = if forward { after } else { before },
             Self::Tempo { before, after } => project.bpm = if forward { after } else { before },
-            Self::Pattern { index, ref value } => {
-                if forward {
+            Self::Pattern {
+                index,
+                ref value,
+                ref before,
+            } => {
+                if let Some(before) = before {
+                    project.patterns[index].clone_from(if forward { value } else { before });
+                } else if forward {
                     project.patterns.insert(index, value.clone());
                 } else {
                     project.patterns.remove(index);
@@ -209,7 +218,56 @@ impl Edit<'_> {
         };
         let index = self.project.patterns.len();
         self.project.patterns.push(value.clone());
-        self.changes.push(Mutation::Pattern { index, value });
+        self.changes.push(Mutation::Pattern {
+            index,
+            value,
+            before: None,
+        });
+    }
+
+    /// Resize one pattern after validating limits and destructive truncation.
+    ///
+    /// # Errors
+    /// Returns an error without editing if rows, allocation or note protection fail.
+    pub fn resize_pattern(&mut self, index: usize, rows: usize, force: bool) -> anyhow::Result<()> {
+        use crate::project_file::{MAX_CELLS, MAX_ROWS};
+        anyhow::ensure!((1..=MAX_ROWS).contains(&rows), "Rows must be 1..={MAX_ROWS}");
+        let pattern = self
+            .project
+            .patterns
+            .get(index)
+            .ok_or_else(|| anyhow::anyhow!("No edited pattern"))?;
+        if rows == pattern.num_rows {
+            return Ok(());
+        }
+        let total = self
+            .project
+            .patterns
+            .iter()
+            .enumerate()
+            .try_fold(0usize, |total, (i, p)| {
+                total.checked_add(if i == index { rows } else { p.num_rows }.checked_mul(p.tracks.len())?)
+            });
+        anyhow::ensure!(
+            total.is_some_and(|total| total <= MAX_CELLS),
+            "Project exceeds {MAX_CELLS} cells"
+        );
+        anyhow::ensure!(
+            force
+                || !pattern
+                    .tracks
+                    .iter()
+                    .any(|track| track.iter().skip(rows).any(|cell| cell.note.is_some())),
+            "Trimmed rows contain notes; use :resize! {rows}"
+        );
+        let mut value = pattern.clone();
+        value.num_rows = rows;
+        for track in &mut value.tracks {
+            track.resize(rows, PatternStep::default());
+        }
+        let before = Some(std::mem::replace(&mut self.project.patterns[index], value.clone()));
+        self.changes.push(Mutation::Pattern { index, value, before });
+        Ok(())
     }
 
     /// Replace a validated order as one weighted history patch.
@@ -290,7 +348,7 @@ impl History {
         self.revision
     }
 
-    /// Record an edit; return whether tracks or the order actually changed, even if the
+    /// Record an edit; return whether existing dimensions or the order changed, even if the
     /// transaction exceeds the retention budget. Callers must cancel playback
     /// before the next runtime update when this returns true.
     ///
@@ -321,9 +379,12 @@ impl History {
         if changes.is_empty() {
             return false;
         }
-        let shape_or_order_changed = changes
-            .iter()
-            .any(|change| matches!(change, Mutation::Order { .. } | Mutation::Track { .. }));
+        let shape_or_order_changed = changes.iter().any(|change| {
+            matches!(
+                change,
+                Mutation::Order { .. } | Mutation::Track { .. } | Mutation::Pattern { before: Some(_), .. }
+            )
+        });
         while self.entries.len() > self.position {
             self.mutations -= self.entries.pop_back().expect("redo entry").weight();
         }
