@@ -1,6 +1,18 @@
 # 010 — Pattern entry and UI
 
-Status: approved for implementation after PR #32 (stacked on #31).
+## Current status — 2026-10-17
+
+All five features implemented: chromatic entry, aligned fields, landmarks, context and Pattern Audition. Alternating semantic row backgrounds are restored by PR #42 (012); configurable New length and exact step follow in 014.
+
+Implementation is complete; full manual terminal/theme acceptance and listening
+remain pending. User feedback was “so far looks good”, not a full sign-off.
+Automated checkpoint results are recorded in [015](015-test-performance.md).
+The implementation notes and test counts below are historical; README and the
+binding registry describe current controls. MIDI and live recording remain deferred.
+
+## Original scope and implementation record
+
+Historical rollout: approved after PR #32 (stacked on #31).
 Input contract submitted as PR #33 (`feat/chromatic-entry`).
 Grid clarity submitted as PR #34 (`feat/pattern-landmarks`).
 Context submitted as PR #35 (`feat/pattern-context`).
@@ -21,7 +33,7 @@ Real-terminal key/resize/light-dark/no-color checks and listening during playbac
 remain pending. No plan009 bulk mixer work, new dependencies or format changes.
 
 Context now labels Insert WRITE (I:W when narrow), instrument, entry octave,
-New:1r and step separately from Cell detail. Normal includes focused instrument.
+New length (originally fixed at New:1r) and step separately from Cell detail. Normal includes focused instrument.
 Buffer identity stays in its bar; dirty state falls back to the strip only when
 that bar is absent. Context uses whole fields, transport fills the remaining
 width, and the full leftover-width progress bar remains. Formatting, strict
@@ -30,8 +42,8 @@ Clippy and nextest pass (153 tests). Real-terminal checks remain pending.
 Grid retains ten-column fixed pitch/tick fields, clips long headers, sizes row
 numbers to pattern dimensions, and marks cursor/playback independently (`>`/`*`).
 Beat/bar marks (`.`/`|`) use the transport beat constant. Inclusive selection has
-a text edge and underline; unselected rows use terminal defaults rather than
-alternating black backgrounds. Formatting, strict Clippy and nextest pass (152
+a text edge and underline; unselected rows originally used terminal defaults rather than
+alternating black backgrounds (superseded by the semantic shading in PR #42). Formatting, strict Clippy and nextest pass (152
 tests). Light/dark terminal checks remain pending.
 
 Borrow the structure in [the tracker research](../.ideas/tui-trackers.md), not

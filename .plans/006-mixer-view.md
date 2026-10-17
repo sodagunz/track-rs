@@ -1,5 +1,17 @@
 # Mixer track overview
 
+## Current status — 2026-10-17
+
+Track overview foundation implemented and superseded by the working channel mixer (009), meters and mute/solo (011). These controls are no longer deferred.
+
+Implementation is complete; full manual terminal/theme acceptance and listening
+remain pending. User feedback was “so far looks good”, not a full sign-off.
+Automated checkpoint results are recorded in [015](015-test-performance.md).
+The implementation notes and test counts below are historical; README and the
+binding registry describe current controls. MIDI and live recording remain deferred.
+
+## Original scope and implementation record
+
 F3 opens a scrolling track overview; F1/F2 still select pattern/arrangement.
 Use an explicit view enum so panels can't overlap. Show shared voice assignments
 and note counts for the edited pattern, not invented audio levels.

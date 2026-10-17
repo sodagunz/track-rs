@@ -1544,6 +1544,11 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let (retired, _retired_rx) = mpsc::channel();
         let mut output = Output::new(renderer, receiver, retired);
+        // These preset regressions need only their populated channels, not 128
+        // silent song/preview pairs per sample. Mixer capacity has separate tests.
+        output.tracks.truncate(instruments.len());
+        output.previews.truncate(instruments.len());
+        output.channel_samples.truncate(instruments.len());
         for (track, &instrument) in instruments.iter().enumerate() {
             sender
                 .send(OutputCommand::Trigger {

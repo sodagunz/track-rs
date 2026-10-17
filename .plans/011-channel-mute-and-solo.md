@@ -1,5 +1,17 @@
 # Channel mute and solo
 
+## Current status — 2026-10-17
+
+Mute/solo implemented with history, migration, target synchronization and explicit header flags.
+
+Implementation is complete; full manual terminal/theme acceptance and listening
+remain pending. User feedback was “so far looks good”, not a full sign-off.
+Automated checkpoint results are recorded in [015](015-test-performance.md).
+The implementation notes and test counts below are historical; README and the
+binding registry describe current controls. MIDI and live recording remain deferred.
+
+## Original scope and implementation record
+
 Add project-wide track flags to the existing channel settings. Both default to false in older files; keep format v3. Mute wins over solo. With any solo flag set, only unmuted solo channels are audible (including when all solo channels are muted).
 
 Mixer Normal mode: `m` toggles mute, `M` toggles solo on the cursor track. No rectangle/count toggles, Insert bindings, or parameter rows. Preserve Visual `s` adjustment. Show explicit M/S/excluded flags in headers and dim excluded cells. Parameter reset leaves flags alone. Changes use channel history and normal dirty tracking.

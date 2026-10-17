@@ -1,9 +1,20 @@
 # 009 — Channel mixer
 
-Status: foundation and volume/pan submitted as PR #31, stacked on #30.
-Tone controls implemented on `feat/channel-tone`, ready for stacked review.
-Bulk Visual edits and bounded adjustment undo are implemented on
-`feat/mixer-bulk-next`, stacked on PR #36. Meters remain deferred.
+## Current status — 2026-10-17
+
+All four slices implemented: volume/pan, shelves and filters, Visual bulk edits/grouped undo, stereo peak meters and master clip. Meters are no longer deferred. Mute/solo follows in 011.
+
+Implementation is complete; full manual terminal/theme acceptance and listening
+remain pending. User feedback was “so far looks good”, not a full sign-off.
+Automated checkpoint results are recorded in [015](015-test-performance.md).
+The implementation notes and test counts below are historical; README and the
+binding registry describe current controls. MIDI and live recording remain deferred.
+
+## Original scope and implementation record
+
+Historical rollout: foundation/volume/pan PR #31, tone on `feat/channel-tone`,
+and bulk edits on `feat/mixer-bulk-next`. All slices, including meters, are now
+implemented; the progress sections below record their original checkpoints.
 
 Build a usable gain/pan mixer first, then add the requested tone controls. No
 parametric EQ, routing graph, sends, automation, or custom effects in this plan.
