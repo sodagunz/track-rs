@@ -7,6 +7,7 @@ pub enum Command {
     ShowArrangement,
     ShowMixer,
     ShowInstrument,
+    AuditionInstrument,
     PreviousPattern,
     NextPattern,
     NewPattern,
@@ -113,6 +114,7 @@ impl Command {
                 | Self::PreviousInstrument
                 | Self::NextInstrument
                 | Self::SetInstrument(_)
+                | Self::AuditionInstrument
                 | Self::Undo
                 | Self::Redo
                 | Self::OpenPrompt

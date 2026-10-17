@@ -54,6 +54,15 @@ impl Binding {
 pub const DEFAULT_BINDINGS: &[Binding] = &[
     Binding {
         modes: &[Mode::Normal],
+        ..Binding::new(
+            KeyCode::Enter,
+            Command::AuditionInstrument,
+            "Audition voice (F4, stopped)",
+            "Playback",
+        )
+    },
+    Binding {
+        modes: &[Mode::Normal],
         ..Binding::new(KeyCode::F(1), Command::ShowPattern, "Pattern view", "Application")
     },
     Binding {

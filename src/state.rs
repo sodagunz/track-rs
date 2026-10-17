@@ -53,6 +53,8 @@ pub enum PlaybackState {
 )]
 pub struct App {
     pub view: View,
+    pub(crate) audition: Option<crate::transport::NoteEvent>,
+    pub(crate) audition_active: bool,
     pub(crate) history: History,
     // Track-major owned snapshot; None cells are part of the rectangle.
     pub(crate) clipboard: Vec<Vec<Option<Note>>>,
@@ -116,6 +118,8 @@ impl Default for App {
         let default_tracks = 4;
         Self {
             view: View::Pattern,
+            audition: None,
+            audition_active: false,
             history: History::default(),
             clipboard: Vec::new(),
             edit_step: 0,
@@ -152,6 +156,32 @@ impl App {
     #[must_use]
     pub fn is_dirty(&self) -> bool {
         self.revision() != self.saved_revision
+    }
+
+    fn request_audition(&mut self) {
+        if self.view == View::Instrument && matches!(self.playback_state, PlaybackState::Stopped) {
+            self.audition_active = true;
+            self.audition = Some(crate::transport::NoteEvent {
+                track: self.cursor_track,
+                instrument: self.project.instrument(self.cursor_track),
+                note: Note {
+                    pitch: crate::tracker::NotePitch::C,
+                    octave: self.octave,
+                    length_ticks: crate::tracker::NoteLength::default(),
+                },
+                beats: 0.0,
+                duration: crate::audio::DEFAULT_NOTE_DURATION,
+            });
+        }
+    }
+
+    /// Consume a preview once, dropping stale requests after playback starts.
+    pub const fn take_audition(&mut self) -> Option<crate::transport::NoteEvent> {
+        let event = self.audition.take();
+        if self.shutdown || !matches!(self.playback_state, PlaybackState::Stopped) {
+            return None;
+        }
+        event
     }
 
     /// Consume a stop transition even if a caller restarted playback before the next tick.
@@ -197,6 +227,8 @@ impl App {
                 let path = std::path::PathBuf::from(remainder);
                 let project = crate::project_file::load(&path)?;
                 self.project = project;
+                self.audition = None;
+                self.audition_active = false;
                 self.path = Some(path);
                 self.selected_pattern = 0;
                 self.selected_order = 0;
@@ -290,6 +322,7 @@ impl App {
             }
             _ if self.view == View::Arrangement && !command.available_in_arrangement() => {}
             _ if matches!(self.view, View::Mixer | View::Instrument) && !command.available_in_voice_view() => {}
+            Command::AuditionInstrument => self.request_audition(),
             Command::PreviousPattern
             | Command::NextPattern
             | Command::NewPattern
@@ -489,6 +522,8 @@ impl App {
     }
 
     const fn stop_playback(&mut self) {
+        self.audition = None;
+        self.audition_active = false;
         self.playback_state = PlaybackState::Stopped;
         self.stop_requested = true;
     }
@@ -698,6 +733,8 @@ impl App {
     }
 
     fn begin_playback(&mut self, beginning: bool) {
+        self.audition = None;
+        self.stop_requested |= std::mem::take(&mut self.audition_active);
         self.playing_order = if beginning || self.playback_mode == PlaybackMode::Pattern {
             0
         } else {

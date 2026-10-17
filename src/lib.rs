@@ -1,6 +1,8 @@
 #[cfg(test)]
 mod arrangement_tests;
 pub mod audio;
+#[cfg(test)]
+mod audition_tests;
 pub mod bindings;
 #[cfg(test)]
 mod clipboard_tests;

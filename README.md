@@ -38,7 +38,10 @@ Normal `F3` opens a mixer track overview with voice assignments and note counts
 for the edited pattern (not live audio meters). `F4` opens the selected track's
 built-in instrument editor. In both, `h`/`l` selects a track, `[`/`]` changes its
 voice across all patterns, and `u`/Ctrl-r undoes/redoes. Gain, pan, mute/solo and
-custom synth parameters aren't implemented.
+custom synth parameters aren't implemented. In F4, Enter auditions C in the current
+entry octave for 200 ms plus release, only while playback is stopped. Holding
+Enter doesn't repeat; percussion keeps its fixed tuning. Audition doesn't edit
+notes or mark the project dirty. Starting playback cancels the preview.
 
 Panel switching doesn't stop playback or change the document. Help and `:` keep
 input priority. Hidden note edits and row motions are blocked; the mixer and
