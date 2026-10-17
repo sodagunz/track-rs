@@ -316,11 +316,21 @@ fn sync_channel_targets(
     if cached == settings {
         return;
     }
+    let any_solo = settings.iter().any(|setting| setting.solo);
+    let previous_solo = cached.iter().any(|setting| setting.solo);
     for (track, &setting) in settings.iter().enumerate() {
-        if setting.is_valid() && cached.get(track) != Some(&setting) {
+        let changed = cached.get(track).is_none_or(|previous| {
+            let was_audible = previous.audible(previous_solo);
+            *previous != setting || was_audible != setting.audible(any_solo)
+        });
+        if setting.is_valid() && changed {
             let _ = sender.send(OutputCommand::Channel {
                 track,
-                gains: channel_gains(setting),
+                gains: if setting.audible(any_solo) {
+                    channel_gains(setting)
+                } else {
+                    (0.0, 0.0)
+                },
                 tone: crate::tone::targets(setting, sample_rate),
                 sample_rate,
             });
@@ -613,6 +623,100 @@ fn build_net(sample_rate: f64, sequencer_backend: SequencerBackend) -> Net {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn mute_and_unmute_preserve_song_and_preview_voice_timing() {
+        use crate::project::ChannelSettings;
+        for preview in [false, true] {
+            for rate in [8_000.0, 48_000.0, 96_000.0] {
+                let make_output = || {
+                    let (_, renderer) = prepare(rate);
+                    let (sender, receiver) = mpsc::channel();
+                    let (retired, _rx) = mpsc::channel();
+                    (sender, Output::new(renderer, receiver, retired))
+                };
+                let (sender, mut output) = make_output();
+                let (reference_sender, mut reference) = make_output();
+                for sender in [&sender, &reference_sender] {
+                    let voice = GatedVoice::new(sine_event(0, Duration::from_secs(1)), rate, true, 42);
+                    sender
+                        .send(if preview {
+                            OutputCommand::Preview { track: 0, voice }
+                        } else {
+                            OutputCommand::Trigger { track: 0, voice }
+                        })
+                        .unwrap();
+                }
+                let mut cached = vec![ChannelSettings::default(); 4];
+                let mut settings = cached.clone();
+                for _ in 0..1000 {
+                    assert_eq!(output.sample(), reference.sample());
+                }
+                settings[0].muted = true;
+                sync_channel_targets(&sender, &mut cached, &settings, rate);
+                for _ in 0..1000 {
+                    output.sample();
+                    reference.sample();
+                }
+                for _ in 0..1000 {
+                    assert_eq!(output.sample(), (0.0, 0.0));
+                    reference.sample();
+                }
+                settings[0].muted = false;
+                sync_channel_targets(&sender, &mut cached, &settings, rate);
+                for _ in 0..1000 {
+                    output.sample();
+                    reference.sample();
+                }
+                let mut energy = 0.0;
+                for _ in 0..1000 {
+                    let sample = output.sample();
+                    assert_eq!(sample, reference.sample());
+                    energy += sample.0.abs() + sample.1.abs();
+                }
+                assert!(energy > 0.001);
+            }
+        }
+    }
+
+    #[test]
+    fn mute_solo_sync_updates_other_channels_without_redundant_commands() {
+        use crate::project::ChannelSettings;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mut cached = Vec::new();
+        let mut settings = vec![ChannelSettings::default(); 3];
+        sync_channel_targets(&sender, &mut cached, &settings, 48_000.0);
+        assert_eq!(receiver.try_iter().count(), 3);
+        settings[1].solo = true;
+        sync_channel_targets(&sender, &mut cached, &settings, 48_000.0);
+        let commands: Vec<_> = receiver.try_iter().collect();
+        assert_eq!(commands.len(), 3);
+        for command in commands {
+            let OutputCommand::Channel { track, gains, .. } = command else {
+                panic!("expected channel target")
+            };
+            assert_eq!(gains, if track == 1 { (1.0, 1.0) } else { (0.0, 0.0) });
+        }
+        settings[1].muted = true;
+        sync_channel_targets(&sender, &mut cached, &settings, 48_000.0);
+        assert!(matches!(
+            receiver.try_recv().unwrap(),
+            OutputCommand::Channel {
+                track: 1,
+                gains: (0.0, 0.0),
+                ..
+            }
+        ));
+        assert!(receiver.try_recv().is_err());
+        sync_channel_targets(&sender, &mut cached, &settings, 48_000.0);
+        assert!(receiver.try_recv().is_err());
+        settings[1].solo = false;
+        sync_channel_targets(&sender, &mut cached, &settings, 48_000.0);
+        assert_eq!(receiver.try_iter().count(), 3);
+        assert!(!settings[1].audible(false));
+        assert!(settings[0].audible(false));
+    }
     use crate::tracker::NotePitch;
 
     #[test]

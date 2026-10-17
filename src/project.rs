@@ -68,6 +68,10 @@ impl Project {
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChannelSettings {
+    #[serde(default)]
+    pub muted: bool,
+    #[serde(default)]
+    pub solo: bool,
     pub volume_db: Option<f32>,
     pub pan: f32,
     #[serde(default)]
@@ -83,6 +87,8 @@ pub struct ChannelSettings {
 impl Default for ChannelSettings {
     fn default() -> Self {
         Self {
+            muted: false,
+            solo: false,
             volume_db: Some(0.0),
             pan: 0.0,
             low_shelf_db: 0.0,
@@ -97,6 +103,11 @@ pub const CHANNEL_ROWS: usize = 6;
 pub const CHANNEL_LABELS: [&str; CHANNEL_ROWS] = ["Vol dB", "Pan %", "Low dB", "High dB", "HPF Hz", "LPF Hz"];
 
 impl ChannelSettings {
+    #[must_use]
+    pub const fn audible(self, any_solo: bool) -> bool {
+        !self.muted && (!any_solo || self.solo)
+    }
+
     #[must_use]
     pub fn is_valid(self) -> bool {
         self.volume_db

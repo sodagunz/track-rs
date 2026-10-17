@@ -177,13 +177,31 @@ fn draw_instrument(f: &mut Frame, area: Rect, state: &App) {
     f.render_widget(Paragraph::new(lines), inner);
 }
 
+fn channel_header(track: usize, channel: crate::project::ChannelSettings, any_solo: bool) -> String {
+    format!(
+        "T{}{}{}{}",
+        track_number(track),
+        if channel.muted { " M" } else { "" },
+        if channel.solo { " S" } else { "" },
+        if channel.audible(any_solo) { "" } else { " -" }
+    )
+}
+
+const fn audibility_style(style: Style, audible: bool) -> Style {
+    if audible {
+        style
+    } else {
+        style.add_modifier(Modifier::DIM)
+    }
+}
+
 fn draw_mixer(f: &mut Frame, area: Rect, state: &App) {
     let block = Block::default().borders(Borders::ALL).title(if state.meters.invalid {
         "Mixer | MASTER ERR/CLIP | Boost can clip"
     } else if state.meters.clipped {
         "Mixer | MASTER CLIP | Boost can clip"
     } else {
-        "Mixer | i adjust | v select | Boost can clip"
+        "Mixer | m mute | M solo | i adjust | v select | Boost can clip"
     });
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -199,12 +217,16 @@ fn draw_mixer(f: &mut Frame, area: Rect, state: &App) {
     let visible = usize::from(inner.height.saturating_sub(1 + meter_rows)).max(1);
     let first_row = state.cursor_row.saturating_sub(visible - 1);
     let rows = first_row..(first_row + visible).min(crate::project::CHANNEL_ROWS);
+    let any_solo = state.project.channels().iter().any(|channel| channel.solo);
     let mut lines = Vec::new();
     if inner.height > 1 {
         let mut header = vec![Span::raw(format!("{:label_width$}", ""))];
         for track in first..(first + count).min(state.project.channels().len()) {
             header.push(Span::styled(
-                format!("{:^cell_width$}", format!("T{}", track_number(track))),
+                format!(
+                    "{:^cell_width$}",
+                    channel_header(track, state.project.channels()[track], any_solo)
+                ),
                 if track == state.cursor_track {
                     Style::default().fg(Color::Cyan)
                 } else {
@@ -229,6 +251,7 @@ fn draw_mixer(f: &mut Frame, area: Rect, state: &App) {
             } else {
                 Style::default()
             };
+            let style = audibility_style(style, state.project.channels()[track].audible(any_solo));
             spans.push(Span::styled(
                 format!("{:^cell_width$}", state.project.channels()[track].label(row)),
                 style,
@@ -705,6 +728,32 @@ mod tests {
     use super::*;
     use crate::tracker::{Note, NotePitch};
     use ratatui::backend::{Backend, TestBackend};
+
+    #[test]
+    fn mixer_flags_and_excluded_cells_do_not_depend_on_color() {
+        let mut app = App::default();
+        app.handle_command(Command::ShowMixer);
+        app.handle_command(Command::MixerMute);
+        app.handle_command(Command::MixerSolo);
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let text = screen(&terminal);
+        assert!(text.contains("T1 M S -"), "{text}");
+        assert!(text.contains("T2 -"), "{text}");
+        assert!(terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .any(|cell| cell.modifier.contains(Modifier::DIM)));
+        let help = help_lines(View::Mixer, Mode::Normal, 100)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(help.contains("Toggle channel mute"));
+        assert!(help.contains("Toggle channel solo"));
+    }
 
     #[test]
     fn mixer_peaks_preserve_cells_selection_and_narrow_layout() {

@@ -18,6 +18,63 @@ fn text(app: &mut App, value: &str) {
     }
 }
 #[test]
+fn mute_solo_flags_persist_default_and_reject_non_booleans() {
+    let old = r#"{"volume_db":0.0,"pan":0.0}"#;
+    let neutral: ChannelSettings = serde_json::from_str(old).unwrap();
+    assert_eq!(neutral, ChannelSettings::default());
+    for muted in [false, true] {
+        for solo in [false, true] {
+            let setting = ChannelSettings { muted, solo, ..neutral };
+            let saved = serde_json::to_string(&setting).unwrap();
+            assert_eq!(serde_json::from_str::<ChannelSettings>(&saved).unwrap(), setting);
+            for any_solo in [false, true] {
+                assert_eq!(setting.audible(any_solo), !muted && (!any_solo || solo));
+            }
+        }
+    }
+    assert!(serde_json::from_str::<ChannelSettings>(r#"{"volume_db":0,"pan":0,"muted":1}"#).is_err());
+    assert!(serde_json::from_str::<ChannelSettings>(r#"{"volume_db":0,"pan":0,"solo":null}"#).is_err());
+}
+
+#[test]
+fn mixer_mute_solo_are_normal_only_undoable_and_not_parameter_resets() {
+    let mut app = App::default();
+    key(&mut app, KeyCode::F(3));
+    text(&mut app, "mM");
+    assert!(app.project.channels()[0].muted);
+    assert!(app.project.channels()[0].solo);
+    assert!(app.is_dirty());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("flags.json");
+    project_file::save(&app.project, &path).unwrap();
+    assert_eq!(project_file::load(&path).unwrap(), app.project);
+    text(&mut app, "d");
+    assert!(app.project.channels()[0].muted);
+    assert!(app.project.channels()[0].solo);
+    text(&mut app, "u");
+    assert!(!app.project.channels()[0].solo);
+    assert!(app.project.channels()[0].muted);
+    text(&mut app, "u");
+    assert!(!app.is_dirty());
+    text(&mut app, "2m3M");
+    assert!(!app.is_dirty());
+    handle_key(
+        KeyEvent::new_with_kind(KeyCode::Char('m'), KeyModifiers::NONE, KeyEventKind::Repeat),
+        &mut app,
+    );
+    assert!(!app.is_dirty());
+    text(&mut app, "imM");
+    assert_eq!(app.project.channels()[0], ChannelSettings::default());
+    key(&mut app, KeyCode::Esc);
+    text(&mut app, "vmM");
+    assert_eq!(app.project.channels()[0], ChannelSettings::default());
+    key(&mut app, KeyCode::Esc);
+    text(&mut app, "lm");
+    assert!(app.project.channels()[1].muted);
+    assert!(!app.project.channels()[0].muted);
+}
+
+#[test]
 fn visual_mixer_rectangles_counts_off_reset_and_saved_pattern() {
     let mut app = App::default();
     text(&mut app, "3jv2l");

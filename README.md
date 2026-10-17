@@ -85,6 +85,13 @@ are capped below the output's Nyquist frequency; saved settings retain the
 requested values. Tone targets and bypass blend over 10 ms, before gain/pan.
 Neutral shelves and Off filters preserve the original signal.
 
+Mixer Normal `m` toggles the cursor track's mute; `M` toggles solo. Flags apply
+across patterns and to audition, and are saved and undoable. Mute wins over solo;
+when any track is soloed, only unmuted solo tracks are audible. Headers show `M`,
+`S`, and `-` for inaudible tracks. The post-tone gain ramps over 10 ms while voices
+keep advancing, so unmute reveals an ongoing sustain without replaying notes.
+Parameter resets leave these flags alone. Meters measure the gated output.
+
 Mixer Normal `v` starts a rectangle; `hjkl`, counts and `g` motions extend it.
 Visual `a`/`s` decrease/increase each selected control by its own increment;
 `d`/`x` reset to neutral. Esc clears the selection. Each bulk/count edit is atomic.
@@ -96,7 +103,7 @@ fall at 24 dB/s; `!` marks a channel above unity. `MASTER CLIP` holds for two
 seconds when the summed output exceeds unity; `MASTER ERR/CLIP` also flags
 non-finite audio. Stop/restart and successful load clear the meters and hold.
 Short panels hide meters before editable cells. This is telemetry, not a limiter;
-boosts and summed channels can still clip. Mute/solo isn't implemented.
+boosts and summed channels can still clip.
 Voice assignments in F1/F4 apply across all patterns; `u`/Ctrl-r undoes/redoes them.
 Custom synth parameters aren't implemented. In F4, Enter auditions C in the current
 entry octave for 200 ms plus release, only while playback is stopped. Holding
