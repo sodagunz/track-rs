@@ -1,6 +1,6 @@
 # 016 — Metronome, count-in, and record arming
 
-Status: planned, 2026-10-17. Recommended defaults below are design proposals, not implemented controls. See the [backlog](README.md). Depends on [019](019-musical-time-and-grids.md)'s meter and clock foundation before full click/count-in integration.
+Status: in progress, 2026-10-17. Playback metronome implemented after 019's completed core gate; count-in and record arming below remain proposed, not implemented controls. See the [backlog](README.md). Depends on [019](019-musical-time-and-grids.md)'s meter and clock foundation before full click/count-in integration.
 
 ## Contract
 
@@ -27,6 +27,15 @@ Arming alone never writes notes. Deliver the control with 017's first working ca
 3. Integrate arming and count-in eligibility with 017; demonstrate armed versus unarmed input end to end.
 
 Keep clock/count-in decisions device-free in `src/transport.rs`; runtime orchestration stays in `src/main.rs`. `src/state.rs` owns session intent, not a competing clock. Reuse `src/command.rs`, `src/bindings.rs`, `src/audio.rs` and semantic UI styles. 019 owns project-format/meter migration; this session-control layer adds no further schema change or expected dependency.
+
+## Playback metronome checkpoint
+
+- Delivered the usable click slice first, without adding a placeholder Counting phase or a fake record-arm/REC indicator. Normal `:metronome on|off|toggle` works in every view; defaults off, stays session-only, retains preferences across loads and has wide/compact text cues. Other mode/prompt/help ownership remains intact. No shortcut or dependency added.
+- A click calendar derives absolute tick positions and deadlines from the active transport tempo segment and pinned route. The main wait includes click deadlines; no competing UI timer. Denominator-unit clicks accent local bar starts (6/8 currently has six eighth clicks, not configurable 3+3 grouping). Partial Song occurrences reset local phase without padding. Mid-unit starts/enabling do not replay earlier clicks; late wakes emit at most one fresh click and skip stale ones.
+- Added a separate fixed-size, control-thread-prepared procedural voice: ten-millisecond gate, fixed conservative gain, no callback allocation/graph construction for clicks. It bypasses channel processing and joins the master meter sum. Disabling cancels only click; graph cancellation also clears it. Notes/previews are not retriggered or reset by click commands.
+- Added deterministic meter/tempo, exact deadline, cursor/toggle, late-wake, partial Song, cancellation, command/load/overlay, narrow-status and offline audio/meter regressions. Existing combined 019 timing trace also remains identical with clicks enabled.
+- Validation: full locked all-target nextest 252 passed; strict Clippy, formatting, doctests (zero cases), warning-free docs and whitespace checks passed. ALSA-null note-example smoke passed (stream setup, not a physical click audition). No hardware listening, latency or sample-accuracy certification.
+- Still outstanding: explicit Counting transport phase, count-in controls and full-bar cancellation/tempo policy, compound grouping, and honest arming/eligibility integrated with 017 capture. No `:record` / `:countin` commands yet. 020 remains untouched.
 
 ## Acceptance
 

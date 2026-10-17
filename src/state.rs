@@ -72,6 +72,8 @@ pub struct App {
     pub(crate) audition_active: bool,
     pub(crate) history: History,
     pub(crate) clipboard: EventClipboard,
+    /// Session-only click preference; not a document or record-arm flag.
+    pub metronome: bool,
     pub edit_step: usize,
     pub entry_length: crate::tracker::NoteLength,
     pub(crate) entry_duration: Option<crate::musical_time::DurationTicks>,
@@ -146,6 +148,7 @@ impl Default for App {
             audition_active: false,
             history: History::default(),
             clipboard: EventClipboard::default(),
+            metronome: false,
             edit_step: 0,
             entry_length: crate::tracker::NoteLength::default(),
             entry_duration: None,
@@ -242,6 +245,21 @@ impl App {
         );
         match command {
             "quantize" | "quantize?" => self.quantize(command == "quantize?", remainder.trim())?,
+            "metronome" => {
+                anyhow::ensure!(self.mode == Mode::Normal, "Metronome requires Normal mode");
+                self.metronome = match remainder.trim() {
+                    "on" => true,
+                    "off" => false,
+                    "toggle" => !self.metronome,
+                    _ => anyhow::bail!("Expected :metronome on|off|toggle"),
+                };
+                self.status = if self.metronome {
+                    "Click on (playing transport only)"
+                } else {
+                    "Click off"
+                }
+                .into();
+            }
             "w" | "wq" => {
                 let path = if remainder.is_empty() {
                     self.path

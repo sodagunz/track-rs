@@ -111,7 +111,7 @@ impl Presentation<'_> {
             PlaybackMode::Pattern => "Pattern",
             PlaybackMode::Song => "Song",
         };
-        match app.playback_state {
+        let text = match app.playback_state {
             PlaybackState::Stopped => format!("{mode} Stopped"),
             PlaybackState::Playing => format!(
                 "{mode} Playing {} {} R{}",
@@ -119,6 +119,11 @@ impl Presentation<'_> {
                 pattern_label(app.playing_pattern),
                 row_label(app.playback_row)
             ),
+        };
+        if app.metronome {
+            format!("{text} Click:on")
+        } else {
+            text
         }
     }
 
@@ -246,7 +251,7 @@ impl Presentation<'_> {
         };
         let mut cursor = self.cursor().replace(' ', "");
         let compact = format!(
-            "{} {}",
+            "{} {}{}",
             if app.playback_mode == PlaybackMode::Song {
                 "S"
             } else {
@@ -256,7 +261,8 @@ impl Presentation<'_> {
                 ">"
             } else {
                 "■"
-            }
+            },
+            if app.metronome { " CLK" } else { "" }
         );
         if Line::from(format!("{mode}{dirty} {cursor} {compact}")).width() > width {
             mode = if piano { short.into() } else { app.mode.label().into() };
@@ -678,6 +684,30 @@ mod tests {
             pitch: NotePitch::C,
             octave: 4,
             length_ticks: NoteLength::try_from(ticks).unwrap(),
+        }
+    }
+
+    #[test]
+    fn enabled_click_has_text_cues_in_every_view_and_narrow_status() {
+        let mut app = App {
+            metronome: true,
+            ..App::default()
+        };
+        for view in [
+            crate::state::View::Pattern,
+            crate::state::View::Arrangement,
+            crate::state::View::Mixer,
+            crate::state::View::Instrument,
+        ] {
+            app.view = view;
+            for width in [24, 40, 80, 160] {
+                let status = Presentation(&app).status_line(width).to_string();
+                assert!(
+                    status.contains("CLK") || status.contains("Click:on"),
+                    "{width}: {status}"
+                );
+                assert!(!status.contains("REC"));
+            }
         }
     }
 

@@ -9,7 +9,8 @@ audio. Sorry Mario, your blazingly fast modern tracker is in another repo.
 
 The [canonical backlog](.plans/README.md) records current acceptance and delivery
 order: musical time and grids, metronome/count-in and arming, quantized live
-recording, then MIDI input. These are planned features, not current controls.
+recording, then MIDI input. Musical time/grid editing and the playback metronome
+are implemented; count-in, arming, live recording and MIDI remain planned.
 
 ### Themes
 
@@ -114,6 +115,28 @@ mode, the selected order entry in Song mode (row clamped to its pattern).
 Ctrl-Space restarts from the beginning; Normal `:restart` is the fallback.
 `-`/`+` adjusts BPM (20–300), and `[`/`]` changes the track's instrument.
 Pad, Drone, and Sustain hold pitched notes; OpenHat rings longer than HiHat. Percussion ignores note pitch.
+
+### Metronome
+
+In any view's Normal mode, `:metronome on|off|toggle` controls the playback click.
+It defaults off, never runs while stopped, and doesn't change the project or undo
+history. The preference survives loads; stop/restart/load cancels the click tail.
+Status shows `Click:on` or compact `CLK`. Turning it off cancels only the click,
+not song or preview voices. No extra keyboard shortcut steals piano keys.
+
+Clicks follow the transport's anchored clock, not redraws. Each pattern clicks
+its meter's denominator units and accents local bar starts: 3/4 has three quarter
+clicks; 7/8 seven eighth clicks; 6/8 six eighth clicks. Compound grouping is not
+yet configurable. Song occurrences reset that local phase, including partial
+bars, without padding. Grid density doesn't change the click. Late wakes skip
+stale clicks rather than replaying a burst.
+
+The separate ten-millisecond fixed-gain voice bypasses channel mute/solo/tone and
+joins the master sum before clip telemetry. It is not a project track or note.
+This is soft-deadline dispatch, not sample-accurate output; click level, physical
+alignment and device latency still need listening checks. There is no limiter.
+Count-in and record arming are not implemented yet; no REC indicator or capture
+is implied. Playing Insert still step-edits, as before.
 
 ### Views
 

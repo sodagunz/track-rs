@@ -46,5 +46,7 @@ mod resize_tests;
 #[cfg(test)]
 mod grid_tests;
 pub mod meter;
+#[cfg(test)]
+mod metronome_tests;
 pub mod musical_time;
 mod tone;
