@@ -441,6 +441,7 @@ impl Pattern {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn has_notes_from_row(&self, row: usize) -> bool {
         let start = crate::musical_time::Tick::from_legacy_row(row as u64).expect("pattern row fits ticks");
         self.tracks
@@ -448,6 +449,7 @@ impl Pattern {
             .any(|track| track.events.last().is_some_and(|event| event.start_tick >= start))
     }
 
+    #[cfg(test)]
     pub(crate) fn resize_rows(&mut self, rows: usize) {
         let end = crate::musical_time::Tick::from_legacy_row(rows as u64).expect("pattern row fits ticks");
         self.resize_ticks(end);
