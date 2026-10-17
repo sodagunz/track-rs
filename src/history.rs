@@ -16,6 +16,11 @@ pub struct Revision(u64);
 
 #[derive(Clone, Debug)]
 enum Mutation {
+    Grid {
+        pattern: usize,
+        before: crate::musical_time::GridMap,
+        after: crate::musical_time::GridMap,
+    },
     Track {
         columns: Vec<Track>,
         instrument: Instrument,
@@ -58,6 +63,7 @@ enum Mutation {
 impl Mutation {
     fn weight(&self) -> usize {
         match self {
+            Self::Grid { before, after, .. } => 1 + before.overrides().count() + after.overrides().count(),
             Self::Pattern { value, before, .. } => {
                 value.num_rows() * value.tracks.len() + before.as_ref().map_or(0, |p| p.num_rows() * p.tracks.len())
             }
@@ -69,8 +75,9 @@ impl Mutation {
         }
     }
 
-    const fn structural(&self) -> bool {
+    fn structural(&self) -> bool {
         matches!(self, Self::Pattern { .. } | Self::Order { .. } | Self::Track { .. })
+            || matches!(self, Self::Grid { before, after, .. } if before.meter() != after.meter())
     }
 
     const fn key(&self) -> (u8, usize, usize, u64) {
@@ -84,12 +91,16 @@ impl Mutation {
             Self::Pattern { index, .. } => (0, index, 0, 0),
             Self::Order { .. } => (4, 0, 0, 0),
             Self::Track { .. } => (5, 0, 0, 0),
+            Self::Grid { pattern, .. } => (7, pattern, 0, 0),
         }
     }
 
     #[allow(clippy::float_cmp)] // Exact document values determine no-ops.
     fn changed(&self) -> bool {
         match *self {
+            Self::Grid {
+                ref before, ref after, ..
+            } => before != after,
             Self::Event { before, after, .. } => before != after,
             Self::Instrument { before, after, .. } => before != after,
             Self::Channel { before, after, .. } => before != after,
@@ -101,6 +112,7 @@ impl Mutation {
 
     fn merge(&mut self, next: Self) {
         match (self, next) {
+            (Self::Grid { after, .. }, Self::Grid { after: value, .. }) => *after = value,
             (
                 Self::Event { after, after_id, .. },
                 Self::Event {
@@ -122,6 +134,11 @@ impl Mutation {
 
     fn apply(&self, project: &mut Project, forward: bool) {
         match *self {
+            Self::Grid {
+                pattern,
+                ref before,
+                ref after,
+            } => project.patterns[pattern].set_grid(if forward { after } else { before }.clone()),
             Self::Track {
                 ref columns,
                 instrument,
@@ -192,6 +209,17 @@ pub struct Edit<'a> {
 }
 
 impl Edit<'_> {
+    pub(crate) fn set_grid(&mut self, pattern: usize, after: crate::musical_time::GridMap) {
+        let Some(target) = self.project.patterns.get_mut(pattern) else {
+            return;
+        };
+        if target.grid() != &after && target.length_ticks() == after.end() {
+            let before = target.grid().clone();
+            target.set_grid(after.clone());
+            self.changes.push(Mutation::Grid { pattern, before, after });
+        }
+    }
+
     pub fn set_channel(&mut self, track: usize, after: ChannelSettings) {
         if let Some(&before) = self.project.channels.get(track) {
             if after.is_valid() && before != after {
@@ -311,7 +339,13 @@ impl Edit<'_> {
     }
 
     pub fn set_cell(&mut self, pattern: usize, track: usize, row: usize, after: Option<Note>) {
-        let Ok(start) = Tick::from_legacy_row(row as u64) else {
+        let Some(start) = self
+            .project
+            .patterns
+            .get(pattern)
+            .and_then(|pattern| pattern.row_tick(row))
+            .filter(|tick| *tick < self.project.patterns[pattern].length_ticks())
+        else {
             return;
         };
         self.set_event(
@@ -452,7 +486,7 @@ impl History {
             matches!(
                 change,
                 Mutation::Order { .. } | Mutation::Track { .. } | Mutation::Pattern { before: Some(_), .. }
-            )
+            ) || matches!(change, Mutation::Grid { before, after, .. } if before.meter() != after.meter())
         });
         while self.entries.len() > self.position {
             self.mutations -= self.entries.pop_back().expect("redo entry").weight();

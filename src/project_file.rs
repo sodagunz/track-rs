@@ -227,7 +227,37 @@ struct EventDocument {
 struct EventPattern {
     end_tick: u64,
     meter: [u8; 2],
+    #[serde(default = "straight_grid")]
+    grid: u16,
+    #[serde(default)]
+    bar_grids: Vec<[u64; 2]>,
     tracks: Vec<Vec<StoredEvent>>,
+}
+
+const fn straight_grid() -> u16 {
+    4
+}
+
+impl EventPattern {
+    fn grid_map(&self) -> anyhow::Result<crate::musical_time::GridMap> {
+        use crate::musical_time::{Grid, GridMap, Meter, Tick};
+        let meter = Meter::new(self.meter[0], self.meter[1]).map_err(|_| anyhow::anyhow!("Invalid pattern meter"))?;
+        let grid = Grid::new(self.grid).map_err(|_| anyhow::anyhow!("Unsupported grid"))?;
+        let mut map =
+            GridMap::new(meter, Tick(self.end_tick), grid).map_err(|_| anyhow::anyhow!("Invalid pattern end"))?;
+        let mut previous = None;
+        for &[tick, divisions] in &self.bar_grids {
+            ensure!(
+                previous.is_none_or(|value| value < tick),
+                "Bar overrides must have unique ordered starts"
+            );
+            previous = Some(tick);
+            let grid = Grid::new(u16::try_from(divisions)?).map_err(|_| anyhow::anyhow!("Unsupported bar grid"))?;
+            map.set_bar_grid(Tick(tick), grid)
+                .map_err(|_| anyhow::anyhow!("Invalid bar grid start"))?;
+        }
+        Ok(map)
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -260,7 +290,13 @@ impl EventDocument {
                 .iter()
                 .map(|pattern| EventPattern {
                     end_tick: pattern.length_ticks().0,
-                    meter: [4, 4],
+                    meter: [pattern.grid().meter().numerator(), pattern.grid().meter().denominator()],
+                    grid: pattern.grid().default_grid().divisions_per_quarter(),
+                    bar_grids: pattern
+                        .grid()
+                        .overrides()
+                        .map(|(tick, grid)| [tick.0, u64::from(grid.divisions_per_quarter())])
+                        .collect(),
                     tracks: pattern
                         .tracks
                         .iter()
@@ -297,10 +333,7 @@ impl EventDocument {
         )?;
         let mut total = 0usize;
         for pattern in &self.patterns {
-            ensure!(
-                pattern.meter == [4, 4],
-                "Pattern meter requires the upcoming grid editor"
-            );
+            pattern.grid_map()?;
             ensure!(
                 pattern.end_tick > 0
                     && pattern.end_tick <= MAX_ROWS as u64 * LEGACY_ROW_TICKS
@@ -315,7 +348,7 @@ impl EventDocument {
                 .context("Cell count overflow")?;
             ensure!(total <= MAX_CELLS, "Project exceeds {MAX_CELLS} compatibility cells");
             for events in &pattern.tracks {
-                ensure!(events.len() <= rows, "Too many events for the row editor");
+                ensure!(events.len() <= MAX_CELLS, "Too many events");
                 let mut previous = None;
                 for event in events {
                     ensure!(event.start_tick < pattern.end_tick, "Event starts outside pattern");
@@ -324,10 +357,7 @@ impl EventDocument {
                         "Events must have unique ordered starts"
                     );
                     previous = Some(event.start_tick);
-                    ensure!(
-                        event.start_tick % LEGACY_ROW_TICKS == 0,
-                        "Sub-row events require the upcoming projected editor"
-                    );
+
                     ensure!(
                         DurationTicks::new(event.duration_ticks).is_ok(),
                         "Invalid event duration"
@@ -349,16 +379,17 @@ impl EventDocument {
         for stored in self.patterns {
             let rows = usize::try_from(stored.end_tick / crate::musical_time::LEGACY_ROW_TICKS)?;
             let mut pattern = Pattern::new(rows, stored.tracks.len());
+            pattern.set_grid(stored.grid_map()?);
             for (track, events) in stored.tracks.into_iter().enumerate() {
                 for event in events {
-                    pattern.set_step(
+                    let start = crate::musical_time::Tick(event.start_tick);
+                    pattern.replace_event(
                         track,
-                        usize::try_from(event.start_tick / crate::musical_time::LEGACY_ROW_TICKS)?,
-                        Some(Note {
-                            length_ticks: crate::tracker::NoteLength::try_from(u16::try_from(
-                                event.duration_ticks / 15,
-                            )?)
-                            .map_err(anyhow::Error::msg)?,
+                        start,
+                        Some(crate::tracker::PatternEvent {
+                            start_tick: start,
+                            duration_ticks: crate::musical_time::DurationTicks::new(event.duration_ticks)
+                                .map_err(|_| anyhow::anyhow!("Invalid duration"))?,
                             pitch: event.pitch,
                             octave: event.octave,
                         }),

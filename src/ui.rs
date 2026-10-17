@@ -416,6 +416,20 @@ fn help_lines(view: View, mode: Mode, width: u16) -> Vec<Line<'static>> {
             "HPF off: increase from 20 Hz. LPF off: decrease from 20000 Hz. Boosts can clip.",
         ));
     }
+    if view == View::Pattern {
+        lines.push(Line::from(
+            ":meter N/D; :meter! confirms incompatible override removal. BPM is quarter-based.",
+        ));
+        lines.push(Line::from(
+            ":grid N [bar] sets divisions/quarter: 3 triplets, 64 256ths. Never retimes notes.",
+        ));
+        lines.push(Line::from(
+            "+N counts hidden starts. :next-event / :prev-event inspect exact ticks; :paste! confirms replacement.",
+        ));
+        lines.push(Line::from(
+            "Selected ranges include hidden events; single-cell edits touch only the exact start.",
+        ));
+    }
     for (section, label) in sections {
         if view != View::Pattern && section == Some(Mode::Audition) {
             continue;
@@ -593,11 +607,18 @@ fn draw_buffer_line(f: &mut Frame, area: Rect, state: &App) {
     );
 }
 
-fn pattern_gutter(row: usize, row_width: usize, cursor_row: usize, playing: bool) -> Span<'static> {
-    let rows_per_beat = usize::try_from(crate::transport::DEFAULT_ROWS_PER_BEAT).unwrap_or(4);
-    let boundary = if row.is_multiple_of(rows_per_beat * 4) {
+fn pattern_gutter(
+    row: usize,
+    row_width: usize,
+    cursor_row: usize,
+    playing: bool,
+    pattern: &crate::tracker::Pattern,
+) -> Span<'static> {
+    let tick = pattern.row_tick(row).unwrap();
+    let meter = pattern.grid().meter();
+    let boundary = if tick.0.is_multiple_of(meter.bar_ticks()) {
         "|"
-    } else if row.is_multiple_of(rows_per_beat) {
+    } else if tick.0.is_multiple_of(meter.unit_ticks()) {
         "."
     } else {
         " "
@@ -621,7 +642,7 @@ fn pattern_gutter(row: usize, row_width: usize, cursor_row: usize, playing: bool
 fn draw_pattern_editor(f: &mut Frame, area: Rect, state: &App) {
     const TRACK_WIDTH: u16 = 10;
     let row_width = state.project.patterns[state.selected_pattern]
-        .num_rows()
+        .view_rows()
         .saturating_sub(1)
         .to_string()
         .len()
@@ -645,7 +666,7 @@ fn draw_pattern_editor(f: &mut Frame, area: Rect, state: &App) {
         .cursor_row
         .saturating_add(1)
         .saturating_sub(visible_rows)
-        .min(pattern.num_rows().saturating_sub(visible_rows));
+        .min(pattern.view_rows().saturating_sub(visible_rows));
     if header_rows > 0 {
         let mut header = vec![Span::raw(format!("{:width$}", "r/tick", width = usize::from(gutter)))];
         for track in first_track..first_track + visible_tracks {
@@ -665,13 +686,19 @@ fn draw_pattern_editor(f: &mut Frame, area: Rect, state: &App) {
             Rect::new(area.x, area.y, area.width, 1),
         );
     }
-    for (offset, row) in (first_row..pattern.num_rows()).take(visible_rows).enumerate() {
+    for (offset, row) in (first_row..pattern.view_rows()).take(visible_rows).enumerate() {
         let playing = matches!(state.playback_state, crate::state::PlaybackState::Playing)
             && state.selected_pattern == state.playing_pattern
             && row == state.playback_row;
-        let mut spans = vec![pattern_gutter(row, row_width, state.cursor_row, playing)];
+        let mut spans = vec![pattern_gutter(row, row_width, state.cursor_row, playing, pattern)];
         for track in first_track..first_track + visible_tracks {
-            let step = pattern.get_step(track, row).expect("Pattern row must exist");
+            let mut step = pattern.view_step(track, row).expect("Pattern row must exist");
+            if row == state.cursor_row && track == state.cursor_track {
+                step.note = pattern
+                    .event_at(track, state.cursor_tick())
+                    .map(crate::tracker::PatternEvent::row_note);
+            }
+            let hidden = pattern.hidden_in_row(track, row);
             let style = if row == state.cursor_row && track == state.cursor_track {
                 state.theme.cursor()
             } else if state.is_selected(row, track) {
@@ -684,7 +711,12 @@ fn draw_pattern_editor(f: &mut Frame, area: Rect, state: &App) {
             let text = format_step(step);
             spans.push(Span::styled(text[..3].to_owned(), style));
             spans.push(Span::styled(text[3..].to_owned(), Style::default()));
-            spans.push(if state.is_selected(row, track) {
+            spans.push(if hidden > 0 {
+                Span::styled(
+                    if hidden < 10 { format!("+{hidden}") } else { "+*".into() },
+                    style.add_modifier(Modifier::BOLD),
+                )
+            } else if state.is_selected(row, track) {
                 Span::styled("| ", style)
             } else {
                 Span::raw("  ")
@@ -728,6 +760,44 @@ mod tests {
     use crate::tracker::{Note, NotePitch};
     use ratatui::backend::{Backend, TestBackend};
     use ratatui::style::Color;
+
+    #[test]
+    fn mixed_grid_hidden_counts_and_dense_scroll_render_without_losing_events() {
+        let mut app = App::default();
+        app.execute_prompt("meter 7/8");
+        app.execute_prompt("grid 64");
+        app.cursor_row = 1;
+        app.handle_command(Command::EnterInsert);
+        app.handle_command(Command::InsertNote {
+            pitch: NotePitch::C,
+            octave_offset: 0,
+        });
+        app.handle_command(Command::EnterNormal);
+        app.cursor_row = 0;
+        app.execute_prompt("grid 3");
+        app.status.clear();
+        let mut terminal = Terminal::new(TestBackend::new(140, 12)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let text = screen(&terminal);
+        assert!(text.contains("+1"), "{text}");
+        assert!(text.contains("7/8"), "{text}");
+        assert!(text.contains("Hidden:1"), "{text}");
+        app.execute_prompt("next-event");
+        app.status.clear();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        assert!(screen(&terminal).contains("C4"));
+        assert!(screen(&terminal).contains("Tick:15"));
+        let project = app.project.clone();
+        app.execute_prompt("grid 64");
+        app.handle_command(Command::LastRow);
+        for width in [0, 6, 12, 24, 80] {
+            for height in [0, 1, 3, 12] {
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal.draw(|frame| render(frame, &app)).unwrap();
+            }
+        }
+        assert_eq!(app.project.patterns[0].tracks, project.patterns[0].tracks);
+    }
 
     #[test]
     fn pattern_row_backgrounds_follow_absolute_rows_and_highlight_precedence() {
