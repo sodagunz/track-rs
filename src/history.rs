@@ -24,7 +24,6 @@ enum Mutation {
     Track {
         columns: Vec<Track>,
         instrument: Instrument,
-        compatibility_cells: usize,
     },
     Pattern {
         index: usize,
@@ -65,11 +64,9 @@ impl Mutation {
         match self {
             Self::Grid { before, after, .. } => 1 + before.overrides().count() + after.overrides().count(),
             Self::Pattern { value, before, .. } => {
-                value.num_rows() * value.tracks.len() + before.as_ref().map_or(0, |p| p.num_rows() * p.tracks.len())
+                value.storage_weight() + before.as_ref().map_or(0, Pattern::storage_weight)
             }
-            Self::Track {
-                compatibility_cells, ..
-            } => 1 + compatibility_cells,
+            Self::Track { columns, .. } => 1 + columns.iter().map(|track| 1 + track.events().len()).sum::<usize>(),
             Self::Order { before, after } => before.len() + after.len(),
             _ => 1,
         }
@@ -206,6 +203,7 @@ pub struct Edit<'a> {
     project: &'a mut Project,
     changes: Vec<Mutation>,
     event_origins: BTreeMap<(usize, usize, u64), EventOrigin>,
+    event_count: usize,
 }
 
 impl Edit<'_> {
@@ -238,44 +236,34 @@ impl Edit<'_> {
         let change = Mutation::Track {
             columns,
             instrument: Instrument::Pluck,
-            compatibility_cells: self
-                .project
-                .patterns
-                .iter()
-                .map(crate::tracker::Pattern::num_rows)
-                .sum(),
         };
         change.apply(self.project, true);
         self.event_origins.clear();
         self.changes.push(change);
     }
 
-    /// Append only after checking the same allocation limits as version 1 files.
+    /// Append sparse patterns only after checking event and structural limits.
     pub fn append_pattern(&mut self, source: usize, duplicate: bool) {
-        use crate::project_file::{MAX_CELLS, MAX_PATTERNS, MAX_ROWS, MAX_TRACKS};
+        use crate::project_file::{MAX_EVENTS, MAX_PATTERNS, MAX_PATTERN_TICKS, MAX_TRACKS};
         let Some(pattern) = self.project.patterns.get(source) else {
             return;
         };
-        let rows = pattern.num_rows();
         let tracks = self.project.instruments.len();
-        let total: usize = self
-            .project
-            .patterns
-            .iter()
-            .map(|p| p.num_rows() * p.tracks.len())
-            .sum();
         if self.project.patterns.len() >= MAX_PATTERNS
-            || !(1..=MAX_ROWS).contains(&rows)
+            || !(1..=MAX_PATTERN_TICKS).contains(&pattern.length_ticks().0)
             || !(1..=MAX_TRACKS).contains(&tracks)
-            || total.saturating_add(rows * tracks) > MAX_CELLS
+            || (duplicate && self.event_count.saturating_add(pattern.event_count()) > MAX_EVENTS)
         {
             return;
         }
         let value = if duplicate {
             pattern.duplicate()
         } else {
-            Pattern::new(rows, tracks)
+            let mut empty = Pattern::new(1, tracks);
+            empty.resize_ticks(pattern.length_ticks());
+            empty
         };
+        self.event_count += value.event_count();
         let index = self.project.patterns.len();
         self.project.patterns.push(value.clone());
         self.event_origins.clear();
@@ -302,7 +290,7 @@ impl Edit<'_> {
     /// # Errors
     /// Rejects invalid lengths, allocation limits or unconfirmed truncation without mutation.
     pub fn set_pattern_end(&mut self, index: usize, end: Tick, force: bool) -> anyhow::Result<()> {
-        use crate::project_file::{MAX_CELLS, MAX_PATTERN_TICKS};
+        use crate::project_file::MAX_PATTERN_TICKS;
         anyhow::ensure!(
             (1..=MAX_PATTERN_TICKS).contains(&end.0),
             "End must be 1..={MAX_PATTERN_TICKS} ticks"
@@ -315,25 +303,6 @@ impl Edit<'_> {
         if end == pattern.length_ticks() {
             return Ok(());
         }
-        let total = self
-            .project
-            .patterns
-            .iter()
-            .enumerate()
-            .try_fold(0usize, |total, (i, p)| {
-                total.checked_add(
-                    if i == index {
-                        usize::try_from(end.0.div_ceil(crate::musical_time::LEGACY_ROW_TICKS)).ok()?
-                    } else {
-                        p.num_rows()
-                    }
-                    .checked_mul(p.tracks.len())?,
-                )
-            });
-        anyhow::ensure!(
-            total.is_some_and(|total| total <= MAX_CELLS),
-            "Project exceeds {MAX_CELLS} cells"
-        );
         let dropped = pattern
             .tracks
             .iter()
@@ -347,6 +316,7 @@ impl Edit<'_> {
         );
         let mut value = pattern.clone();
         value.resize_ticks(end);
+        self.event_count -= dropped;
         let before = Some(std::mem::replace(&mut self.project.patterns[index], value.clone()));
         self.event_origins.clear();
         self.changes.push(Mutation::Pattern { index, value, before });
@@ -386,13 +356,28 @@ impl Edit<'_> {
 
     /// Replace one exact position; invalid targets and unsupported timing are no-ops.
     pub fn set_event(&mut self, pattern: usize, track: usize, start: Tick, after: Option<PatternEvent>) {
-        let Some(target) = self.project.patterns.get_mut(pattern) else {
-            return;
-        };
+        let _ = self.try_set_event(pattern, track, start, after);
+    }
+
+    pub(crate) fn try_set_event(
+        &mut self,
+        pattern: usize,
+        track: usize,
+        start: Tick,
+        after: Option<PatternEvent>,
+    ) -> anyhow::Result<()> {
+        let target = self
+            .project
+            .patterns
+            .get_mut(pattern)
+            .ok_or_else(|| anyhow::anyhow!("No edited pattern"))?;
         let before_id = target.tracks.get(track).and_then(|track| track.event_id(start));
-        let Ok(before) = target.replace_event(track, start, after) else {
-            return;
-        };
+        anyhow::ensure!(
+            !(after.is_some() && before_id.is_none() && self.event_count >= crate::project_file::MAX_EVENTS),
+            "Project event limit reached"
+        );
+        let before = target.replace_event(track, start, after)?;
+        self.event_count = self.event_count + usize::from(after.is_some()) - usize::from(before.is_some());
         if before != after {
             // Normalize value round-trips before a later structural edit takes a snapshot.
             let original = *self
@@ -414,6 +399,30 @@ impl Edit<'_> {
                 after_id: target.tracks[track].event_id(start),
             });
         }
+        Ok(())
+    }
+
+    pub(crate) fn check_range_replacement(
+        &self,
+        pattern: usize,
+        first_track: usize,
+        range: std::ops::Range<Tick>,
+        counts: &[usize],
+    ) -> anyhow::Result<()> {
+        use crate::project_file::{MAX_EVENTS, MAX_TRACK_EVENTS};
+        let target = &self.project.patterns[pattern];
+        let mut total = self.event_count;
+        for (offset, &count) in counts.iter().enumerate() {
+            let track = &target.tracks[first_track + offset];
+            let removed = track.events_in(range.clone()).len();
+            anyhow::ensure!(
+                track.events().len() - removed + count <= MAX_TRACK_EVENTS,
+                "Track exceeds {MAX_TRACK_EVENTS} events"
+            );
+            total = total - removed + count;
+        }
+        anyhow::ensure!(total <= MAX_EVENTS, "Project exceeds {MAX_EVENTS} events");
+        Ok(())
     }
 
     pub(crate) fn pattern(&self, pattern: usize) -> Option<&Pattern> {
@@ -485,7 +494,9 @@ impl History {
     /// # Panics
     /// Panics if the operation panics or the revision counter exhausts u64.
     pub fn edit(&mut self, project: &mut Project, operation: impl FnOnce(&mut Edit<'_>)) -> bool {
+        let event_count = project.event_count();
         let mut edit = Edit {
+            event_count,
             project,
             changes: Vec::new(),
             event_origins: BTreeMap::new(),

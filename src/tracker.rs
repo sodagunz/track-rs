@@ -372,6 +372,15 @@ impl Pattern {
         self.grid = grid;
     }
 
+    pub(crate) fn storage_weight(&self) -> usize {
+        1 + self.tracks.len() + self.event_count() + self.grid.overrides().count()
+    }
+
+    #[must_use]
+    pub fn event_count(&self) -> usize {
+        self.tracks.iter().map(|track| track.events.len()).sum()
+    }
+
     #[must_use]
     pub fn view_rows(&self) -> usize {
         usize::try_from(self.grid.row_count()).unwrap_or(usize::MAX)
@@ -529,6 +538,10 @@ impl Pattern {
                 Some(track.events.remove(index))
             }
             (Err(index), Some(event)) => {
+                anyhow::ensure!(
+                    track.events.len() < crate::project_file::MAX_TRACK_EVENTS,
+                    "Track event limit reached"
+                );
                 track.events.insert(index, event);
                 track.identities.insert(index, EventId::fresh());
                 None
