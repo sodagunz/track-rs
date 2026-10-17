@@ -233,7 +233,7 @@ impl PatternEvent {
         }
     }
 
-    fn row_note(self) -> Note {
+    pub(crate) fn row_note(self) -> Note {
         Note {
             length_ticks: NoteLength::try_from(
                 u16::try_from(self.duration_ticks.ticks() / 15).expect("legacy gate fits"),
@@ -317,7 +317,7 @@ impl Track {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pattern {
-    end: crate::musical_time::Tick,
+    grid: crate::musical_time::GridMap,
     pub tracks: Vec<Track>,
 }
 
@@ -327,7 +327,9 @@ impl Pattern {
     #[must_use]
     pub fn new(num_rows: usize, num_tracks: usize) -> Self {
         Self {
-            end: crate::musical_time::Tick::from_legacy_row(num_rows as u64).expect("pattern rows fit ticks"),
+            grid: crate::musical_time::GridMap::legacy(
+                crate::musical_time::Tick::from_legacy_row(num_rows as u64).expect("pattern rows fit ticks"),
+            ),
             tracks: vec![Track::default(); num_tracks],
         }
     }
@@ -338,12 +340,69 @@ impl Pattern {
     /// Panics if the projected count cannot fit `usize` on this platform.
     #[must_use]
     pub fn num_rows(&self) -> usize {
-        usize::try_from(self.end.0.div_ceil(crate::musical_time::LEGACY_ROW_TICKS)).expect("pattern end fits rows")
+        usize::try_from(self.length_ticks().0.div_ceil(crate::musical_time::LEGACY_ROW_TICKS))
+            .expect("pattern end fits rows")
     }
 
     #[must_use]
     pub const fn length_ticks(&self) -> crate::musical_time::Tick {
-        self.end
+        self.grid.end()
+    }
+
+    #[must_use]
+    pub const fn grid(&self) -> &crate::musical_time::GridMap {
+        &self.grid
+    }
+
+    pub(crate) fn set_grid(&mut self, grid: crate::musical_time::GridMap) {
+        self.grid = grid;
+    }
+
+    #[must_use]
+    pub fn view_rows(&self) -> usize {
+        usize::try_from(self.grid.row_count()).unwrap_or(usize::MAX)
+    }
+
+    #[must_use]
+    pub fn row_tick(&self, row: usize) -> Option<crate::musical_time::Tick> {
+        self.grid.row_tick(row as u64)
+    }
+
+    #[must_use]
+    pub fn row_at(&self, tick: crate::musical_time::Tick) -> usize {
+        self.grid
+            .row_at(tick)
+            .and_then(|row| usize::try_from(row).ok())
+            .unwrap_or(0)
+    }
+
+    #[must_use]
+    pub fn event_at(&self, track: usize, tick: crate::musical_time::Tick) -> Option<PatternEvent> {
+        let track = self.tracks.get(track)?;
+        track.search(tick).ok().map(|index| track.events[index])
+    }
+
+    #[must_use]
+    pub fn view_step(&self, track: usize, row: usize) -> Option<PatternStep> {
+        let tick = self.row_tick(row).filter(|tick| *tick < self.length_ticks())?;
+        self.tracks.get(track)?;
+        Some(PatternStep {
+            note: self.event_at(track, tick).map(PatternEvent::row_note),
+        })
+    }
+
+    #[must_use]
+    pub fn hidden_in_row(&self, track: usize, row: usize) -> usize {
+        let (Some(start), Some(end)) = (self.row_tick(row), self.row_tick(row + 1)) else {
+            return 0;
+        };
+        self.tracks.get(track).map_or(0, |track| {
+            track
+                .events_in(start..end)
+                .iter()
+                .filter(|event| event.start_tick != start)
+                .count()
+        })
     }
 
     #[must_use]
@@ -376,7 +435,7 @@ impl Pattern {
             track.events.truncate(keep);
             track.identities.truncate(keep);
         }
-        self.end = end;
+        self.grid.resize(end);
     }
 
     pub(crate) fn duplicate(&self) -> Self {
@@ -414,10 +473,7 @@ impl Pattern {
         event: Option<PatternEvent>,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(start < self.length_ticks(), "Event starts outside pattern");
-        anyhow::ensure!(
-            start.0.is_multiple_of(crate::musical_time::LEGACY_ROW_TICKS),
-            "Sub-row events require the upcoming projected editor"
-        );
+
         if let Some(event) = event {
             anyhow::ensure!(
                 event.start_tick == start,

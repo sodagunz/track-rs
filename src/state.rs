@@ -92,9 +92,11 @@ pub struct App {
     pub(crate) saved_revision: Revision,
     pub(crate) stop_requested: bool,
     pub cursor_row: usize,
+    pub(crate) inspected_tick: Option<Tick>,
     pub cursor_track: usize,
     /// UI mirror of the transport row; the runtime transport owns advancement.
     pub playback_row: usize,
+    pub(crate) playback_start_tick: Option<Tick>,
     pub playback_state: PlaybackState,
     pub octave: u8,
     pub shutdown: bool,
@@ -161,9 +163,11 @@ impl Default for App {
             saved_revision: Revision::default(),
             stop_requested: false,
             cursor_row: 0,
+            inspected_tick: None,
             cursor_track: 0,
             octave: 4,
             playback_row: 0,
+            playback_start_tick: None,
             playback_state: PlaybackState::Stopped,
             shutdown: false,
             help_visible: false,
@@ -274,6 +278,9 @@ impl App {
                 self.stop_requested = true;
                 self.status = format!("Loaded {}", self.path.as_ref().unwrap().display());
             }
+            "meter" | "meter!" | "grid" | "next-event" | "prev-event" | "paste!" => {
+                self.execute_time_command(command, remainder.trim())?;
+            }
             "step" | "length" => self.set_entry_setting(command, remainder.trim())?,
             "resize" | "resize!" => {
                 anyhow::ensure!(
@@ -317,6 +324,127 @@ impl App {
             ),
         }
         Ok(())
+    }
+
+    fn execute_time_command(&mut self, command: &str, remainder: &str) -> anyhow::Result<()> {
+        match command {
+            "meter" | "meter!" | "grid" => self.set_projection(command, remainder.trim())?,
+            "next-event" | "prev-event" => {
+                anyhow::ensure!(
+                    remainder.is_empty() && self.view == View::Pattern,
+                    "Event navigation requires Pattern view"
+                );
+                self.navigate_event(command == "next-event");
+            }
+            "paste!" => {
+                anyhow::ensure!(
+                    remainder.is_empty() && self.view == View::Pattern && self.mode == Mode::Normal,
+                    "Expected :paste! in Pattern Normal mode"
+                );
+                self.paste_events(true);
+            }
+            _ => unreachable!(),
+        }
+        Ok(())
+    }
+
+    fn set_projection(&mut self, command: &str, input: &str) -> anyhow::Result<()> {
+        use crate::musical_time::{Grid, Meter};
+        anyhow::ensure!(
+            self.view == View::Pattern && self.mode == Mode::Normal,
+            "Meter/grid requires Pattern Normal mode"
+        );
+        let index = self.selected_pattern;
+        let tick = self.cursor_tick();
+        let mut grid = self.project.patterns[index].grid().clone();
+        if command.starts_with("meter") {
+            let (n, d) = input
+                .split_once('/')
+                .ok_or_else(|| anyhow::anyhow!("Expected :meter[!] N/D"))?;
+            let meter = Meter::new(n.parse()?, d.parse()?)
+                .map_err(|_| anyhow::anyhow!("Meter: numerator 1–32, power-of-two denominator 1–64"))?;
+            grid.set_meter(meter, command == "meter!")
+                .map_err(|_| anyhow::anyhow!("Meter would clear incompatible bar overrides; use :meter! {input}"))?;
+        } else {
+            let words = input.split_whitespace().collect::<Vec<_>>();
+            anyhow::ensure!(
+                (1..=2).contains(&words.len()) && (words.len() == 1 || words[1] == "bar"),
+                "Expected :grid <divisions/quarter> [bar]"
+            );
+            let value = Grid::new(words[0].parse()?)
+                .map_err(|_| anyhow::anyhow!("Supported divisions/quarter: 1,2,3,4,5,6,8,12,16,24,32,48,64"))?;
+            if words.len() == 2 {
+                grid.set_bar_grid(grid.meter().bar_start(tick), value)
+                    .map_err(|_| anyhow::anyhow!("Bar lies outside pattern"))?;
+            } else {
+                grid.set_default(value);
+            }
+        }
+        if self.project.patterns[index].grid() != &grid {
+            self.edit(|edit| edit.set_grid(index, grid));
+            self.remap_cursor(tick);
+        }
+        self.status = format!("{}; starts, gates and end unchanged", self.grid_context());
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn cursor_tick(&self) -> Tick {
+        let pattern = &self.project.patterns[self.selected_pattern];
+        self.inspected_tick
+            .filter(|tick| *tick < pattern.length_ticks() && pattern.row_at(*tick) == self.cursor_row)
+            .or_else(|| pattern.row_tick(self.cursor_row))
+            .unwrap_or(Tick(0))
+    }
+
+    fn remap_cursor(&mut self, tick: Tick) {
+        let pattern = &self.project.patterns[self.selected_pattern];
+        let tick = Tick(tick.0.min(pattern.length_ticks().0.saturating_sub(1)));
+        let row = pattern.row_at(tick);
+        if self.view == View::Pattern {
+            self.cursor_row = row;
+        } else {
+            self.view_states[View::Pattern as usize].row = row;
+        }
+        self.inspected_tick = (pattern.row_tick(row) != Some(tick)).then_some(tick);
+        self.selection_anchor = None;
+        self.view_states[View::Pattern as usize].anchor = None;
+    }
+
+    pub(crate) fn grid_context(&self) -> String {
+        let pattern = &self.project.patterns[self.selected_pattern];
+        let tick = self.cursor_tick();
+        let meter = pattern.grid().meter();
+        let bar = tick.0 / meter.bar_ticks() + 1;
+        let unit = tick.0 % meter.bar_ticks() / meter.unit_ticks() + 1;
+        let partial = !pattern.length_ticks().0.is_multiple_of(meter.bar_ticks());
+        format!(
+            "{}/{} B{bar}.{unit}+{} Grid:{}/q Tick:{}{}",
+            meter.numerator(),
+            meter.denominator(),
+            tick.0 % meter.unit_ticks(),
+            pattern
+                .grid()
+                .grid_at(tick)
+                .map_or(4, crate::musical_time::Grid::divisions_per_quarter),
+            tick.0,
+            if partial { " Partial" } else { "" }
+        )
+    }
+
+    fn navigate_event(&mut self, forward: bool) {
+        let tick = self.cursor_tick();
+        let pattern = &self.project.patterns[self.selected_pattern];
+        let events = pattern.tracks[self.cursor_track].events();
+        let event = if forward {
+            events.iter().find(|event| event.start_tick > tick)
+        } else {
+            events.iter().rev().find(|event| event.start_tick < tick)
+        };
+        if let Some(event) = event {
+            self.remap_cursor(event.start_tick);
+        }
+        self.status = self.grid_context();
     }
 
     fn set_entry_setting(&mut self, command: &str, input: &str) -> anyhow::Result<()> {
@@ -404,7 +532,7 @@ impl App {
         self.cursor_row = saved.row.min(if self.view == View::Mixer {
             crate::project::CHANNEL_ROWS - 1
         } else {
-            self.project.patterns[self.selected_pattern].num_rows() - 1
+            self.project.patterns[self.selected_pattern].view_rows() - 1
         });
         self.cursor_track = saved.track.min(self.project.instruments().len() - 1);
         self.selection_anchor = saved.anchor;
@@ -639,6 +767,7 @@ impl App {
     }
 
     fn jump(&mut self, command: Command) {
+        self.inspected_tick = None;
         let pattern = &self.project.patterns[self.selected_pattern];
         match command {
             Command::FirstTrack => self.cursor_track = 0,
@@ -647,7 +776,7 @@ impl App {
                 self.cursor_row = if self.view == View::Mixer {
                     crate::project::CHANNEL_ROWS - 1
                 } else {
-                    pattern.num_rows().saturating_sub(1)
+                    pattern.view_rows().saturating_sub(1)
                 }
             }
             Command::LastTrack => self.cursor_track = pattern.tracks.len().saturating_sub(1),
@@ -669,21 +798,35 @@ impl App {
     fn transpose_notes(&mut self, semitones: i8) {
         let (first_row, last_row, first_track, last_track) = self.rectangle();
         let pattern = self.selected_pattern;
+        let source = &self.project.patterns[pattern];
+        let start = if self.mode == Mode::Visual {
+            source.row_tick(first_row).unwrap()
+        } else {
+            self.cursor_tick()
+        };
+        let end = if self.mode == Mode::Visual {
+            source.row_tick(last_row + 1).unwrap()
+        } else {
+            Tick(start.0 + 1)
+        };
         let mut notes = Vec::new();
-        for track in first_track..=last_track {
-            for row in first_row..=last_row {
-                if let Some(note) = self.project.patterns[pattern]
-                    .get_step(track, row)
-                    .and_then(|step| step.note)
-                {
-                    notes.push((track, row, note.transpose(semitones)));
-                }
+        for (track, values) in source.tracks.iter().enumerate().take(last_track + 1).skip(first_track) {
+            for event in values.events_in(start..end) {
+                let note = event.row_note().transpose(semitones);
+                notes.push((
+                    track,
+                    crate::tracker::PatternEvent {
+                        pitch: note.pitch,
+                        octave: note.octave,
+                        ..*event
+                    },
+                ));
             }
         }
         if !notes.is_empty() {
             self.edit(|edit| {
-                for (track, row, note) in notes {
-                    edit.set_cell(pattern, track, row, Some(note));
+                for (track, event) in notes {
+                    edit.set_event(pattern, track, event.start_tick, Some(event));
                 }
             });
         }
@@ -731,6 +874,8 @@ impl App {
             }
             Command::Undo | Command::Redo => {
                 let redo = command == Command::Redo;
+                let tick = self.cursor_tick();
+                let grid = self.project.patterns[self.selected_pattern].grid().clone();
                 let structural = self.history.structural_next(redo);
                 if structural {
                     self.stop_playback();
@@ -740,6 +885,16 @@ impl App {
                 } else {
                     self.history.undo(&mut self.project);
                 }
+                if self
+                    .project
+                    .patterns
+                    .get(self.selected_pattern)
+                    .is_some_and(|pattern| pattern.grid() != &grid)
+                {
+                    self.remap_cursor(tick);
+                }
+                self.selected_pattern = self.selected_pattern.min(self.project.patterns.len() - 1);
+                self.offset_cursor(&CursorOffset::None, &CursorOffset::None);
                 if structural {
                     self.invalidate_view_selections();
                     self.selected_order = self.selected_order.min(self.project.order.len() - 1);
@@ -759,6 +914,7 @@ impl App {
         if pattern_state.mode == Mode::Visual {
             pattern_state.mode = Mode::Normal;
         }
+        self.inspected_tick = None;
         self.selected_pattern = index;
         self.selection_anchor = None;
         self.pending_count = None;
@@ -839,8 +995,8 @@ impl App {
 
     fn adjust_length(&mut self, double: bool) {
         if let Some(mut note) = self.project.patterns[self.selected_pattern]
-            .get_step(self.cursor_track, self.cursor_row)
-            .and_then(|step| step.note)
+            .event_at(self.cursor_track, self.cursor_tick())
+            .map(crate::tracker::PatternEvent::row_note)
         {
             note.length_ticks = note.length_ticks.adjusted(double);
             self.insert_note_under_cursor(Some(note));
@@ -875,13 +1031,13 @@ impl App {
 
     fn enter_note(&mut self, mut note: Note) {
         if let Some(previous) = self.project.patterns[self.selected_pattern]
-            .get_step(self.cursor_track, self.cursor_row)
-            .and_then(|step| step.note)
+            .event_at(self.cursor_track, self.cursor_tick())
+            .map(crate::tracker::PatternEvent::row_note)
         {
             note.length_ticks = previous.length_ticks;
         }
         if self.project.patterns[self.selected_pattern]
-            .get_step(self.cursor_track, self.cursor_row)
+            .view_step(self.cursor_track, self.cursor_row)
             .is_some()
         {
             self.insert_note_under_cursor(Some(note));
@@ -914,7 +1070,7 @@ impl App {
                 crate::project::CHANNEL_ROWS - 1
             } else {
                 self.project.patterns[self.selected_pattern]
-                    .num_rows()
+                    .view_rows()
                     .saturating_sub(1)
             }),
             track.min(self.cursor_track),
@@ -929,25 +1085,51 @@ impl App {
 
     fn copy_rectangle(&mut self) {
         let (first_row, last_row, first_track, last_track) = self.rectangle();
-        let start = Tick::from_legacy_row(first_row as u64).expect("bounded selection row");
-        let end = Tick::from_legacy_row(last_row as u64 + 1).expect("bounded selection row");
+        let pattern = &self.project.patterns[self.selected_pattern];
+        let start = if self.mode == Mode::Visual {
+            pattern.row_tick(first_row).unwrap()
+        } else {
+            self.cursor_tick()
+        };
+        let end = pattern.row_tick(last_row + 1).unwrap();
         self.clipboard = EventClipboard::capture(
             &self.project.patterns[self.selected_pattern],
             first_track..last_track + 1,
             start..end,
         );
+        if self.mode != Mode::Visual {
+            for track in &mut self.clipboard.tracks {
+                track.retain(|event| event.start_tick == Tick(0));
+            }
+        }
+        let count = self.clipboard.tracks.iter().map(Vec::len).sum::<usize>();
+        self.status = format!("Copied {count} events, {} PPQ ticks", self.clipboard.span_ticks);
     }
 
     fn clear_rectangle(&mut self) {
         let (first_row, last_row, first_track, last_track) = self.rectangle();
         let pattern = self.selected_pattern;
-        let start = Tick::from_legacy_row(first_row as u64).expect("bounded selection row");
-        let end = Tick::from_legacy_row(last_row as u64 + 1).expect("bounded selection row");
+        let source = &self.project.patterns[pattern];
+        if self.mode != Mode::Visual {
+            let tick = self.cursor_tick();
+            self.edit(|edit| edit.set_event(pattern, first_track, tick, None));
+            return;
+        }
+        let start = source.row_tick(first_row).unwrap();
+        let end = source.row_tick(last_row + 1).unwrap();
+        let count = source.tracks[first_track..=last_track]
+            .iter()
+            .map(|track| track.events_in(start..end).len())
+            .sum::<usize>();
         self.edit(|edit| {
             for track in first_track..=last_track {
                 edit.clear_range(pattern, track, start..end);
             }
         });
+        self.status = format!(
+            "Cleared {count} events (including hidden) in ticks {}..{}",
+            start.0, end.0
+        );
     }
 
     fn clear_selection(&mut self) {
@@ -961,7 +1143,7 @@ impl App {
             saved.row = saved.row.min(if index == View::Mixer as usize {
                 crate::project::CHANNEL_ROWS - 1
             } else {
-                pattern.num_rows() - 1
+                pattern.view_rows() - 1
             });
             saved.track = saved.track.min(pattern.tracks.len() - 1);
             saved.anchor = None;
@@ -979,20 +1161,52 @@ impl App {
     }
 
     fn paste(&mut self) {
-        let (track, row) = (self.cursor_track, self.cursor_row);
-        let Ok(start) = Tick::from_legacy_row(row as u64) else {
+        self.paste_events(false);
+    }
+
+    fn paste_events(&mut self, force: bool) {
+        let track = self.cursor_track;
+        let start = self.cursor_tick();
+        let target = &self.project.patterns[self.selected_pattern];
+        let end = Tick(
+            start
+                .0
+                .saturating_add(self.clipboard.span_ticks)
+                .min(target.length_ticks().0),
+        );
+        let hidden = target
+            .tracks
+            .iter()
+            .skip(track)
+            .take(self.clipboard.tracks.len())
+            .flat_map(|track| track.events_in(start..end))
+            .filter(|event| {
+                event.start_tick != start
+                    && target
+                        .grid()
+                        .neighbors(event.start_tick)
+                        .is_ok_and(|(lo, _)| lo != event.start_tick)
+            })
+            .count();
+        if hidden > 0 && !force {
+            self.status = format!("Paste would replace {hidden} hidden events; use :paste! to confirm");
             return;
-        };
+        }
         let clipboard = self.clipboard.clone();
         let pattern = self.selected_pattern;
         self.edit(|edit| clipboard.paste(edit, pattern, track, start));
     }
 
     pub fn offset_cursor(&mut self, dr: &CursorOffset, dt: &CursorOffset) {
+        if !matches!(dr, CursorOffset::None | CursorOffset::Pos(0) | CursorOffset::Neg(0))
+            || !matches!(dt, CursorOffset::None | CursorOffset::Pos(0) | CursorOffset::Neg(0))
+        {
+            self.inspected_tick = None;
+        }
         let max_rows = if self.view == View::Mixer {
             crate::project::CHANNEL_ROWS
         } else {
-            self.project.patterns[self.selected_pattern].num_rows()
+            self.project.patterns[self.selected_pattern].view_rows()
         };
         let max_tracks = self.project.patterns[self.selected_pattern].tracks.len();
 
@@ -1049,7 +1263,14 @@ impl App {
         } else {
             self.view_states[View::Pattern as usize].row
         };
-        self.playback_row = if beginning { 0 } else { row }.min(pattern.num_rows().saturating_sub(1));
+        self.playback_row = if beginning { 0 } else { row }.min(pattern.view_rows().saturating_sub(1));
+        self.playback_start_tick = Some(if beginning {
+            Tick(0)
+        } else if self.view == View::Pattern && self.playing_pattern == self.selected_pattern {
+            self.cursor_tick()
+        } else {
+            pattern.row_tick(self.playback_row).unwrap_or(Tick(0))
+        });
         self.playback_state = PlaybackState::Playing;
     }
 
@@ -1073,17 +1294,28 @@ impl App {
 
     /// Replace the note at the cursor; invalid positions are ignored.
     pub fn insert_note_under_cursor(&mut self, note: Option<Note>) {
-        let (track, row) = (self.cursor_track, self.cursor_row);
+        if self.cursor_row >= self.project.patterns[self.selected_pattern].view_rows() {
+            return;
+        }
+        let track = self.cursor_track;
+        let tick = self.cursor_tick();
         let pattern = self.selected_pattern;
-        self.edit(|edit| edit.set_cell(pattern, track, row, note));
+        self.edit(|edit| {
+            edit.set_event(
+                pattern,
+                track,
+                tick,
+                note.map(|note| crate::tracker::PatternEvent::from_note(tick, note)),
+            );
+        });
     }
 
     /// Legacy standalone editor helper; the runtime uses `Transport` instead.
     pub fn advance_playback_row(&mut self) {
         if matches!(self.playback_state, PlaybackState::Playing)
-            && self.project.patterns[self.playing_pattern].num_rows() > 0
+            && self.project.patterns[self.playing_pattern].view_rows() > 0
         {
-            self.playback_row = (self.playback_row + 1) % self.project.patterns[self.playing_pattern].num_rows();
+            self.playback_row = (self.playback_row + 1) % self.project.patterns[self.playing_pattern].view_rows();
         }
     }
 }
