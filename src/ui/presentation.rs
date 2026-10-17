@@ -7,7 +7,7 @@ use ratatui::{
 
 use crate::{
     state::{App, Mode, PlaybackMode, PlaybackState},
-    tracker::{Note, NoteLength},
+    tracker::{NoteLength, PatternEvent},
 };
 
 pub(super) fn row_label(row: usize) -> String {
@@ -41,7 +41,14 @@ pub(super) fn length_label(length: NoteLength) -> String {
     format!("{ticks}t/{rows}r")
 }
 
-fn pitch_label(note: Note) -> String {
+fn event_length(event: PatternEvent) -> String {
+    event.row_note().map_or_else(
+        || format!("{}ppqt", event.duration_ticks.ticks()),
+        |note| length_label(note.length_ticks),
+    )
+}
+
+fn pitch_label(note: PatternEvent) -> String {
     format!("{}{}", note.pitch, note.octave)
 }
 
@@ -152,12 +159,10 @@ impl Presentation<'_> {
         if app.mode == Mode::Visual {
             return self.selection();
         }
-        let note = app.project.patterns[app.selected_pattern]
-            .event_at(app.cursor_track, app.cursor_tick())
-            .map(crate::tracker::PatternEvent::row_note);
+        let note = app.project.patterns[app.selected_pattern].event_at(app.cursor_track, app.cursor_tick());
         let cell = note.map_or_else(
             || "Empty".to_owned(),
-            |note| format!("{} Len:{}", pitch_label(note), length_label(note.length_ticks)),
+            |note| format!("{} Len:{}", pitch_label(note), event_length(note)),
         );
         if app.mode == Mode::Insert {
             format!(
@@ -179,17 +184,17 @@ impl Presentation<'_> {
         let tracks = anchor_track.min(app.cursor_track)..=anchor_track.max(app.cursor_track);
         let dimensions = format!("{}r × {}t", rows.clone().count(), tracks.clone().count());
         let pattern = &app.project.patterns[app.selected_pattern];
-        let mut first: Option<Note> = None;
+        let mut first: Option<PatternEvent> = None;
         let mut mixed_pitch = false;
         let mut mixed_length = false;
         let start = pattern.row_tick(*rows.start()).unwrap();
         let end = pattern.row_tick(rows.end().saturating_add(1)).unwrap();
         for track in tracks {
             for event in pattern.tracks[track].events_in(start..end) {
-                let note = event.row_note();
+                let note = *event;
                 if let Some(initial) = first {
                     mixed_pitch |= (initial.pitch, initial.octave) != (note.pitch, note.octave);
-                    mixed_length |= initial.length_ticks != note.length_ticks;
+                    mixed_length |= initial.duration_ticks != note.duration_ticks;
                 } else {
                     first = Some(note);
                 }
@@ -208,7 +213,7 @@ impl Presentation<'_> {
                     if mixed_length {
                         "mixed".to_owned()
                     } else {
-                        length_label(note.length_ticks)
+                        event_length(note)
                     }
                 )
             },
@@ -314,6 +319,9 @@ impl Presentation<'_> {
     }
 
     fn entry_length(&self) -> String {
+        if let Some(duration) = self.0.entry_duration {
+            return format!("{}ppqt", duration.ticks());
+        }
         let ticks = self.0.entry_length.ticks();
         let row = crate::tracker::NoteLength::TICKS_PER_ROW;
         if ticks.is_multiple_of(row) {
@@ -550,7 +558,7 @@ mod tests {
     use super::*;
     use crate::{
         command::Command,
-        tracker::{NotePitch, Pattern},
+        tracker::{Note, NotePitch, Pattern},
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
