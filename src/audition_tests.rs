@@ -7,6 +7,66 @@ use crate::{
     tracker::{Instrument, NotePitch},
 };
 
+fn key(app: &mut App, c: char) {
+    handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE), app);
+}
+
+#[test]
+fn insert_keys_preview_committed_note_even_on_noop_without_extra_history() {
+    for instrument in [Instrument::Pad, Instrument::Kick] {
+        let mut app = App {
+            cursor_track: 2,
+            octave: 5,
+            ..App::default()
+        };
+        app.handle_command(Command::SetInstrument(instrument));
+        key(&mut app, 'i');
+        key(&mut app, ',');
+        let event = app.take_audition().unwrap();
+        assert_eq!(event.track, 2);
+        assert_eq!(event.instrument, instrument);
+        assert_eq!(event.note.pitch, NotePitch::C);
+        assert_eq!(event.note.octave, 6);
+        assert_eq!(event.duration, crate::audio::DEFAULT_NOTE_DURATION);
+        let before = app.project.clone();
+        key(&mut app, ',');
+        assert_eq!(app.take_audition().unwrap().note, event.note);
+        assert_eq!(app.project, before);
+        app.handle_command(Command::Undo);
+        assert!(app.project.patterns[0].get_step(2, 0).unwrap().note.is_none());
+    }
+}
+
+#[test]
+fn entry_preview_preserves_playback_and_obeys_real_key_guards() {
+    let mut app = App::default();
+    key(&mut app, 'z');
+    assert!(app.take_audition().is_none());
+    key(&mut app, 'i');
+    app.handle_command(Command::TogglePlayback);
+    let _ = app.take_stop_request();
+    let position = (app.playing_order, app.playing_pattern);
+    key(&mut app, 'x');
+    assert_eq!(app.take_audition().unwrap().note.pitch, NotePitch::D);
+    assert!(matches!(app.playback_state, PlaybackState::Playing));
+    assert_eq!((app.playing_order, app.playing_pattern), position);
+    assert!(!app.take_stop_request());
+    for kind in [KeyEventKind::Repeat, KeyEventKind::Release] {
+        handle_key(
+            KeyEvent::new_with_kind(KeyCode::Char('z'), KeyModifiers::NONE, kind),
+            &mut app,
+        );
+        assert!(app.take_audition().is_none());
+    }
+    app.help_visible = true;
+    key(&mut app, 'z');
+    assert!(app.take_audition().is_none());
+    app.help_visible = false;
+    app.prompt = Some(String::new());
+    key(&mut app, 'z');
+    assert!(app.take_audition().is_none());
+}
+
 fn enter(app: &mut App) {
     handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), app);
 }

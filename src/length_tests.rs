@@ -263,6 +263,8 @@ fn invalid_v2_forced_load_keeps_live_lengths_history_and_playback() {
     text(&mut app, "iz}}");
     app.handle_command(Command::EnterNormal);
     app.handle_command(Command::TogglePlayback);
+    // Starting transport cancels the note-entry preview, not the failed load below.
+    assert!(app.take_stop_request());
     let project = app.project.clone();
     let revision = app.revision();
     for invalid in [json!(0), json!(4097), json!(null)] {

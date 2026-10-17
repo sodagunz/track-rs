@@ -185,10 +185,10 @@ impl App {
         }
     }
 
-    /// Consume a preview once, dropping stale requests after playback starts.
+    /// Consume a bounded preview once; transport transitions clear stale requests.
     pub const fn take_audition(&mut self) -> Option<crate::transport::NoteEvent> {
         let event = self.audition.take();
-        if self.shutdown || !matches!(self.playback_state, PlaybackState::Stopped) {
+        if self.shutdown {
             return None;
         }
         event
@@ -320,7 +320,7 @@ impl App {
         let saved = self.view_states[self.view as usize];
         self.mode = saved.mode;
         self.cursor_row = saved.row.min(if self.view == View::Mixer {
-            1
+            crate::project::CHANNEL_ROWS - 1
         } else {
             self.project.patterns[self.selected_pattern].num_rows - 1
         });
@@ -443,10 +443,13 @@ impl App {
             Command::MixerReset => {
                 let track = self.cursor_track;
                 let mut setting = self.project.channels()[track];
-                if self.cursor_row == 0 {
-                    setting.volume_db = Some(0.0);
-                } else {
-                    setting.pan = 0.0;
+                match self.cursor_row {
+                    0 => setting.volume_db = Some(0.0),
+                    1 => setting.pan = 0.0,
+                    2 => setting.low_shelf_db = 0.0,
+                    3 => setting.high_shelf_db = 0.0,
+                    4 => setting.hpf_hz = None,
+                    _ => setting.lpf_hz = None,
                 }
                 self.edit(|edit| edit.set_channel(track, setting));
             }
@@ -475,26 +478,28 @@ impl App {
         let text = text.trim();
         if self.cursor_row == 0 && text == "-inf" {
             setting.volume_db = None;
-        } else {
-            let value: f32 = text.parse().map_err(|_| {
-                anyhow::anyhow!(
-                    "Expected a number{}",
-                    if self.cursor_row == 0 {
-                        " in dB or -inf"
-                    } else {
-                        " (-100 left, 100 right)"
-                    }
-                )
-            })?;
-            if self.cursor_row == 0 {
-                setting.volume_db = Some(value);
+        } else if self.cursor_row >= 4 && text == "off" {
+            if self.cursor_row == 4 {
+                setting.hpf_hz = None;
             } else {
-                setting.pan = value;
+                setting.lpf_hz = None;
+            }
+        } else {
+            let value: f32 = text
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Expected a number, -inf for volume, or off for filters"))?;
+            match self.cursor_row {
+                0 => setting.volume_db = Some(value),
+                1 => setting.pan = value,
+                2 => setting.low_shelf_db = value,
+                3 => setting.high_shelf_db = value,
+                4 => setting.hpf_hz = Some(value),
+                _ => setting.lpf_hz = Some(value),
             }
         }
         anyhow::ensure!(
             setting.is_valid(),
-            "Expected finite volume -60..+6 dB (or -inf), or pan -100..100"
+            "Expected finite volume -60..+6 dB/-inf, pan -100..100, shelf -12..12 dB, or cutoff 20..20000 Hz/off"
         );
         self.edit(|edit| edit.set_channel(track, setting));
         Ok(())
@@ -512,7 +517,7 @@ impl App {
             Command::FirstRow => self.cursor_row = 0,
             Command::LastRow => {
                 self.cursor_row = if self.view == View::Mixer {
-                    1
+                    crate::project::CHANNEL_ROWS - 1
                 } else {
                     pattern.num_rows.saturating_sub(1)
                 }
@@ -718,6 +723,16 @@ impl App {
             .is_some()
         {
             self.insert_note_under_cursor(Some(note));
+            if self.mode == Mode::Insert && self.view == View::Pattern {
+                self.audition_active = true;
+                self.audition = Some(crate::transport::NoteEvent {
+                    track: self.cursor_track,
+                    instrument: self.project.instrument(self.cursor_track),
+                    note,
+                    beats: 0.0,
+                    duration: crate::audio::DEFAULT_NOTE_DURATION,
+                });
+            }
             if self.mode == Mode::Insert {
                 self.offset_cursor(&CursorOffset::Pos(self.edit_step), &CursorOffset::None);
             }
@@ -822,7 +837,7 @@ impl App {
 
     pub fn offset_cursor(&mut self, dr: &CursorOffset, dt: &CursorOffset) {
         let max_rows = if self.view == View::Mixer {
-            2
+            crate::project::CHANNEL_ROWS
         } else {
             self.project.patterns[self.selected_pattern].num_rows
         };

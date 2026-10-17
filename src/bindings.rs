@@ -103,7 +103,7 @@ pub const DEFAULT_BINDINGS: &[Binding] = &[
         ..Binding::new(
             KeyCode::Enter,
             Command::MixerValue,
-            "Enter volume dB / pan -100..100 (stereo balance, no boost)",
+            "Enter value: dB, pan %, or cutoff Hz/off",
             "Mixer",
         )
     },
@@ -175,11 +175,11 @@ pub const DEFAULT_BINDINGS: &[Binding] = &[
     },
     Binding {
         prefix: Some(KeyCode::Char('g')),
-        ..Binding::new(KeyCode::Char('j'), Command::FirstRow, "First row", "Navigation")
+        ..Binding::new(KeyCode::Char('k'), Command::FirstRow, "First row", "Navigation")
     },
     Binding {
         prefix: Some(KeyCode::Char('g')),
-        ..Binding::new(KeyCode::Char('k'), Command::LastRow, "Last row", "Navigation")
+        ..Binding::new(KeyCode::Char('j'), Command::LastRow, "Last row", "Navigation")
     },
     Binding {
         prefix: Some(KeyCode::Char('g')),
@@ -1048,15 +1048,42 @@ mod tests {
     }
 
     #[test]
+    fn directional_g_jumps_follow_view_local_navigation() {
+        for (panel, last_row, horizontal) in [
+            (1, Some(63), true),
+            (2, None, false),
+            (3, Some(5), true),
+            (4, None, true),
+        ] {
+            let mut app = App::default();
+            key(&mut app, KeyCode::F(panel), KeyModifiers::NONE, KeyEventKind::Press);
+            let revision = app.revision();
+            sequence(&mut app, "gj");
+            assert_eq!(app.cursor_row, last_row.unwrap_or(0), "F{panel}: gj goes down");
+            sequence(&mut app, "gk");
+            assert_eq!(app.cursor_row, 0, "F{panel}: gk goes up");
+            sequence(&mut app, "gl");
+            assert_eq!(
+                app.cursor_track,
+                if horizontal { 3 } else { 0 },
+                "F{panel}: gl goes right"
+            );
+            sequence(&mut app, "gh");
+            assert_eq!(app.cursor_track, 0, "F{panel}: gh goes left");
+            assert_eq!(app.revision(), revision);
+        }
+    }
+
+    #[test]
     fn jumps_consume_counts_cancel_invalid_and_ignore_repeats_in_all_modes() {
         for mode in [Mode::Normal, Mode::Insert, Mode::Visual] {
             let mut app = App { mode, ..App::default() };
-            sequence(&mut app, "12gk");
+            sequence(&mut app, "12gj");
             assert_eq!(app.cursor_row, 63);
             assert_eq!(app.pending_count, None);
-            key(&mut app, KeyCode::Char('k'), KeyModifiers::NONE, KeyEventKind::Repeat);
+            key(&mut app, KeyCode::Char('j'), KeyModifiers::NONE, KeyEventKind::Repeat);
             assert_eq!(app.cursor_row, 63);
-            sequence(&mut app, "glgjgh");
+            sequence(&mut app, "glgkgh");
             assert_eq!((app.cursor_row, app.cursor_track), (0, 0));
             let revision = app.revision();
             sequence(&mut app, "gz");

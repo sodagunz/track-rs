@@ -84,7 +84,7 @@ impl Presentation<'_> {
                 return format!(
                     "T{} {} {}",
                     track_number(app.cursor_track),
-                    if app.cursor_row == 0 { "Volume" } else { "Pan" },
+                    ["Volume", "Pan", "Low shelf", "High shelf", "HPF", "LPF"][app.cursor_row],
                     app.project.channels()[app.cursor_track].label(app.cursor_row)
                 )
             }

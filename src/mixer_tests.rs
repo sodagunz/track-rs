@@ -30,8 +30,8 @@ fn real_mixer_keys_counts_modes_numeric_reset_history_and_playback() {
     let notes = app.project.patterns.clone();
     key(&mut app, KeyCode::F(3));
     text(&mut app, "3l2j");
-    assert_eq!((app.cursor_track, app.cursor_row), (3, 1));
-    text(&mut app, "ghgjivazs{");
+    assert_eq!((app.cursor_track, app.cursor_row), (3, 2));
+    text(&mut app, "ghgkivazs{");
     assert_eq!(app.mode, Mode::Insert);
     assert_eq!(app.project.patterns, notes);
     text(&mut app, "10h");
@@ -115,14 +115,17 @@ fn channel_transactions_append_undo_redo_and_invalid_noops() {
         ChannelSettings {
             volume_db: Some(f32::NAN),
             pan: 0.0,
+            ..ChannelSettings::default()
         },
         ChannelSettings {
             volume_db: Some(7.0),
             pan: 0.0,
+            ..ChannelSettings::default()
         },
         ChannelSettings {
             volume_db: None,
             pan: f32::INFINITY,
+            ..ChannelSettings::default()
         },
     ] {
         app.edit(|edit| edit.set_channel(0, invalid));
@@ -135,6 +138,7 @@ fn channel_transactions_append_undo_redo_and_invalid_noops() {
     let settings = ChannelSettings {
         volume_db: None,
         pan: 33.5,
+        ..ChannelSettings::default()
     };
     app.edit(|edit| edit.set_channel(track, settings));
     app.handle_command(Command::Undo);
@@ -155,10 +159,12 @@ fn v3_roundtrip_strict_channels_and_explicit_v2_migration() {
     project.channels[0] = ChannelSettings {
         volume_db: None,
         pan: -100.0,
+        ..ChannelSettings::default()
     };
     project.channels[1] = ChannelSettings {
         volume_db: Some(6.0),
         pan: 100.0,
+        ..ChannelSettings::default()
     };
     project_file::save(&project, &path).unwrap();
     assert_eq!(project_file::load(&path).unwrap(), project);
@@ -185,4 +191,93 @@ fn v3_roundtrip_strict_channels_and_explicit_v2_migration() {
     legacy["version"] = 3.into();
     std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
     assert!(project_file::load(&path).is_err());
+}
+
+#[test]
+fn tone_keys_numeric_off_boundaries_reset_and_history() {
+    let mut app = App::default();
+    let notes = app.project.patterns.clone();
+    key(&mut app, KeyCode::F(3));
+    text(&mut app, "2ji12l");
+    assert_eq!(app.project.channels()[0].low_shelf_db, 12.0);
+    numeric(&mut app, "-6.5");
+    assert_eq!(app.project.channels()[0].low_shelf_db, -6.5);
+    for invalid in ["NaN", "inf", "-inf", "off", "12.1", "-12.1"] {
+        let revision = app.revision();
+        numeric(&mut app, invalid);
+        assert_eq!(app.revision(), revision);
+    }
+    text(&mut app, "j3h");
+    assert_eq!(app.project.channels()[0].high_shelf_db, -3.0);
+    text(&mut app, "jhl");
+    assert_eq!(app.project.channels()[0].hpf_hz, Some(20.0));
+    text(&mut app, "12l");
+    assert!((app.project.channels()[0].hpf_hz.unwrap() - 40.0).abs() < 0.001);
+    numeric(&mut app, "20.1");
+    text(&mut app, "h");
+    assert_eq!(app.project.channels()[0].hpf_hz, None);
+    text(&mut app, "jlh");
+    assert_eq!(app.project.channels()[0].lpf_hz, Some(20_000.0));
+    text(&mut app, "12h");
+    assert!((app.project.channels()[0].lpf_hz.unwrap() - 10_000.0).abs() < 0.01);
+    numeric(&mut app, "19999");
+    text(&mut app, "l");
+    assert_eq!(app.project.channels()[0].lpf_hz, None);
+    for invalid in ["0", "19.99", "20001", "NaN", "inf", "-inf"] {
+        let revision = app.revision();
+        numeric(&mut app, invalid);
+        assert_eq!(app.revision(), revision);
+    }
+    numeric(&mut app, "1234.5");
+    numeric(&mut app, "off");
+    key(&mut app, KeyCode::Esc);
+    text(&mut app, "u");
+    assert_eq!(app.project.channels()[0].lpf_hz, Some(1234.5));
+    handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL), &mut app);
+    assert_eq!(app.project.channels()[0].lpf_hz, None);
+    text(&mut app, "gj");
+    assert_eq!(app.cursor_row, 5);
+    key(&mut app, KeyCode::F(1));
+    key(&mut app, KeyCode::F(3));
+    assert_eq!(app.cursor_row, 5);
+    text(&mut app, "2kdx");
+    assert_eq!(app.project.channels()[0].high_shelf_db, 0.0);
+    assert_eq!(app.project.patterns, notes);
+}
+
+#[test]
+fn tone_v3_roundtrip_old_v3_defaults_and_validation() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tone.json");
+    let mut project = Project::new(2, 1);
+    project.channels[0] = ChannelSettings {
+        low_shelf_db: -12.0,
+        high_shelf_db: 12.0,
+        hpf_hz: Some(20_000.0),
+        lpf_hz: Some(20.0),
+        ..ChannelSettings::default()
+    };
+    project_file::save(&project, &path).unwrap();
+    assert_eq!(project_file::load(&path).unwrap(), project);
+    let original: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    for (field, invalid) in [
+        ("low_shelf_db", -12.1),
+        ("high_shelf_db", 12.1),
+        ("hpf_hz", 0.0),
+        ("lpf_hz", 20001.0),
+    ] {
+        let mut value = original.clone();
+        value["channels"][0][field] = invalid.into();
+        std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(project_file::load(&path).is_err());
+    }
+    let mut old = original;
+    for field in ["low_shelf_db", "high_shelf_db", "hpf_hz", "lpf_hz"] {
+        old["channels"][0].as_object_mut().unwrap().remove(field);
+    }
+    std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+    assert_eq!(
+        project_file::load(&path).unwrap().channels()[0],
+        ChannelSettings::default()
+    );
 }

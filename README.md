@@ -9,13 +9,17 @@ audio. Sorry Mario, your blazingly fast modern tracker is in another repo.
 
 Start in Normal mode. `i` enters Insert, `v` selects a rectangle, `Esc` returns
 to Normal. `hjkl` moves in every mode, with counts like `16j`.
-`gh`/`gj`/`gk`/`gl` jumps to first track/first row/last row/last track.
+`gh`/`gk`/`gj`/`gl` jumps to first track/first row/last row/last track.
 `?` shows the bindings for each mode. Help blocks editing, not playback.
 
 In every mode, `a`/`s` lowers/raises notes one octave; `A`/`S` does so one
 semitone. Visual transposes the inclusive rectangle without leaving selection;
 otherwise only the cursor cell changes.
-In Insert, `zxcvbnm,` enters notes. Tab cycles entry steps of 0/1/2/4 rows.
+In Insert, `zxcvbnm,` enters notes and immediately auditions the selected track's
+instrument for 200 ms plus release, including when re-entering the same note.
+Holding a note key doesn't repeat. Previews use the track's mixer settings and
+separate bounded voices, so entry during playback doesn't cut off song notes or
+move the playhead. Tab cycles entry steps of 0/1/2/4 rows.
 `{`/`}` halves/doubles note length (16 ticks per row); new notes last one row.
 Length sets note-off; the instrument's release rings afterward.
 
@@ -38,13 +42,13 @@ The controls below apply in each panel's Normal mode.
 | --- | --- | --- |
 | F1 | Pattern editor | Note editing described above |
 | F2 | Arrangement | Order controls below; scrolls with selection |
-| F3 | Channel mixer | Volume and stereo balance; controls below |
+| F3 | Channel mixer | Volume, stereo balance, shelves and filters; controls below |
 | F4 | Built-in instruments | Same track/voice controls; Enter auditions while stopped |
 
-In F3 Normal, `h`/`l` selects a channel and `j`/`k` selects Volume or Pan.
+In F3 Normal, `h`/`l` selects a channel and `j`/`k` selects a control.
 `i` enters adjustment mode: `h`/`l` decreases/increases the value, while `j`/`k`
 changes parameter. Arrow keys do the same. Counts work in both modes (`10l`
-adjusts ten steps in Insert). `gh`/`gl` selects first/last channel; `gj`/`gk`
+adjusts ten steps in Insert). `gh`/`gl` selects first/last channel; `gk`/`gj`
 selects first/last parameter. Enter in Insert opens numeric entry; Esc cancels the
 prompt first, then returns to Normal. Normal `d`/`x` or Insert Backspace resets
 the selected cell. Normal `u`/Ctrl-r undoes/redoes without stopping playback.
@@ -57,7 +61,17 @@ Settings are shared across patterns and affect held notes, release tails and F4
 audition, with a 10 ms gain ramp. Boosts can clip; there is no limiter. Listening
 checks are still pending, so smoothing isn't a claim of click-free output.
 
-Mixer Visual/bulk edits, grouped held-key undo, EQ, mute/solo and meters aren't
+Low/high shelves provide −12..+12 dB in 1 dB steps at 200 Hz/4 kHz.
+HPF and LPF are independent, non-resonant 12 dB/octave filters: Off or
+20..20000 Hz, adjusted in semitone steps. From Off, increase HPF to start at
+20 Hz; decrease LPF to start at 20000 Hz. Decreasing HPF below 20 Hz or
+increasing LPF above 20000 Hz turns it off; moving the other way while Off does
+nothing. Numeric entry uses Hz or `off`. Effective frequencies, including shelves,
+are capped below the output's Nyquist frequency; saved settings retain the
+requested values. Tone targets and bypass blend over 10 ms, before gain/pan.
+Neutral shelves and Off filters preserve the original signal.
+
+Mixer Visual/bulk edits, grouped held-key undo, mute/solo and meters aren't
 implemented. Counted edits undo atomically; key repeats currently undo separately.
 Voice assignments in F1/F4 apply across all patterns; `u`/Ctrl-r undoes/redoes them.
 Custom synth parameters aren't implemented. In F4, Enter auditions C in the current
@@ -104,11 +118,13 @@ it. A failed load leaves your project alone; a successful load stops playback an
 clears undo history. The footer marks unsaved changes with `*`.
 
 The JSON format is experimental: saves use v3; v1/v2 files load with neutral mixer
-settings, and v1 notes receive one-row lengths. Unsupported versions are rejected;
+settings, and v1 notes receive one-row lengths. Earlier v3 saves without tone
+fields load with neutral shelves and Off filters. Unsupported versions are rejected;
 [format limits](src/project_file.rs) keep malformed files from allocating huge projects.
 
 The legacy `AudioEngine::play`/sequencer example path has no project track and
-intentionally bypasses the mixer. The tracker and F4 audition use `play_event`.
+intentionally bypasses the mixer. Transport uses `play_event`; note entry and F4
+use `preview_event` with the same channel settings.
 
 ### Dev
 
