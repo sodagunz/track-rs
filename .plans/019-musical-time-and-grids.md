@@ -1,6 +1,6 @@
 # 019 — Musical time, meter and local grids
 
-Status: in progress, 2026-10-17. Implementation order and recommended design approved by “Let's start implementing in order.” Foundation before [016](016-metronome-and-record-arming.md), [017](017-quantized-live-recording.md) and recording integration in [018](018-midi-input.md). Device-free foundation and v4 tick-event persistence adapter implemented; no new dependency. Runtime notes, history patches, clipboard snapshots and pattern ends use ticks; production playback uses anchored tick deadlines. Projected editing now supports pattern-local meter and per-bar grids, exact sub-row entry/navigation and hidden-event safeguards. General gate resolution is now admitted with explicit duration entry; partial-end admission remains guarded. [Primary-source research](../.ideas/musical-time.md).
+Status: in progress, 2026-10-17. Implementation order and recommended design approved by “Let's start implementing in order.” Foundation before [016](016-metronome-and-record-arming.md), [017](017-quantized-live-recording.md) and recording integration in [018](018-midi-input.md). Device-free foundation and v4 tick-event persistence adapter implemented; no new dependency. Runtime notes, history patches, clipboard snapshots and pattern ends use ticks; production playback uses anchored tick deadlines. Projected editing now supports pattern-local meter and per-bar grids, exact sub-row entry/navigation and hidden-event safeguards. General gate resolution is now admitted with explicit duration entry; exact partial-end editing and admission are implemented. [Primary-source research](../.ideas/musical-time.md).
 
 ## Outcome and vocabulary
 
@@ -142,6 +142,13 @@ Expose immutable run generation, absolute unwrapped tick/cycle, tempo segments a
 - Exact gates survive pitch replacement, transpose, clipboard, history and v4 round-trips. Unrepresentable legacy reads return `None`, never a rounded note. Cells use `@` for exact non-legacy gates and status uses `ppqt`; legacy gates keep their existing labels and adjustment behavior.
 - Removed only the gate-resolution admission guard. Partial-end admission, event budgets and collision-aware quantization remain outstanding. No transport/audio integration changed, and no manual listening check ran.
 - Validation: full locked all-target nextest passed, 225 tests; strict all-target/all-feature Clippy, formatting, doctests (zero cases), warning-free API docs and whitespace checks passed.
+
+### Exact pattern-end checkpoint
+
+- Added Normal `:end Nt` / `:end! Nt` in Pattern/Arrangement for 1–983040 canonical ticks. Partial rows/bars are admitted by v4 without a version change; `:resize N` still means legacy sixteenths. Grid projection includes only starts before the end, and status exposes partial bars on the default grid too.
+- Shrinking previews dropped onsets and bar overrides and refuses without confirmation. Forced truncation preserves surviving gates/IDs, trims out-of-range overrides and restores everything in one structural undo. Gates may cross the end. Invalid/no-op commands preserve playback and history; real end changes stop transport.
+- Full locked all-target nextest: 227 passed; strict Clippy, formatting, doctests (zero cases), warning-free API docs and whitespace checks passed. No DSP/transport integration or manual listening check changed.
+- Remaining: event-based budgets and explicit collision-aware quantization. 016/020 remain untouched.
 
 ## Acceptance
 

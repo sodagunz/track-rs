@@ -18,6 +18,8 @@ pub const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 pub const MAX_TRACKS: usize = 128;
 pub const MAX_PATTERNS: usize = 256;
 pub const MAX_ROWS: usize = 4096;
+/// Timeline extent, independent of projected grid density (256 legacy bars).
+pub const MAX_PATTERN_TICKS: u64 = MAX_ROWS as u64 * crate::musical_time::LEGACY_ROW_TICKS;
 pub const MAX_CELLS: usize = 1_000_000;
 pub const MAX_ORDER: usize = 65_536;
 
@@ -335,12 +337,10 @@ impl EventDocument {
         for pattern in &self.patterns {
             pattern.grid_map()?;
             ensure!(
-                pattern.end_tick > 0
-                    && pattern.end_tick <= MAX_ROWS as u64 * LEGACY_ROW_TICKS
-                    && pattern.end_tick % LEGACY_ROW_TICKS == 0,
-                "Pattern end is not supported by the row editor"
+                pattern.end_tick > 0 && pattern.end_tick <= MAX_PATTERN_TICKS,
+                "Pattern end must be 1..=983040 ticks"
             );
-            let rows = usize::try_from(pattern.end_tick / LEGACY_ROW_TICKS)?;
+            let rows = usize::try_from(pattern.end_tick.div_ceil(LEGACY_ROW_TICKS))?;
             let tracks = pattern.tracks.len();
             ensure!(tracks == self.instruments.len(), "Inconsistent track dimensions");
             total = total
