@@ -67,7 +67,14 @@ fn variable_columns_history_selection_clipboard_and_roundtrip() {
     app.project.patterns.push(Pattern::new(7, 4));
     app.project.patterns[0].set_step(2, 9, Some(note())).unwrap();
     let before = app.project.clone();
-    app.clipboard = vec![vec![Some(note()), None]; 2];
+    let mut source = Pattern::new(2, 2);
+    source.set_step(0, 0, Some(note())).unwrap();
+    source.set_step(1, 0, Some(note())).unwrap();
+    app.clipboard = crate::clipboard::EventClipboard::capture(
+        &source,
+        0..2,
+        crate::musical_time::Tick(0)..crate::musical_time::Tick(480),
+    );
     let clipboard = app.clipboard.clone();
     app.handle_command(Command::TogglePlayback);
     add(&mut app);
