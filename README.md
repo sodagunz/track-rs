@@ -26,8 +26,19 @@ all defaults. Themes load at startup, not on save or reload of a project.
 
 Roles: `foreground`, `background`, `muted`, `accent`, `highlight_foreground`,
 `cursor`, `selection`, `playback`, `warning`, `normal`, `insert`, `visual`,
-`audition`. Cursor/selection/mode roles set backgrounds and share
+`audition`, `row_alternate`. Cursor/selection/mode roles set backgrounds and share
 `highlight_foreground` (black by default). Selection also uses an underline.
+Pattern rows alternate between `background` (terminal default) and
+`row_alternate` (`dark-gray`); playback uses `gray` with `highlight_foreground`.
+Cursor and selection take priority over playback, then row shading. Beat/bar
+markers remain visible without color. To change or disable the alternate shade:
+
+```json
+{"row_alternate": "dark-gray"}
+```
+
+Use the same color as `background` to disable shading. ANSI gray shades depend
+on your terminal palette; check contrast on both light and dark backgrounds.
 All views, help, prompts and buffer/status strips share these settings.
 
 Colors are lowercase ANSI names: `black`, `red`, `green`, `yellow`, `blue`,

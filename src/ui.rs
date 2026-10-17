@@ -691,7 +691,7 @@ fn draw_pattern_editor(f: &mut Frame, area: Rect, state: &App) {
             });
         }
         f.render_widget(
-            Paragraph::new(Line::from(spans)),
+            Paragraph::new(Line::from(spans)).style(state.theme.pattern_row(row)),
             Rect::new(
                 area.x,
                 area.y + header_rows + u16::try_from(offset).unwrap_or(0),
@@ -728,6 +728,85 @@ mod tests {
     use crate::tracker::{Note, NotePitch};
     use ratatui::backend::{Backend, TestBackend};
     use ratatui::style::Color;
+
+    #[test]
+    fn pattern_row_backgrounds_follow_absolute_rows_and_highlight_precedence() {
+        for width in [19, 80] {
+            for cursor_row in [0, 9] {
+                let mut app = App {
+                    cursor_row,
+                    ..App::default()
+                };
+                app.playback_state = crate::state::PlaybackState::Playing;
+                app.playback_row = cursor_row + 1;
+                let mut terminal = Terminal::new(TestBackend::new(width, 8)).unwrap();
+                terminal.draw(|f| draw_pattern_editor(f, f.area(), &app)).unwrap();
+                let first = cursor_row.saturating_add(1).saturating_sub(7);
+                for offset in 0..7_u16 {
+                    let row = first + usize::from(offset);
+                    let buffer = terminal.backend().buffer();
+                    let expected = if row.is_multiple_of(2) {
+                        Color::Reset
+                    } else {
+                        Color::DarkGray
+                    };
+                    assert_eq!(buffer[(width - 1, offset + 1)].bg, expected, "row {row}");
+                    assert_eq!(buffer[(0, offset + 1)].bg, expected);
+                    let note = &buffer[(6, offset + 1)];
+                    if row == cursor_row {
+                        assert_eq!(note.bg, Color::Green);
+                    } else if row == app.playback_row {
+                        assert_eq!(note.bg, Color::Gray);
+                    } else {
+                        assert_eq!(note.bg, expected);
+                    }
+                }
+            }
+        }
+        let mut app = App {
+            mode: Mode::Visual,
+            ..App::default()
+        };
+        app.selection_anchor = Some((0, 0));
+        app.cursor_row = 1;
+        app.playback_state = crate::state::PlaybackState::Playing;
+        app.playback_row = 0;
+        let mut terminal = Terminal::new(TestBackend::new(80, 8)).unwrap();
+        terminal.draw(|f| draw_pattern_editor(f, f.area(), &app)).unwrap();
+        assert_eq!(terminal.backend().buffer()[(6, 1)].bg, Color::Blue);
+        assert_eq!(terminal.backend().buffer()[(6, 2)].bg, Color::Green);
+        assert!(terminal.backend().buffer()[(6, 1)]
+            .modifier
+            .contains(Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn custom_row_backgrounds_reach_rendered_cells() {
+        for alternate in ["red", "blue"] {
+            let app = App {
+                cursor_row: 6,
+                theme: crate::theme::Theme::parse(&format!(
+                    r#"{{"foreground":"yellow","background":"blue","row_alternate":"{alternate}"}}"#
+                ))
+                .unwrap(),
+                ..App::default()
+            };
+            let mut terminal = Terminal::new(TestBackend::new(80, 8)).unwrap();
+            terminal.draw(|f| draw_pattern_editor(f, f.area(), &app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            for x in [0, 6, 15, 79] {
+                assert_eq!(buffer[(x, 1)].bg, Color::Blue);
+                assert_eq!(
+                    buffer[(x, 2)].bg,
+                    if alternate == "red" { Color::Red } else { Color::Blue }
+                );
+                assert_eq!(buffer[(x, 2)].fg, Color::Yellow);
+            }
+            assert_eq!(buffer[(4, 1)].symbol(), "|");
+            assert!(buffer[(4, 1)].modifier.contains(Modifier::BOLD));
+            assert_eq!(buffer[(4, 5)].symbol(), ".");
+        }
+    }
 
     #[test]
     fn custom_theme_covers_views_modes_overlays_and_preserves_text() {
@@ -1247,7 +1326,7 @@ mod tests {
             assert!(format!("2 {}", instrument.label()).len() <= 10);
             let buffer = terminal.backend().buffer();
             assert_eq!(buffer[(16, 3)].bg, Color::Green);
-            assert_eq!(buffer[(16, 4)].bg, Color::DarkGray);
+            assert_eq!(buffer[(16, 4)].bg, Color::Gray);
         }
     }
 
@@ -1312,14 +1391,14 @@ mod tests {
             let text: String = (x..x + 3).map(|x| buffer[(x, 1)].symbol()).collect();
             assert_eq!(text, expected);
         }
-        assert_eq!(buffer[(16, 1)].bg, Color::DarkGray);
-        assert_ne!(buffer[(16, 1)].fg, Color::Black);
-        assert_eq!(buffer[(16, 2)].bg, Color::Reset);
+        assert_eq!(buffer[(16, 1)].bg, Color::Gray);
+        assert_eq!(buffer[(16, 1)].fg, Color::Black);
+        assert_eq!(buffer[(16, 2)].bg, Color::DarkGray);
         assert_eq!(buffer[(44, 1)].bg, Color::Reset);
     }
 
     #[test]
-    fn unselected_rows_use_terminal_defaults_when_scrolling() {
+    fn unselected_rows_keep_alternating_palette_when_scrolling() {
         for (cursor, first) in [(0, 0), (20, 13), (63, 56)] {
             let app = App {
                 cursor_row: cursor,
@@ -1330,7 +1409,11 @@ mod tests {
             let buffer = terminal.backend().buffer();
             for offset in 0..8_u16 {
                 let row = first + usize::from(offset);
-                let background = Color::Reset;
+                let background = if row.is_multiple_of(2) {
+                    Color::Reset
+                } else {
+                    Color::DarkGray
+                };
                 for x in [0, 4, 15, 44, 47] {
                     assert_eq!(buffer[(x, offset + 1)].bg, background, "row {row}, x {x}");
                 }
@@ -1886,7 +1969,7 @@ mod tests {
         let selected = u16::try_from(text.find("[P1]").unwrap()).unwrap();
         let playing = u16::try_from(text.find(">P0").unwrap()).unwrap();
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(selected, 0)].bg, Color::DarkGray);
+        assert_eq!(buffer[(selected, 0)].bg, Color::Gray);
         assert!(buffer[(selected, 0)].modifier.contains(Modifier::BOLD));
         assert_eq!(buffer[(playing, 0)].fg, Color::Cyan);
         assert_eq!(buffer[(79, 0)].bg, Color::Reset);
