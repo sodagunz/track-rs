@@ -73,7 +73,7 @@ fn render(f: &mut Frame, state: &App) {
     let status_rows = u16::from(area.height >= 3);
     let hint_rows = u16::from(area.height > 0);
     if title_rows > 0 {
-        draw_title_bar(f, Rect::new(area.x, area.y, area.width, title_rows), state);
+        draw_buffer_line(f, Rect::new(area.x, area.y, area.width, title_rows), state);
     }
     if order_rows > 0 {
         draw_order(f, Rect::new(area.x, area.y + title_rows, area.width, 1), state);
@@ -323,7 +323,18 @@ fn draw_order(f: &mut Frame, area: Rect, state: &App) {
     ))];
     for (index, pattern) in state.project.order.iter().enumerate().skip(start).take(visible) {
         spans.push(Span::styled(
-            format!(" {index}:{} ", pattern_label(*pattern)),
+            format!(
+                " {}{index}:{} ",
+                if matches!(state.playback_state, crate::state::PlaybackState::Playing)
+                    && state.playback_mode == crate::state::PlaybackMode::Song
+                    && index == state.playing_order
+                {
+                    ">"
+                } else {
+                    ""
+                },
+                pattern_label(*pattern)
+            ),
             if index == state.selected_order {
                 Style::default().bg(Color::Green).fg(Color::Black)
             } else {
@@ -334,11 +345,8 @@ fn draw_order(f: &mut Frame, area: Rect, state: &App) {
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn draw_title_bar(f: &mut Frame, area: Rect, state: &App) {
-    let block = Block::default()
-        .borders(Borders::BOTTOM)
-        .title(Presentation(state).title_line(area.width));
-    f.render_widget(block, area);
+fn draw_buffer_line(f: &mut Frame, area: Rect, state: &App) {
+    f.render_widget(Paragraph::new(Presentation(state).buffer_line(area.width)), area);
 }
 
 fn draw_pattern_editor(f: &mut Frame, area: Rect, state: &App) {
@@ -509,7 +517,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(90, 24)).unwrap();
         terminal.draw(|frame| render(frame, &app)).unwrap();
         let text = screen(&terminal);
-        assert!(text.contains("Edit:P0"));
+        assert!(text.contains("[P0] >P1"));
         assert!(text.contains("Pattern Playing O0 P1 R00"));
         assert!(text.contains("99:P0"));
         let buffer = terminal.backend().buffer();
@@ -524,6 +532,39 @@ mod tests {
         for (width, height) in [(0, 0), (1, 1), (12, 3), (30, 7)] {
             terminal.resize(Rect::new(0, 0, width, height)).unwrap();
             terminal.draw(|frame| render(frame, &app)).unwrap();
+        }
+    }
+
+    #[test]
+    fn buffer_and_order_cues_render_independently_without_color() {
+        let mut app = App::default();
+        app.handle_command(Command::DuplicatePattern);
+        app.project.order = vec![0, 0, 1];
+        app.selected_order = 1;
+        app.playing_order = 0;
+        app.playing_pattern = 0;
+        app.playback_mode = crate::state::PlaybackMode::Song;
+        app.playback_state = crate::state::PlaybackState::Playing;
+        let mut terminal = Terminal::new(TestBackend::new(80, 8)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        assert!(screen(&terminal).contains(">P0 [P1]"));
+        assert!(screen(&terminal).contains(">0:P0"));
+        assert!(screen(&terminal).contains(" 1:P0"));
+        let buffer = terminal.backend().buffer();
+        assert!(buffer
+            .content()
+            .iter()
+            .any(|cell| cell.symbol() == "1" && cell.bg == Color::Green));
+        app.selected_pattern = 0;
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        assert!(screen(&terminal).contains(">[P0] P1"));
+        assert_eq!(app.selected_order, 1);
+        for (width, height) in [(6, 8), (24, 6), (40, 3), (0, 0), (80, 8)] {
+            terminal.resize(Rect::new(0, 0, width, height)).unwrap();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            if height >= 6 {
+                assert!(screen(&terminal).contains(">[P0]"));
+            }
         }
     }
 
@@ -946,7 +987,7 @@ mod tests {
             .map(ratatui::buffer::Cell::symbol)
             .collect();
         assert!(screen.contains("? Help"));
-        assert!(screen.contains("track-rs"));
+        assert!(screen.contains("[unsaved] * [P0]"));
         assert!(screen.contains("1 Pluck"));
         assert!(screen.contains("C#4"));
         assert!(screen.contains("BPM: 121.0"));

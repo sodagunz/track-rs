@@ -183,16 +183,107 @@ impl Presentation<'_> {
         )
     }
 
-    pub(super) fn title_line(&self, width: u16) -> Line<'static> {
-        prioritized_line(
-            [
-                "track-rs".to_owned(),
-                format!("Edit:{}", pattern_label(self.0.selected_pattern)),
-                self.transport(),
-            ],
-            width,
+    pub(super) fn buffer_line(&self, width: u16) -> Line<'static> {
+        let app = self.0;
+        let width = usize::from(width);
+        let dirty = if app.is_dirty() { "*" } else { "" };
+        let tab = |index| {
+            let label = pattern_label(index);
+            let label = if index == app.selected_pattern {
+                format!("[{label}]")
+            } else {
+                label
+            };
+            if matches!(app.playback_state, PlaybackState::Playing) && index == app.playing_pattern {
+                format!(">{label}")
+            } else {
+                label
+            }
+        };
+        let active = tab(app.selected_pattern);
+        let essential = active.len() + dirty.len() + usize::from(!dirty.is_empty());
+        if essential > width {
+            return Line::from(if dirty.is_empty() {
+                active
+            } else {
+                format!("* {active}")
+            });
+        }
+        // Grow a contiguous window around the edit buffer, never the playhead.
+        // Overflow markers are optional only when the essential fields barely fit.
+        let mut start = app.selected_pattern;
+        let mut end = start + 1;
+        let tabs = |start: usize, end: usize| {
+            let mut fields = Vec::new();
+            if start > 0 {
+                fields.push("←".to_owned());
+            }
+            fields.extend((start..end).map(tab));
+            if end < app.project.patterns.len() {
+                fields.push("→".to_owned());
+            }
+            fields.join(" ")
+        };
+        let budget = width - dirty.len() - usize::from(!dirty.is_empty());
+        let basename = app
+            .path
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .map_or_else(|| "[unsaved]".to_owned(), |name| name.to_string_lossy().into_owned());
+        // Reserve the active tab and overflow cues before the filename; only
+        // then spend spare columns on neighboring buffers.
+        let basename = elide(
+            &basename,
+            budget.saturating_sub(Line::from(tabs(start, end)).width() + 1),
+        );
+        let budget = budget - Line::from(basename.as_str()).width() - usize::from(!basename.is_empty());
+        loop {
+            if start > 0 && Line::from(tabs(start - 1, end)).width() <= budget {
+                start -= 1;
+            } else if end < app.project.patterns.len() && Line::from(tabs(start, end + 1)).width() <= budget {
+                end += 1;
+            } else {
+                break;
+            }
+        }
+        let window = tabs(start, end);
+        let window = if Line::from(window.as_str()).width() <= budget {
+            window
+        } else {
+            active
+        };
+
+        Line::from(
+            [basename.as_str(), dirty, window.as_str()]
+                .into_iter()
+                .filter(|field| !field.is_empty())
+                .collect::<Vec<_>>()
+                .join(" "),
         )
     }
+}
+
+// Keep zero-width combining marks with their preceding character. Width comes
+// from Ratatui, so CJK characters consume columns rather than UTF-8 bytes.
+fn elide(text: &str, width: usize) -> String {
+    if Line::from(text).width() <= width {
+        return text.to_owned();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut result = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let columns = Line::from(ch.to_string()).width();
+        if used + columns > width - 1 {
+            break;
+        }
+        result.push(ch);
+        used += columns;
+    }
+    result.push('…');
+    result
 }
 
 #[cfg(test)]
@@ -203,6 +294,104 @@ mod tests {
         tracker::{NotePitch, Pattern},
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn run_prompt(app: &mut App, text: &str) {
+        app.handle_command(Command::OpenPrompt);
+        for ch in text.chars() {
+            crate::bindings::handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE), app);
+        }
+        crate::bindings::handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), app);
+    }
+
+    #[test]
+    fn buffer_basename_unicode_and_essential_priorities() {
+        let mut app = App::default();
+        assert_eq!(Presentation(&app).buffer_line(80).to_string(), "[unsaved] [P0]");
+        app.path = Some("/hidden/界e\u{301}界song.json".into());
+        assert_eq!(
+            Presentation(&app).buffer_line(80).to_string(),
+            "界e\u{301}界song.json [P0]"
+        );
+        assert_eq!(elide("界e\u{301}界song.json", 4), "界e\u{301}…");
+        assert_eq!(elide("界e\u{301}", 2), "…");
+        app.handle_command(Command::IncreaseTempo);
+        for width in 0..40 {
+            let line = Presentation(&app).buffer_line(width);
+            if width >= 6 {
+                assert!(line.to_string().contains("[P0]"));
+                assert!(line.width() <= usize::from(width));
+            }
+            assert!(line.to_string().contains('*'));
+            assert!(!line.to_string().contains("hidden"));
+        }
+        assert_eq!(Presentation(&app).buffer_line(6).to_string(), "* [P0]");
+    }
+
+    #[test]
+    fn all_256_buffers_and_playhead_are_independent_across_resizes() {
+        let mut app = App::default();
+        app.project.patterns = vec![Pattern::new(1, 1); 256];
+        app.playback_state = PlaybackState::Playing;
+        app.playing_pattern = 0;
+        for active in 0..256 {
+            app.selected_pattern = active;
+            let wide = Presentation(&app).buffer_line(2000).to_string();
+            for pattern in 0..256 {
+                assert!(wide.split_whitespace().any(|field| field == format!("P{pattern}")
+                    || field == format!("[P{pattern}]")
+                    || (pattern == 0 && (field == ">P0" || field == ">[P0]"))));
+            }
+            for width in [8, 12, 24, 40, 80] {
+                let line = Presentation(&app).buffer_line(width);
+                let text = line.to_string();
+                assert!(text.contains(&format!("[P{active}]")), "{width}: {text}");
+                assert!(line.width() <= usize::from(width));
+                if active == 0 {
+                    assert!(text.contains(">[P0]"));
+                }
+                if width >= 12 {
+                    let visible: Vec<usize> = text
+                        .split_whitespace()
+                        .filter_map(|field| field.trim_matches(['>', '[', ']']).strip_prefix('P')?.parse().ok())
+                        .collect();
+                    assert_eq!(text.contains('←'), visible[0] > 0);
+                    assert_eq!(text.contains('→'), *visible.last().unwrap() < 255);
+                }
+            }
+            assert_eq!(app.selected_pattern, active);
+            assert!(Presentation(&app).transport().contains("P0"));
+        }
+        app.playback_state = PlaybackState::Stopped;
+        assert!(!Presentation(&app).buffer_line(80).to_string().contains('>'));
+    }
+
+    #[test]
+    fn buffer_creation_history_save_and_load_use_current_document() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("界e\u{301}.json");
+        let mut app = App::default();
+        app.handle_command(Command::NewPattern);
+        assert!(Presentation(&app).buffer_line(80).to_string().contains("* P0 [P1]"));
+        run_prompt(&mut app, &format!("w {}", path.display()));
+        assert!(!app.is_dirty());
+        app.handle_command(Command::IncreaseTempo);
+        assert!(Presentation(&app).buffer_line(80).to_string().contains('*'));
+        app.handle_command(Command::Undo);
+        assert!(!Presentation(&app).buffer_line(80).to_string().contains('*'));
+        app.handle_command(Command::Redo);
+        assert!(Presentation(&app).buffer_line(80).to_string().contains('*'));
+        app.handle_command(Command::DuplicatePattern);
+        assert!(Presentation(&app).buffer_line(12).to_string().contains("[P2]"));
+        app.handle_command(Command::Undo);
+        assert!(Presentation(&app).buffer_line(12).to_string().contains("[P1]"));
+        run_prompt(&mut app, &format!("e! {}", path.display()));
+        assert!(!app.is_dirty());
+        assert_eq!(app.project.patterns.len(), 2);
+        assert!(Presentation(&app)
+            .buffer_line(12)
+            .to_string()
+            .contains(&format!("[P{}]", app.selected_pattern)));
+    }
 
     fn note(ticks: u16) -> Note {
         Note {
@@ -288,6 +477,7 @@ mod tests {
             playback_mode: PlaybackMode::Song,
             ..App::default()
         };
+        app.project.patterns = vec![Pattern::new(64, 4); 3];
         assert_eq!(Presentation(&app).cursor(), "P2 R00 T1");
         assert_eq!(track_number(0), 1);
         assert_eq!(row_label(16), "16");
@@ -297,9 +487,9 @@ mod tests {
         app.playback_state = PlaybackState::Playing;
         assert_eq!(Presentation(&app).transport(), "Song Playing O3 P1 R16");
         assert!(Presentation(&app)
-            .title_line(100)
+            .status_line(100)
             .to_string()
-            .contains("Edit:P2 Song Playing O3 P1 R16"));
+            .contains("P2 R00 T1 Song Playing O3 P1 R16"));
     }
 
     #[test]
