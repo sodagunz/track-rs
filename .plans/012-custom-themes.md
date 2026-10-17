@@ -21,3 +21,13 @@ audio implementation changes; actionlint/null-audio reruns not needed.
 
 Manual terminal palette/truecolor appearance and interactive listening checks
 remain pending; buffer tests do not establish readability or terminal support.
+
+Correction: the default grid inherited unshaded rows from the earlier pattern
+landmarks change (91a057c), not from custom themes. The row-shading follow-up
+adds a semantic alternate background and rendered-cell regression coverage.
+
+Row-shading follow-up validation: 4 theme unit tests, 52 UI/presentation tests,
+2 theme-startup tests, fmt check, strict all-target/all-feature clippy and
+`git diff --check` passed. The rendered regression was first observed failing
+without the row style. Full suite/nextest deliberately not run for this focused
+fix. Manual light/dark terminal contrast checks remain pending.

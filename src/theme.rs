@@ -61,6 +61,7 @@ pub struct Theme {
     foreground: ThemeColor,
     background: ThemeColor,
     muted: ThemeColor,
+    row_alternate: ThemeColor,
     accent: ThemeColor,
     highlight_foreground: ThemeColor,
     cursor: ThemeColor,
@@ -79,11 +80,12 @@ impl Default for Theme {
             foreground: ThemeColor(Color::Reset),
             background: ThemeColor(Color::Reset),
             muted: ThemeColor(Color::DarkGray),
+            row_alternate: ThemeColor(Color::DarkGray),
             accent: ThemeColor(Color::Cyan),
             highlight_foreground: ThemeColor(Color::Black),
             cursor: ThemeColor(Color::Green),
             selection: ThemeColor(Color::Blue),
-            playback: ThemeColor(Color::DarkGray),
+            playback: ThemeColor(Color::Gray),
             warning: ThemeColor(Color::Red),
             normal: ThemeColor(Color::Blue),
             insert: ThemeColor(Color::Green),
@@ -117,6 +119,13 @@ impl Theme {
     pub(crate) const fn warning(&self) -> Color {
         self.warning.0
     }
+    pub(crate) fn pattern_row(&self, row: usize) -> Style {
+        if row.is_multiple_of(2) {
+            self.base()
+        } else {
+            self.base().bg(self.row_alternate.0)
+        }
+    }
     pub(crate) fn cursor(&self) -> Style {
         self.base().fg(self.highlight_foreground.0).bg(self.cursor.0)
     }
@@ -124,7 +133,7 @@ impl Theme {
         self.base().fg(self.highlight_foreground.0).bg(self.selection.0)
     }
     pub(crate) fn playback(&self) -> Style {
-        self.base().bg(self.playback.0)
+        self.base().fg(self.highlight_foreground.0).bg(self.playback.0)
     }
     pub(crate) fn mode(&self, mode: Mode) -> Style {
         let background = match mode {
@@ -201,6 +210,17 @@ mod tests {
         for value in ["default", "red", "light-cyan", "indexed:0", "indexed:255", "#000000"] {
             assert!(ThemeColor::try_from(value.to_owned()).is_ok());
         }
+    }
+
+    #[test]
+    fn alternating_rows_support_partial_themes() {
+        let partial = Theme::parse(r#"{"accent":"magenta"}"#).unwrap();
+        assert_eq!(partial.pattern_row(0), Theme::default().base());
+        assert_eq!(partial.pattern_row(1).bg, Some(Color::DarkGray));
+        let custom = Theme::parse(r#"{"background":"blue","row_alternate":"default"}"#).unwrap();
+        assert_eq!(custom.pattern_row(2).bg, Some(Color::Blue));
+        assert_eq!(custom.pattern_row(3).bg, Some(Color::Reset));
+        assert_eq!(custom.pattern_row(3).fg, Some(Color::Reset));
     }
 
     #[test]
