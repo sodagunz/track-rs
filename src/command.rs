@@ -5,6 +5,7 @@ use crate::tracker::{Instrument, NotePitch};
 pub enum Command {
     ShowPattern,
     ShowArrangement,
+    ShowMixer,
     PreviousPattern,
     NextPattern,
     NewPattern,
@@ -65,7 +66,12 @@ impl Command {
     pub(crate) const fn ignores_count(self) -> bool {
         matches!(
             self,
-            Self::Quit | Self::ToggleHelp | Self::EnterNormal | Self::ShowPattern | Self::ShowArrangement
+            Self::Quit
+                | Self::ToggleHelp
+                | Self::EnterNormal
+                | Self::ShowPattern
+                | Self::ShowArrangement
+                | Self::ShowMixer
         )
     }
 
@@ -91,6 +97,29 @@ impl Command {
                 | Self::RestartPlayback
                 | Self::DecreaseTempo
                 | Self::IncreaseTempo
+        )
+    }
+
+    pub(crate) const fn available_in_voice_view(self) -> bool {
+        matches!(
+            self,
+            Self::MoveCursorLeft
+                | Self::MoveCursorRight
+                | Self::MoveCursor { rows: 0, .. }
+                | Self::FirstTrack
+                | Self::LastTrack
+                | Self::PreviousInstrument
+                | Self::NextInstrument
+                | Self::SetInstrument(_)
+                | Self::Undo
+                | Self::Redo
+                | Self::OpenPrompt
+                | Self::TogglePlayback
+                | Self::RestartPlayback
+                | Self::ToggleSong
+                | Self::DecreaseTempo
+                | Self::IncreaseTempo
+                | Self::EnterNormal
         )
     }
 

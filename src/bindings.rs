@@ -66,6 +66,10 @@ pub const DEFAULT_BINDINGS: &[Binding] = &[
         )
     },
     Binding {
+        modes: &[Mode::Normal],
+        ..Binding::new(KeyCode::F(3), Command::ShowMixer, "Mixer view", "Application")
+    },
+    Binding {
         prefix: Some(KeyCode::Char('g')),
         ..Binding::new(KeyCode::Char('h'), Command::FirstTrack, "First track", "Navigation")
     },

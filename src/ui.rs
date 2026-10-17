@@ -14,7 +14,7 @@ use ratatui::{
 use crate::{
     bindings::DEFAULT_BINDINGS,
     command::Command,
-    state::{App, Mode},
+    state::{App, Mode, View},
     tracker::PatternStep,
 };
 
@@ -69,7 +69,7 @@ impl<W: std::io::Write> TUI<W> {
 fn render(f: &mut Frame, state: &App) {
     let area = f.area();
     let title_rows = u16::from(area.height >= 6);
-    let order_rows = u16::from(area.height >= 7 && !state.arrangement_visible);
+    let order_rows = u16::from(area.height >= 7 && state.view == View::Pattern);
     let hint_rows = u16::from(area.height > 0 && (state.prompt.is_some() || !state.status.is_empty()));
     let status_rows = u16::from(area.height.saturating_sub(hint_rows) >= 3);
     if title_rows > 0 {
@@ -78,10 +78,10 @@ fn render(f: &mut Frame, state: &App) {
     if order_rows > 0 {
         draw_order(f, Rect::new(area.x, area.y + title_rows, area.width, 1), state);
     }
-    let draw_panel = if state.arrangement_visible {
-        draw_arrangement
-    } else {
-        draw_pattern_editor
+    let draw_panel = match state.view {
+        View::Pattern => draw_pattern_editor,
+        View::Arrangement => draw_arrangement,
+        View::Mixer => draw_mixer,
     };
     draw_panel(
         f,
@@ -120,6 +120,44 @@ fn render(f: &mut Frame, state: &App) {
     if state.help_visible {
         draw_help(f, state);
     }
+}
+
+fn draw_mixer(f: &mut Frame, area: Rect, state: &App) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Mixer | h/l track | [/] voice | u/Ctrl-r undo/redo");
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let height = usize::from(inner.height);
+    let first = state.cursor_track.saturating_sub(height.saturating_sub(1));
+    let pattern = &state.project.patterns[state.selected_pattern];
+    let lines: Vec<_> = state
+        .project
+        .instruments()
+        .iter()
+        .enumerate()
+        .skip(first)
+        .take(height)
+        .map(|(track, instrument)| {
+            let notes = pattern.tracks[track].iter().filter(|step| step.note.is_some()).count();
+            let selected = track == state.cursor_track;
+            Line::styled(
+                format!(
+                    "{} Track {}  {:<8}  {} notes (edit pattern)",
+                    if selected { ">" } else { " " },
+                    track_number(track),
+                    instrument.label(),
+                    notes
+                ),
+                if selected {
+                    Style::default().fg(Color::Black).bg(Color::Cyan)
+                } else {
+                    Style::default()
+                },
+            )
+        })
+        .collect();
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
 fn key_label(key: crossterm::event::KeyCode) -> String {
@@ -513,6 +551,47 @@ mod tests {
     use super::*;
     use crate::tracker::{Note, NotePitch};
     use ratatui::backend::{Backend, TestBackend};
+
+    #[test]
+    fn mixer_keys_edit_shared_voices_without_hidden_note_edits() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::default();
+        let key = |app: &mut App, code| crate::bindings::handle_key(KeyEvent::new(code, KeyModifiers::NONE), app);
+        app.cursor_row = 17;
+        key(&mut app, KeyCode::Char('2'));
+        key(&mut app, KeyCode::F(3));
+        assert_eq!(app.view, View::Mixer);
+        assert_eq!(app.pending_count, None);
+        assert!(!app.is_dirty());
+        for ch in ['i', 'v', 'j', 'x'] {
+            key(&mut app, KeyCode::Char(ch));
+        }
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.cursor_row, 17);
+        key(&mut app, KeyCode::Char('l'));
+        key(&mut app, KeyCode::Char(']'));
+        assert_eq!(app.project.instrument(1), crate::tracker::Instrument::Sine);
+        assert_eq!(app.project.instrument(0), crate::tracker::Instrument::Pluck);
+        key(&mut app, KeyCode::Char('u'));
+        assert!(!app.is_dirty());
+        for (width, height) in [(80, 12), (22, 6), (1, 1), (0, 0)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|f| render(f, &app)).unwrap();
+            if width == 80 {
+                assert!(screen(&terminal).contains("> Track 2"));
+            }
+        }
+        key(&mut app, KeyCode::Char('?'));
+        key(&mut app, KeyCode::F(1));
+        assert_eq!(app.view, View::Mixer);
+        key(&mut app, KeyCode::Esc);
+        key(&mut app, KeyCode::Char(':'));
+        key(&mut app, KeyCode::F(1));
+        assert_eq!(app.view, View::Mixer);
+        key(&mut app, KeyCode::Esc);
+        key(&mut app, KeyCode::F(1));
+        assert_eq!(app.view, View::Pattern);
+    }
 
     fn screen_lines(terminal: &Terminal<TestBackend>, width: u16) -> String {
         terminal
@@ -1106,7 +1185,7 @@ mod tests {
         app.handle_command(Command::TogglePlayback);
         press(&mut app, KeyCode::Char('2'));
         press(&mut app, KeyCode::F(2));
-        assert!(app.arrangement_visible);
+        assert_eq!(app.view, View::Arrangement);
         assert!(app.pending_count.is_none());
         assert!(!app.is_dirty());
         for code in [
@@ -1123,18 +1202,18 @@ mod tests {
         assert!(matches!(app.playback_state, crate::state::PlaybackState::Playing));
         press(&mut app, KeyCode::Char('?'));
         press(&mut app, KeyCode::F(1));
-        assert!(app.arrangement_visible);
+        assert_eq!(app.view, View::Arrangement);
         press(&mut app, KeyCode::Esc);
         press(&mut app, KeyCode::Char(':'));
         press(&mut app, KeyCode::F(1));
-        assert!(app.arrangement_visible);
+        assert_eq!(app.view, View::Arrangement);
         press(&mut app, KeyCode::Esc);
         let mut repeat = KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE);
         repeat.kind = KeyEventKind::Repeat;
         crate::bindings::handle_key(repeat, &mut app);
-        assert!(app.arrangement_visible);
+        assert_eq!(app.view, View::Arrangement);
         press(&mut app, KeyCode::F(1));
-        assert!(!app.arrangement_visible);
+        assert_eq!(app.view, View::Pattern);
         assert_eq!(app.cursor_row, 17);
         assert!(!app.is_dirty());
     }
@@ -1164,7 +1243,7 @@ mod tests {
         assert_eq!(app.project.order, [1]);
         key(&mut app, KeyCode::Char('u'), KeyModifiers::NONE);
         assert_eq!(app.project.order, [1, 0]);
-        assert!(app.arrangement_visible);
+        assert_eq!(app.view, View::Arrangement);
         key(&mut app, KeyCode::F(1), KeyModifiers::NONE);
         key(&mut app, KeyCode::Char('u'), KeyModifiers::NONE);
         assert_eq!(app.project.order, [0, 1]);
