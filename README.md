@@ -125,9 +125,11 @@ Status shows `Click:on` or compact `CLK`. Turning it off cancels only the click,
 not song or preview voices. No extra keyboard shortcut steals piano keys.
 
 Clicks follow the transport's anchored clock, not redraws. Each pattern clicks
-its meter's denominator units and accents local bar starts: 3/4 has three quarter
-clicks; 7/8 seven eighth clicks; 6/8 six eighth clicks. Compound grouping is not
-yet configurable. Song occurrences reset that local phase, including partial
+denominator units in simple/irregular meters and groups of three units in
+compound meters (numerator at least six and divisible by three, denominator
+at least eight). 3/4 has three quarter clicks; 7/8 seven eighth clicks;
+6/8 two dotted-quarter clicks (3+3), 9/8 three, and 12/8 four. Local bar starts
+are accented. Grouping is automatic, not configurable. Song occurrences reset that local phase, including partial
 bars, without padding. Grid density doesn't change the click. Late wakes skip
 stale clicks rather than replaying a burst.
 
