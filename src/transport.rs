@@ -177,6 +177,7 @@ impl Transport {
             let Some(event) = self.update_project(at, playing, &app.project, route, DEFAULT_ROWS_PER_BEAT) else {
                 break;
             };
+            app.playback_tick = event.tick;
             app.playback_row = app.project.patterns[event.pattern].row_at(event.tick);
             app.playing_pattern = event.pattern;
             app.playing_order = event.order.unwrap_or(0);
