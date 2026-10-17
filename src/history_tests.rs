@@ -470,7 +470,7 @@ fn exact_event_history_coalesces_row_adapter_writes_and_preserves_redo_on_invali
             (
                 Tick(15),
                 PatternEvent {
-                    start_tick: Tick(15),
+                    start_tick: Tick(16),
                     ..event
                 },
             ),
