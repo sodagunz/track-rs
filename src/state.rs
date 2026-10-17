@@ -74,6 +74,7 @@ pub struct App {
     pub selection_anchor: Option<(usize, usize)>,
     pub pending_count: Option<u16>,
     pub suppressed_repeat: bool,
+    pub(crate) mixer_gesture: Option<crate::bindings::MixerGesture>,
     pub pending_prefix: Option<char>,
     pub project: Project,
     pub selected_pattern: usize,
@@ -140,6 +141,7 @@ impl Default for App {
             pending_count: None,
             pending_prefix: None,
             suppressed_repeat: false,
+            mixer_gesture: None,
             project: Project::new(default_rows, default_tracks),
             selected_pattern: 0,
             selected_order: 0,
@@ -348,6 +350,7 @@ impl App {
 
     /// Apply an editor action without depending on terminal key events.
     pub fn handle_command(&mut self, command: Command) {
+        self.mixer_gesture = None;
         self.prepare_command(command);
         match command {
             Command::ToggleHelp => {
@@ -369,7 +372,7 @@ impl App {
             }
             _ if !command.available_in_view(self.view) => {}
             _ if self.view == View::Mixer && self.handle_mixer(command) => {}
-            Command::MixerValue | Command::MixerReset => {}
+            Command::MixerValue | Command::MixerReset | Command::MixerAdjust(_) => {}
             Command::AuditionInstrument => self.request_audition(),
             Command::PreviousPattern
             | Command::NextPattern
@@ -451,18 +454,12 @@ impl App {
             Command::MixerValue => {
                 self.prompt = Some(String::new());
             }
-            Command::MixerReset => {
-                let track = self.cursor_track;
-                let mut setting = self.project.channels()[track];
-                match self.cursor_row {
-                    0 => setting.volume_db = Some(0.0),
-                    1 => setting.pan = 0.0,
-                    2 => setting.low_shelf_db = 0.0,
-                    3 => setting.high_shelf_db = 0.0,
-                    4 => setting.hpf_hz = None,
-                    _ => setting.lpf_hz = None,
+            Command::MixerReset => self.edit_mixer_rectangle(None),
+            Command::MixerAdjust(steps) if self.mode == Mode::Visual => self.edit_mixer_rectangle(Some(steps)),
+            Command::LowerOctave | Command::RaiseOctave => {
+                if self.mode == Mode::Visual {
+                    self.edit_mixer_rectangle(Some(if command == Command::RaiseOctave { 1 } else { -1 }));
                 }
-                self.edit(|edit| edit.set_channel(track, setting));
             }
             Command::MoveCursor { rows, tracks } if self.mode == Mode::Insert => {
                 if tracks != 0 {
@@ -481,6 +478,35 @@ impl App {
             _ => return false,
         }
         true
+    }
+
+    fn edit_mixer_rectangle(&mut self, steps: Option<i32>) {
+        let (first_row, last_row, first_track, last_track) = self.rectangle();
+        let values: Vec<_> = (first_track..=last_track)
+            .map(|track| {
+                let mut setting = self.project.channels()[track];
+                for row in first_row..=last_row {
+                    if let Some(steps) = steps {
+                        setting = setting.adjusted(row, steps);
+                    } else {
+                        match row {
+                            0 => setting.volume_db = Some(0.0),
+                            1 => setting.pan = 0.0,
+                            2 => setting.low_shelf_db = 0.0,
+                            3 => setting.high_shelf_db = 0.0,
+                            4 => setting.hpf_hz = None,
+                            _ => setting.lpf_hz = None,
+                        }
+                    }
+                }
+                (track, setting)
+            })
+            .collect();
+        self.edit(|edit| {
+            for (track, setting) in values {
+                edit.set_channel(track, setting);
+            }
+        });
     }
 
     fn enter_mixer_value(&mut self, text: &str) -> anyhow::Result<()> {
@@ -795,8 +821,11 @@ impl App {
         };
         (
             row.min(self.cursor_row),
-            row.max(self.cursor_row)
-                .min(self.project.patterns[self.selected_pattern].num_rows.saturating_sub(1)),
+            row.max(self.cursor_row).min(if self.view == View::Mixer {
+                crate::project::CHANNEL_ROWS - 1
+            } else {
+                self.project.patterns[self.selected_pattern].num_rows.saturating_sub(1)
+            }),
             track.min(self.cursor_track),
             track.max(self.cursor_track).min(
                 self.project.patterns[self.selected_pattern]

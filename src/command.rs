@@ -3,6 +3,7 @@ use crate::tracker::{Instrument, NotePitch};
 /// User actions, independent of terminal input and the current editor state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
+    MixerAdjust(i32),
     MixerValue,
     MixerReset,
     ShowPattern,
@@ -86,7 +87,10 @@ impl Command {
             return true;
         }
         match view {
-            View::Pattern => !matches!(self, Self::AuditionInstrument | Self::MixerValue | Self::MixerReset),
+            View::Pattern => !matches!(
+                self,
+                Self::AuditionInstrument | Self::MixerValue | Self::MixerReset | Self::MixerAdjust(_)
+            ),
             View::Arrangement => self.available_in_arrangement(),
             View::Mixer => {
                 (self.available_in_voice_view()
@@ -100,11 +104,15 @@ impl Command {
                     || matches!(
                         self,
                         Self::EnterInsert
+                            | Self::ToggleVisual
+                            | Self::LowerOctave
+                            | Self::RaiseOctave
                             | Self::MoveCursorUp
                             | Self::MoveCursorDown
                             | Self::MoveCursor { .. }
                             | Self::FirstRow
                             | Self::LastRow
+                            | Self::MixerAdjust(_)
                             | Self::MixerValue
                             | Self::MixerReset
                     )

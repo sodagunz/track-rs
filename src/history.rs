@@ -343,6 +343,41 @@ impl History {
         shape_or_order_changed
     }
 
+    /// Join adjacent channel-only edits, retaining the first before-values and
+    /// the newest revision. The revision guard prevents crossing unrelated edits.
+    pub(crate) fn join_channel_edits(&mut self, previous: Revision) {
+        if self.position != self.entries.len() || self.position < 2 {
+            return;
+        }
+        let last = &self.entries[self.position - 1];
+        let prior = &self.entries[self.position - 2];
+        if last.before != previous
+            || prior.after != previous
+            || !last
+                .changes
+                .iter()
+                .chain(prior.changes.iter())
+                .all(|m| matches!(m, Mutation::Channel { .. }))
+        {
+            return;
+        }
+        let last = self.entries.pop_back().expect("last edit");
+        let prior = self.entries.back_mut().expect("previous edit");
+        self.mutations -= last.weight() + prior.weight();
+        let mut changes = prior.changes.to_vec();
+        for change in last.changes {
+            if let Some(existing) = changes.iter_mut().find(|m| m.key() == change.key()) {
+                existing.merge(change);
+            } else {
+                changes.push(change);
+            }
+        }
+        prior.changes = changes.into_boxed_slice();
+        prior.after = last.after;
+        self.mutations += prior.weight();
+        self.position -= 1;
+    }
+
     #[must_use]
     pub fn structural_next(&self, redo: bool) -> bool {
         let index = if redo {

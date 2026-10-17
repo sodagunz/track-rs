@@ -180,7 +180,7 @@ fn draw_instrument(f: &mut Frame, area: Rect, state: &App) {
 fn draw_mixer(f: &mut Frame, area: Rect, state: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .title("Mixer | i adjust | Enter value | Esc normal");
+        .title("Mixer | i adjust | v select | Esc normal");
     let inner = block.inner(area);
     f.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {
@@ -217,6 +217,8 @@ fn draw_mixer(f: &mut Frame, area: Rect, state: &App) {
         for track in first..(first + count).min(state.project.channels().len()) {
             let style = if track == state.cursor_track && row == state.cursor_row {
                 Style::default().fg(Color::Black).bg(Color::Cyan)
+            } else if state.is_selected(row, track) {
+                Style::default().add_modifier(Modifier::REVERSED | Modifier::UNDERLINED)
             } else if track == state.cursor_track {
                 Style::default().fg(Color::Cyan)
             } else {
@@ -339,7 +341,7 @@ fn help_lines(view: View, mode: Mode, width: u16) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if view == View::Mixer {
         lines.push(Line::from(
-            "Normal: h/l channel; j/k parameter. Insert: h/l adjust; j/k parameter.",
+            "Normal: h/l channel; j/k parameter. Insert: h/l adjust. Visual: a/s adjust; d/x reset.",
         ));
         lines.push(Line::from(
             "Counts multiply steps. Pan is stereo balance; centre preserves width, no boost.",
@@ -352,9 +354,7 @@ fn help_lines(view: View, mode: Mode, width: u16) -> Vec<Line<'static>> {
         ));
     }
     for (section, label) in sections {
-        if (view == View::Mixer && section == Some(Mode::Visual))
-            || (view != View::Pattern && section == Some(Mode::Audition))
-        {
+        if view != View::Pattern && section == Some(Mode::Audition) {
             continue;
         }
         let active = section == Some(mode);
@@ -771,6 +771,41 @@ mod tests {
     }
 
     #[test]
+    fn mixer_visual_scrolling_and_monochrome_selection() {
+        let mut app = App::default();
+        app.handle_command(Command::ShowMixer);
+        app.handle_command(Command::ToggleVisual);
+        app.handle_command(Command::LastRow);
+        app.handle_command(Command::LastTrack);
+        let help = help_lines(View::Mixer, Mode::Visual, 100)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(help.contains("Decrease selected controls"));
+        assert!(!help.contains("octave"));
+        for (width, height) in [(80, 20), (40, 10), (24, 7), (12, 6), (1, 1), (0, 0)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|f| render(f, &app)).unwrap();
+            if width == 80 {
+                assert!(terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .iter()
+                    .any(|cell| cell.modifier.contains(Modifier::UNDERLINED | Modifier::REVERSED)));
+            }
+            if width >= 12 {
+                assert!(
+                    screen(&terminal).contains(if width >= 24 { "VISUAL" } else { "V" }),
+                    "{width}x{height}: {}",
+                    screen(&terminal)
+                );
+            }
+        }
+    }
+
+    #[test]
     fn mixer_keys_edit_settings_without_hidden_note_edits() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = App::default();
@@ -784,12 +819,14 @@ mod tests {
         for ch in ['v', 'a', 's', 'x'] {
             key(&mut app, KeyCode::Char(ch));
         }
-        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.mode, Mode::Visual);
+        key(&mut app, KeyCode::Esc);
         assert_eq!(app.cursor_row, 0);
         key(&mut app, KeyCode::Char('l'));
         key(&mut app, KeyCode::Char(']'));
         assert_eq!(app.project.instrument(1), crate::tracker::Instrument::Pluck);
         assert_eq!(app.project.instrument(0), crate::tracker::Instrument::Pluck);
+        key(&mut app, KeyCode::Char('u'));
         key(&mut app, KeyCode::Char('u'));
         assert!(!app.is_dirty());
         for (width, height) in [(80, 12), (22, 6), (1, 1), (0, 0)] {
