@@ -177,14 +177,10 @@ fn file_and_allocation_limits_are_enforced_with_inclusive_bounds() {
             order: vec![0; MAX_ORDER + 1],
             ..Project::new(1, 1)
         },
-        Project {
-            patterns: vec![Pattern::new(MAX_ROWS, MAX_TRACKS); 2],
-            ..Project::new(1, MAX_TRACKS)
-        },
     ] {
         assert!(project_file::save(&project, &path).is_err());
     }
-    // A compact null-cell document hits the aggregate limit exactly, below the byte limit.
+    // v4 sparse projects may span the old compatibility-cell cap without allocating cells.
     assert_eq!(MAX_CELLS % 125, 0);
     let project = Project {
         patterns: vec![Pattern::new(4000, 125); 2],
@@ -193,6 +189,10 @@ fn file_and_allocation_limits_are_enforced_with_inclusive_bounds() {
     project_file::save(&project, &path).unwrap();
     assert_eq!(project_file::load(&path).unwrap(), project);
     for project in [
+        Project {
+            patterns: vec![Pattern::new(MAX_ROWS, MAX_TRACKS); 2],
+            ..Project::new(1, MAX_TRACKS)
+        },
         Project::new(MAX_ROWS, 1),
         Project::new(1, MAX_TRACKS),
         Project {
