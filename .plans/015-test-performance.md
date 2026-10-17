@@ -49,6 +49,8 @@ focused rebuild took 8.28 s; clean-machine build times will differ.
 - Plans 001–014 now distinguish current implementation from historical rollout
   notes. README includes numeric settings and semantic alternating row shading.
 
-User feedback: “so far looks good”. This is partial feedback, not full manual
-acceptance. Real-terminal key/resize/light-dark/no-color checks and listening
-remain pending. MIDI/live recording remain deferred; no merge into develop.
+Current acceptance update (2026-10-17): all existing PRs are merged per the user.
+The current build’s general manual UI/audio gate is provisionally accepted for
+now, with UI friction still reported. This does not establish that every listed
+specialized check was performed. See the [canonical backlog](README.md) and
+plans 016–018 for the next work; the automated evidence above is unchanged.
