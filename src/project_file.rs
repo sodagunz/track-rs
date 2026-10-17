@@ -362,10 +362,7 @@ impl EventDocument {
                         DurationTicks::new(event.duration_ticks).is_ok(),
                         "Invalid event duration"
                     );
-                    ensure!(
-                        event.duration_ticks % 15 == 0,
-                        "Gate resolution requires the upcoming projected editor"
-                    );
+
                     ensure!(event.octave <= 9, "Note octave must be 0..=9");
                 }
             }

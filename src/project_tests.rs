@@ -636,7 +636,6 @@ fn tick_files_reject_unplayable_or_ambiguous_events() {
         ("/patterns/0/tracks/0/1/start_tick", json!(0)),
         ("/patterns/0/tracks/0/0/start_tick", json!(480)),
         ("/patterns/0/tracks/0/1/start_tick", json!(960)),
-        ("/patterns/0/tracks/0/0/duration_ticks", json!(1)),
         ("/patterns/0/tracks/0/0/duration_ticks", json!(0)),
         ("/patterns/0/tracks/0/0/duration_ticks", json!(61441)),
         ("/patterns/0/tracks/0/0/octave", json!(10)),
@@ -655,7 +654,7 @@ fn unsupported_tick_load_is_atomic_even_when_forced() {
     let project = project_file::load(&fixture()).unwrap();
     project_file::save(&project, &path).unwrap();
     let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    value["patterns"][0]["tracks"][0][0]["duration_ticks"] = json!(1);
+    value["patterns"][0]["tracks"][0][0]["duration_ticks"] = json!(0);
     fs::write(&path, value.to_string()).unwrap();
     let mut app = App::default();
     app.handle_command(Command::IncreaseTempo);
@@ -665,7 +664,7 @@ fn unsupported_tick_load_is_atomic_even_when_forced() {
     app.handle_command(Command::TogglePlayback);
     let before = app.clone();
     command(&mut app, &format!("e! {}", path_text(&path)));
-    assert!(app.status.contains("Gate resolution"));
+    assert!(app.status.contains("Invalid event duration"));
     assert_eq!(app.project, before.project);
     assert_eq!(app.revision(), before.revision());
     assert_eq!(app.clipboard, before.clipboard);
