@@ -1,6 +1,9 @@
 use std::fmt::Write as _;
 
-use ratatui::text::Line;
+use ratatui::{
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+};
 
 use crate::{
     state::{App, Mode, PlaybackMode, PlaybackState},
@@ -40,23 +43,6 @@ pub(super) fn length_label(length: NoteLength) -> String {
 
 fn pitch_label(note: Note) -> String {
     format!("{}{}", note.pitch, note.octave)
-}
-
-// Fields arrive in priority order. Omit whole optional fields rather than slicing
-// UTF-8 or confusing byte length with terminal columns; the widget clips essentials.
-pub(super) fn prioritized_line(fields: impl IntoIterator<Item = String>, width: u16) -> Line<'static> {
-    let mut line = Line::default();
-    for field in fields {
-        let candidate = if line.spans.is_empty() {
-            Line::from(field)
-        } else {
-            Line::from(format!("{line} {field}"))
-        };
-        if line.spans.is_empty() || candidate.width() <= usize::from(width) {
-            line = candidate;
-        }
-    }
-    line
 }
 
 // A borrowed view, never a second document or editor state. Derive only the
@@ -169,18 +155,152 @@ impl Presentation<'_> {
     }
 
     pub(super) fn status_line(&self, width: u16) -> Line<'static> {
-        // Preserve mode/input, edit coordinates and transport before optional
-        // note/selection context and tempo. No layout or prompt ownership here.
-        prioritized_line(
-            [
-                self.mode(),
-                self.cursor(),
-                self.transport(),
-                self.context(),
-                format!("BPM: {:.1}", self.0.project.bpm),
-            ],
-            width,
-        )
+        let width = usize::from(width);
+        let app = self.0;
+        let base = Style::default().bg(Color::Black).fg(Color::Gray);
+
+        let dirty = if app.is_dirty() { "*" } else { "" };
+        let cursor = self.cursor().replace(' ', "");
+        let compact = format!(
+            "{} {}",
+            if app.playback_mode == PlaybackMode::Song {
+                "S"
+            } else {
+                "P"
+            },
+            if matches!(app.playback_state, PlaybackState::Playing) {
+                ">"
+            } else {
+                "■"
+            }
+        );
+        let mut mode = self.mode();
+        let minimum = Line::from(format!("{mode} …{dirty} {cursor} {compact}")).width();
+        if minimum > width {
+            app.mode.label().clone_into(&mut mode);
+        }
+        if Line::from(format!("{mode} …{dirty} {cursor} {compact}")).width() > width {
+            app.mode.label()[..1].clone_into(&mut mode);
+        }
+        let mut right = compact;
+        let context = self.context();
+        let help = format!("{} Help", super::command_keys(crate::command::Command::ToggleHelp));
+        let fixed = Line::from(format!("{mode} [unsaved]{dirty} {cursor} ")).width()
+            + if width >= 60 {
+                Line::from(context.as_str()).width() + 3
+            } else {
+                Line::from(help.as_str()).width() + 3
+            };
+        let positioned = format!(
+            "{} O{} P{} R{}",
+            right,
+            app.playing_order,
+            app.playing_pattern,
+            row_label(app.playback_row)
+        );
+        let minimum = Line::from(format!("{mode} …{dirty} {cursor} ")).width();
+        for (candidate, reserved, enabled) in [
+            (self.transport(), fixed, true),
+            (
+                positioned,
+                minimum,
+                matches!(app.playback_state, PlaybackState::Playing),
+            ),
+        ] {
+            if enabled && reserved + Line::from(candidate.as_str()).width() <= width {
+                right = candidate;
+                break;
+            }
+        }
+        let name_budget = width.saturating_sub(Line::from(format!("{mode} {dirty} {cursor} {right}")).width());
+        let name = elide(&self.basename(), name_budget.min(18));
+        let mut spans = vec![
+            Span::styled(mode, self.mode_style()),
+            Span::raw(" "),
+            Span::styled(
+                format!("{name}{dirty}"),
+                base.fg(Color::White).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled(cursor, base.fg(Color::White)),
+        ];
+
+        // Spend spare columns on whole fields; essentials never depend on context size.
+        let bpm = format!("BPM: {:.1}", app.project.bpm);
+        let mut fields = [(context, false, 4), (help, true, 4), (bpm, true, 14)];
+        if width < 60 {
+            fields.swap(0, 1);
+        }
+        for (field, on_right, reserve) in fields {
+            let used = Line::from(spans.clone()).width() + Line::from(right.as_str()).width();
+            if used + Line::from(field.as_str()).width() + reserve <= width {
+                if on_right {
+                    right = format!("{field} | {right}");
+                } else {
+                    spans.push(Span::styled(format!(" | {field}"), base));
+                }
+            }
+        }
+        let gap = width.saturating_sub(Line::from(spans.clone()).width() + Line::from(right.as_str()).width());
+        spans.extend(self.transport_bar(gap, base));
+        spans.push(Span::styled(right, base.fg(Color::White)));
+        Line::from(spans).style(base)
+    }
+
+    fn transport_bar(&self, width: usize, base: Style) -> Vec<Span<'static>> {
+        if width < 5 {
+            return vec![Span::raw(" ".repeat(width))];
+        }
+        let app = self.0;
+        let rows = |index: usize| app.project.patterns.get(index).map_or(0, |pattern| pattern.num_rows);
+        let (position, total) = match app.playback_mode {
+            PlaybackMode::Pattern => (app.playback_row, rows(app.playing_pattern)),
+            PlaybackMode::Song => {
+                let before: usize = app
+                    .project
+                    .order
+                    .iter()
+                    .take(app.playing_order)
+                    .map(|&index| rows(index))
+                    .sum();
+                let total = app.project.order.iter().map(|&index| rows(index)).sum();
+                (before.saturating_add(app.playback_row), total)
+            }
+        };
+        let cells = (width - 2).min(30);
+        let head = position.min(total.saturating_sub(1)) * (cells - 1) / total.saturating_sub(1).max(1);
+        let cue = if matches!(app.playback_state, PlaybackState::Playing) {
+            "▶"
+        } else {
+            "Ⅱ"
+        };
+        vec![
+            Span::raw(" "),
+            Span::styled("┃".repeat(head), base.fg(Color::Cyan)),
+            Span::styled(cue, base.fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled("─".repeat(cells - head - 1), base.fg(Color::DarkGray)),
+            Span::raw(" ".repeat(width - cells - 1)),
+        ]
+    }
+
+    fn mode_style(&self) -> Style {
+        let (foreground, background) = match self.0.mode {
+            Mode::Normal => (Color::White, Color::Blue),
+            Mode::Insert => (Color::Black, Color::Green),
+            Mode::Visual => (Color::Black, Color::Cyan),
+        };
+        Style::default()
+            .fg(foreground)
+            .bg(background)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    fn basename(&self) -> String {
+        self.0
+            .path
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .map_or_else(|| "[unsaved]".to_owned(), |name| name.to_string_lossy().into_owned())
     }
 
     pub(super) fn buffer_line(&self, width: u16) -> Line<'static> {
@@ -253,18 +373,34 @@ impl Presentation<'_> {
             active
         };
 
-        Line::from(
-            [basename.as_str(), dirty, window.as_str()]
-                .into_iter()
-                .filter(|field| !field.is_empty())
-                .collect::<Vec<_>>()
-                .join(" "),
-        )
+        let base = Style::default().bg(Color::Black).fg(Color::Gray);
+        let mut spans = Vec::new();
+        for field in [basename.as_str(), dirty, window.as_str()]
+            .into_iter()
+            .filter(|field| !field.is_empty())
+        {
+            if !spans.is_empty() {
+                spans.push(Span::raw(" "));
+            }
+            for (index, token) in field.split(' ').enumerate() {
+                if index > 0 {
+                    spans.push(Span::raw(" "));
+                }
+                let style = if token.contains('[') && token.contains(&pattern_label(app.selected_pattern)) {
+                    base.bg(Color::DarkGray).fg(Color::White).add_modifier(Modifier::BOLD)
+                } else if token.starts_with('>') {
+                    base.fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                } else {
+                    base.add_modifier(Modifier::DIM)
+                };
+                spans.push(Span::styled(token.to_owned(), style));
+            }
+        }
+        Line::from(spans).style(base)
     }
 }
 
-// Keep zero-width combining marks with their preceding character. Width comes
-// from Ratatui, so CJK characters consume columns rather than UTF-8 bytes.
+// Use Ratatui's grapheme iterator for combining marks, flags and ZWJ emoji.
 fn elide(text: &str, width: usize) -> String {
     if Line::from(text).width() <= width {
         return text.to_owned();
@@ -274,16 +410,45 @@ fn elide(text: &str, width: usize) -> String {
     }
     let mut result = String::new();
     let mut used = 0;
-    for ch in text.chars() {
-        let columns = Line::from(ch.to_string()).width();
+    let span = Span::raw(text);
+    for grapheme in span.styled_graphemes(Style::default()) {
+        let columns = Line::from(grapheme.symbol).width();
         if used + columns > width - 1 {
             break;
         }
-        result.push(ch);
+        result.push_str(grapheme.symbol);
         used += columns;
     }
     result.push('…');
     result
+}
+
+// Input is append/backspace-only. Reserve a terminal cell for the insertion
+// cursor and show a grapheme-aligned suffix without changing the literal input.
+pub(super) fn prompt_view(text: &str, width: u16) -> (String, u16) {
+    let full = format!(":{text}");
+    let budget = usize::from(width.saturating_sub(1));
+    if Line::from(full.as_str()).width() <= budget {
+        let cursor = u16::try_from(Line::from(full.as_str()).width()).unwrap_or(0);
+        return (full, cursor);
+    }
+    let span = Span::raw(text);
+    let graphemes: Vec<_> = span.styled_graphemes(Style::default()).collect();
+    let mut used = usize::from(budget > 0);
+    let mut start = graphemes.len();
+    for (index, grapheme) in graphemes.iter().enumerate().rev() {
+        let columns = Line::from(grapheme.symbol).width();
+        if used + columns > budget {
+            break;
+        }
+        used += columns;
+        start = index;
+    }
+    let mut visible = if budget > 0 { "…".to_owned() } else { String::new() };
+    for grapheme in &graphemes[start..] {
+        visible.push_str(grapheme.symbol);
+    }
+    (visible, u16::try_from(used).unwrap_or(0))
 }
 
 #[cfg(test)]
@@ -402,6 +567,39 @@ mod tests {
     }
 
     #[test]
+    fn transport_bar_scales_pattern_and_song_positions() {
+        let mut app = App::default();
+        app.project.patterns[0].num_rows = 4;
+        app.project.patterns.push(app.project.patterns[0].clone());
+        app.project.patterns[1].num_rows = 8;
+        app.project.order = vec![0, 1, 0];
+        app.playback_state = PlaybackState::Playing;
+        let bar = |app: &App, width| Line::from(Presentation(app).transport_bar(width, Style::default())).to_string();
+        assert_eq!(bar(&app, 9), " ▶────── ");
+        app.playback_row = 3;
+        assert_eq!(bar(&app, 9), " ┃┃┃┃┃┃▶ ");
+        app.playback_mode = PlaybackMode::Song;
+        app.playing_order = 1;
+        app.playing_pattern = 1;
+        app.playback_row = 4;
+        assert_eq!(bar(&app, 9), " ┃┃┃▶─── ");
+        app.playing_order = 2;
+        app.playing_pattern = 0;
+        app.playback_row = 3;
+        assert_eq!(bar(&app, 9), " ┃┃┃┃┃┃▶ ");
+        app.playback_state = PlaybackState::Stopped;
+        assert_eq!(bar(&app, 9), " ┃┃┃┃┃┃Ⅱ ");
+        for width in 0..80 {
+            assert_eq!(
+                Line::from(Presentation(&app).transport_bar(width, Style::default())).width(),
+                width
+            );
+        }
+        app.project.order.clear();
+        assert_eq!(bar(&app, 9), " Ⅱ────── ");
+    }
+
+    #[test]
     fn exact_tick_fractions_cover_the_entire_valid_range() {
         for ticks in 1..=4096 {
             let label = length_label(NoteLength::try_from(ticks).unwrap());
@@ -457,17 +655,6 @@ mod tests {
     }
 
     #[test]
-    fn priority_uses_rendered_unicode_columns_and_keeps_whole_fields() {
-        for (width, expected) in [(9, "界 e\u{301} tail"), (8, "界 e\u{301}"), (2, "界"), (0, "界")] {
-            let line = prioritized_line(["界", "e\u{301}", "tail"].map(str::to_owned), width);
-            assert_eq!(line.to_string(), expected);
-        }
-        let line = prioritized_line(["界".to_owned(), "optional".to_owned(), "x".to_owned()], 4);
-        assert_eq!(line.to_string(), "界 x");
-        assert_eq!(line.width(), 4);
-    }
-
-    #[test]
     fn coordinates_and_transport_keep_edit_and_play_positions_independent() {
         let mut app = App {
             selected_pattern: 2,
@@ -486,10 +673,58 @@ mod tests {
         assert_eq!(Presentation(&app).transport(), "Song Stopped");
         app.playback_state = PlaybackState::Playing;
         assert_eq!(Presentation(&app).transport(), "Song Playing O3 P1 R16");
-        assert!(Presentation(&app)
-            .status_line(100)
-            .to_string()
-            .contains("P2 R00 T1 Song Playing O3 P1 R16"));
+        let status = Presentation(&app).status_line(100).to_string();
+        assert!(status.contains("P2R00T1"));
+        assert!(status.ends_with("Song Playing O3 P1 R16"));
+    }
+
+    #[test]
+    fn status_prioritizes_dirty_cursor_and_right_aligned_transport() {
+        let mut app = App::default();
+        app.handle_command(Command::IncreaseTempo);
+        app.playback_mode = PlaybackMode::Song;
+        app.playback_state = PlaybackState::Playing;
+        app.playing_order = 3;
+        app.playing_pattern = 7;
+        app.playback_row = 19;
+        for mode in [Mode::Normal, Mode::Insert, Mode::Visual] {
+            app.mode = mode;
+            for width in [24, 40, 80] {
+                let line = Presentation(&app).status_line(width);
+                let text = line.to_string();
+                assert_eq!(line.width(), usize::from(width));
+                assert!(text.starts_with(mode.label()));
+                assert!(text.contains('*'));
+                assert!(text.contains("T1"));
+                if width == 24 {
+                    assert!(text.ends_with("S >"));
+                } else {
+                    assert!(text.ends_with("O3 P7 R19"), "{width}: {text}");
+                }
+            }
+        }
+        app.playback_state = PlaybackState::Stopped;
+        let text = Presentation(&app).status_line(80).to_string();
+        assert!(text.ends_with("Song Stopped"));
+        assert!(!text.contains("O3"));
+        assert!(!text.contains("P7"));
+        assert!(!text.contains("R19"));
+    }
+
+    #[test]
+    fn prompt_and_basename_clipping_preserve_whole_graphemes() {
+        for text in ["👩‍💻", "🇦🇷", "e\u{301}", "界"] {
+            assert_eq!(elide(&format!("{text}tail"), 1), "…");
+            for width in 0..=12 {
+                let input = format!("long prefix {text}");
+                let (visible, cursor) = prompt_view(&input, width);
+                assert!(Line::from(visible.as_str()).width() <= usize::from(width.saturating_sub(1)));
+                assert_eq!(usize::from(cursor), Line::from(visible.as_str()).width());
+                if visible.len() > '…'.len_utf8() && visible.starts_with('…') {
+                    assert!(visible.ends_with(text));
+                }
+            }
+        }
     }
 
     #[test]

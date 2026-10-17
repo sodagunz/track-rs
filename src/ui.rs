@@ -70,8 +70,8 @@ fn render(f: &mut Frame, state: &App) {
     let area = f.area();
     let title_rows = u16::from(area.height >= 6);
     let order_rows = u16::from(area.height >= 7);
-    let status_rows = u16::from(area.height >= 3);
-    let hint_rows = u16::from(area.height > 0);
+    let hint_rows = u16::from(area.height > 0 && (state.prompt.is_some() || !state.status.is_empty()));
+    let status_rows = u16::from(area.height.saturating_sub(hint_rows) >= 3);
     if title_rows > 0 {
         draw_buffer_line(f, Rect::new(area.x, area.y, area.width, title_rows), state);
     }
@@ -98,20 +98,14 @@ fn render(f: &mut Frame, state: &App) {
     }
     if hint_rows > 0 {
         let line = state.prompt.as_ref().map_or_else(
-            || {
-                format!(
-                    "{} {} Help  {}{} {}",
-                    state.mode.label(),
-                    command_keys(Command::ToggleHelp),
-                    if state.is_dirty() { "* " } else { "" },
-                    state.status,
-                    state
-                        .path
-                        .as_ref()
-                        .map_or_else(|| "[unsaved]".into(), |path| path.display().to_string())
-                )
+            || state.status.clone(),
+            |text| {
+                let (visible, cursor) = presentation::prompt_view(text, area.width);
+                if area.width > 0 {
+                    f.set_cursor_position((area.x + cursor, area.bottom() - 1));
+                }
+                visible
             },
-            |text| format!(":{text}"),
         );
         f.render_widget(
             Paragraph::new(line),
@@ -346,7 +340,11 @@ fn draw_order(f: &mut Frame, area: Rect, state: &App) {
 }
 
 fn draw_buffer_line(f: &mut Frame, area: Rect, state: &App) {
-    f.render_widget(Paragraph::new(Presentation(state).buffer_line(area.width)), area);
+    f.render_widget(
+        Paragraph::new(Presentation(state).buffer_line(area.width))
+            .style(Style::default().bg(Color::Black).fg(Color::Gray)),
+        area,
+    );
 }
 
 fn draw_pattern_editor(f: &mut Frame, area: Rect, state: &App) {
@@ -464,7 +462,18 @@ fn format_step(step: PatternStep) -> String {
 mod tests {
     use super::*;
     use crate::tracker::{Note, NotePitch};
-    use ratatui::backend::TestBackend;
+    use ratatui::backend::{Backend, TestBackend};
+
+    fn screen_lines(terminal: &Terminal<TestBackend>, width: u16) -> String {
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(usize::from(width))
+            .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 
     fn screen(terminal: &Terminal<TestBackend>) -> String {
         terminal
@@ -499,6 +508,18 @@ mod tests {
         crate::bindings::handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &mut app);
         terminal.draw(|frame| render(frame, &app)).unwrap();
         assert!(screen(&terminal).contains("No file path"));
+        let error = app.status.clone();
+        for _ in 0..3 {
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            assert!(screen(&terminal).contains("No file path"));
+            assert_eq!(app.status, error);
+        }
+        // A message never replaces active input, even if feedback arrives later.
+        app.prompt = Some("w literal ? 界 path".into());
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        assert!(screen(&terminal).contains(":w literal ? 界"));
+        assert!(!screen(&terminal).contains("No file path"));
+        app.prompt = None;
         for (width, height) in [(1, 1), (12, 2), (40, 3)] {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             terminal.draw(|frame| render(frame, &app)).unwrap();
@@ -705,8 +726,8 @@ mod tests {
         terminal.draw(|f| render(f, &app)).unwrap();
         assert!(screen(&terminal).contains("4 HiHat"));
         assert!(screen(&terminal).contains("63"));
-        assert!(screen(&terminal).contains("? Help"));
-        assert_eq!(terminal.backend().buffer()[(5, 3)].bg, Color::Green);
+        assert!(!screen(&terminal).contains("? Help"));
+        assert_eq!(terminal.backend().buffer()[(5, 4)].bg, Color::Green);
         for width in 0..16 {
             for height in 0..4 {
                 let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -873,18 +894,19 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(80, 8)).unwrap();
         terminal.draw(|frame| render(frame, &app)).unwrap();
         let text = screen(&terminal);
-        assert!(text.contains("VISUAL Count:12 P0 R13 T2"));
+        assert!(text.contains("VISUAL Count:12"));
+        assert!(text.contains("P0R13T2"));
         assert!(text.contains("Sel:4r × 2t Empty"));
         let buffer = terminal.backend().buffer();
         // Cursor follows scrolling; selected cells take precedence over playback.
-        assert_eq!(buffer[(15, 5)].bg, Color::Green);
-        assert_eq!(buffer[(25, 5)].bg, Color::Blue);
+        assert_eq!(buffer[(15, 6)].bg, Color::Green);
+        assert_eq!(buffer[(25, 6)].bg, Color::Blue);
         app.cursor_row = 15;
         terminal.draw(|frame| render(frame, &app)).unwrap();
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(15, 5)].bg, Color::Green);
-        assert_eq!(buffer[(25, 5)].bg, Color::Blue);
-        assert_eq!(buffer[(0, 5)].symbol(), "▶");
+        assert_eq!(buffer[(15, 6)].bg, Color::Green);
+        assert_eq!(buffer[(25, 6)].bg, Color::Blue);
+        assert_eq!(buffer[(0, 6)].symbol(), "▶");
         for (keys, mode) in [("", "NORMAL"), ("i", "INSERT"), ("v", "VISUAL")] {
             let mut app = App::default();
             for ch in keys.chars() {
@@ -893,7 +915,11 @@ mod tests {
             for (width, height) in [(20, 3), (12, 2), (6, 1)] {
                 let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
                 terminal.draw(|frame| render(frame, &app)).unwrap();
-                assert!(screen(&terminal).contains(mode));
+                if height >= 3 {
+                    assert!(screen(&terminal).contains(mode));
+                } else {
+                    assert!(!screen(&terminal).contains("? Help"));
+                }
             }
         }
     }
@@ -952,6 +978,158 @@ mod tests {
         terminal.draw(|frame| render(frame, &app)).unwrap();
         let text = screen(&terminal);
         assert!(text.contains("Tab") && text.contains("0/1/2/4"));
+    }
+
+    #[test]
+    fn contextual_status_and_short_layout_keep_essentials() {
+        for mode in [Mode::Normal, Mode::Insert, Mode::Visual] {
+            let mut app = App { mode, ..App::default() };
+            app.handle_command(Command::IncreaseTempo);
+            for width in [24, 40, 80] {
+                for height in 0..=10 {
+                    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                    terminal.draw(|frame| render(frame, &app)).unwrap();
+                    let text = screen_lines(&terminal, width);
+                    if height >= 3 {
+                        assert!(text.contains(mode.label()), "{width}x{height}: {text}");
+                        assert!(text.contains('*'));
+                        assert!(text.contains("T1"));
+                        assert!(text.contains("Stopped") || text.contains("P ■"));
+                    }
+                    if height >= 2 {
+                        assert!(text.contains("00"), "missing editable row at {width}x{height}: {text}");
+                    }
+                    if height >= 4 {
+                        assert_ne!(text.lines().last().unwrap().trim(), "? Help");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn long_literal_prompt_keeps_tail_and_terminal_cursor_without_wrapping() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory
+            .path()
+            .join(format!("{} 界e\u{301} 👩‍💻.json", "long path ".repeat(12)));
+        let mut app = App::default();
+        for ch in format!(":w {}", path.display()).chars() {
+            crate::bindings::handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE), &mut app);
+        }
+        let original = app.prompt.clone();
+        for width in [24, 40, 80] {
+            for height in 1..=10 {
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal.draw(|frame| render(frame, &app)).unwrap();
+                let text = screen_lines(&terminal, width);
+                assert!(text.lines().last().unwrap().trim_end().ends_with("json"));
+                assert!(text.lines().last().unwrap().contains("👩‍💻"));
+                let (x, y) = terminal
+                    .backend_mut()
+                    .get_cursor_position()
+                    .map(|p| (p.x, p.y))
+                    .unwrap();
+                assert_eq!(y, height - 1);
+                assert!(x < width);
+                assert_eq!(app.prompt, original);
+                if height >= 3 {
+                    assert!(text.contains("00"));
+                }
+            }
+        }
+        crate::bindings::handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &mut app);
+        assert!(path.exists());
+        assert!(app.status.contains(&path.display().to_string()));
+        assert!(app.prompt.is_none());
+    }
+
+    #[test]
+    fn palette_status_segments_fill_width_and_keep_inline_help() {
+        for (mode, color) in [
+            (Mode::Normal, Color::Blue),
+            (Mode::Insert, Color::Green),
+            (Mode::Visual, Color::Cyan),
+        ] {
+            let mut app = App { mode, ..App::default() };
+            app.path = Some("/tmp/song.json".into());
+            app.handle_command(Command::IncreaseTempo);
+            for width in [40, 80, 120] {
+                let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
+                terminal.draw(|f| draw_status_bar(f, f.area(), &app)).unwrap();
+                let text = screen(&terminal);
+                assert!(text.contains("song.json*"), "{text}");
+                assert!(text.contains("? Help"), "{width}: {text}");
+                assert!(text.contains("P0R00T1"));
+                let buffer = terminal.backend().buffer();
+                for x in 0..width {
+                    let cell = &buffer[(x, 0)];
+                    assert_eq!(
+                        cell.bg,
+                        if usize::from(x) < mode.label().len() {
+                            color
+                        } else {
+                            Color::Black
+                        }
+                    );
+                }
+                assert!(buffer[(0, 0)].modifier.contains(Modifier::BOLD));
+                assert_eq!(
+                    buffer[(0, 0)].fg,
+                    if mode == Mode::Normal {
+                        Color::White
+                    } else {
+                        Color::Black
+                    }
+                );
+                if mode != Mode::Insert {
+                    assert!(!text.contains("Oct:"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn idle_reclaims_grid_row_but_feedback_and_prompt_keep_their_row() {
+        let mut app = App::default();
+        let mut terminal = Terminal::new(TestBackend::new(80, 6)).unwrap();
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let idle = screen_lines(&terminal, 80);
+        assert!(idle.lines().nth(4).unwrap().contains("02"));
+        assert!(idle.lines().last().unwrap().contains("? Help"));
+        app.status = "Save failed: permission denied".into();
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let feedback = screen_lines(&terminal, 80);
+        assert!(feedback.lines().last().unwrap().contains(&app.status));
+        assert!(feedback.lines().nth(4).unwrap().contains("NORMAL"));
+        assert!(feedback.lines().nth(3).unwrap().contains("01"));
+        app.prompt = Some(":w song.json".into());
+        terminal.draw(|f| render(f, &app)).unwrap();
+        assert!(screen_lines(&terminal, 80)
+            .lines()
+            .last()
+            .unwrap()
+            .contains(":w song.json"));
+    }
+
+    #[test]
+    fn buffer_tabs_use_contrast_and_keep_independent_playing_cues() {
+        let mut app = App::default();
+        app.handle_command(Command::NewPattern);
+        app.playback_state = crate::state::PlaybackState::Playing;
+        app.playing_pattern = 0;
+        let mut terminal = Terminal::new(TestBackend::new(80, 1)).unwrap();
+        terminal.draw(|f| draw_buffer_line(f, f.area(), &app)).unwrap();
+        let text = screen(&terminal);
+        assert!(text.contains(">P0"));
+        let selected = u16::try_from(text.find("[P1]").unwrap()).unwrap();
+        let playing = u16::try_from(text.find(">P0").unwrap()).unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(selected, 0)].bg, Color::DarkGray);
+        assert!(buffer[(selected, 0)].modifier.contains(Modifier::BOLD));
+        assert_eq!(buffer[(playing, 0)].fg, Color::Cyan);
+        assert_eq!(buffer[(79, 0)].bg, Color::Black);
     }
 
     #[test]
