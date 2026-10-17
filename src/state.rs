@@ -72,6 +72,7 @@ pub struct App {
     // Track-major owned snapshot; None cells are part of the rectangle.
     pub(crate) clipboard: Vec<Vec<Option<Note>>>,
     pub edit_step: usize,
+    pub entry_length: crate::tracker::NoteLength,
     pub mode: Mode,
     pub selection_anchor: Option<(usize, usize)>,
     pub pending_count: Option<u16>,
@@ -140,6 +141,7 @@ impl Default for App {
             history: History::default(),
             clipboard: Vec::new(),
             edit_step: 0,
+            entry_length: crate::tracker::NoteLength::default(),
             mode: Mode::Normal,
             selection_anchor: None,
             pending_count: None,
@@ -271,6 +273,7 @@ impl App {
                 self.stop_requested = true;
                 self.status = format!("Loaded {}", self.path.as_ref().unwrap().display());
             }
+            "step" | "length" => self.set_entry_setting(command, remainder.trim())?,
             "resize" | "resize!" => {
                 anyhow::ensure!(
                     self.mode == Mode::Normal && matches!(self.view, View::Pattern | View::Arrangement),
@@ -307,7 +310,40 @@ impl App {
                     self.shutdown();
                 }
             }
-            _ => anyhow::bail!("Unknown command; use :w [path], :e[!] <path>, :q[!], :wq, :restart, :resize[!] <rows>"),
+            _ => anyhow::bail!(
+                "Unknown command; use :w [path], :e[!] <path>, :q[!], :wq, :restart, :resize[!] <rows>, :step <rows>, \
+                 :length <integer>t/r"
+            ),
+        }
+        Ok(())
+    }
+
+    fn set_entry_setting(&mut self, command: &str, input: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.view == View::Pattern && self.mode == Mode::Normal,
+            "Entry settings require Pattern Normal mode"
+        );
+        if command == "step" {
+            let rows = Self::entry_integer(input)?;
+            anyhow::ensure!(
+                usize::from(rows) <= crate::project_file::MAX_ROWS,
+                "Step must be 0..=4096 rows"
+            );
+            self.edit_step = usize::from(rows);
+            self.status = format!("Entry step: {rows} rows");
+        } else {
+            let (number, multiplier) = if let Some(number) = input.strip_suffix('t') {
+                (number, 1)
+            } else if let Some(number) = input.strip_suffix('r') {
+                (number, crate::tracker::NoteLength::TICKS_PER_ROW)
+            } else {
+                anyhow::bail!("Expected :length <integer>t or <integer>r (16 ticks per row)");
+            };
+            let ticks = Self::entry_integer(number)?
+                .checked_mul(multiplier)
+                .ok_or_else(|| anyhow::anyhow!("Length must be 1..=4096 ticks"))?;
+            self.entry_length = crate::tracker::NoteLength::try_from(ticks).map_err(anyhow::Error::msg)?;
+            self.status = format!("New note length: {ticks} ticks");
         }
         Ok(())
     }
@@ -777,6 +813,14 @@ impl App {
         self.edit(|edit| edit.set_order(order));
     }
 
+    fn entry_integer(input: &str) -> anyhow::Result<u16> {
+        anyhow::ensure!(
+            !input.is_empty() && input.bytes().all(|byte| byte.is_ascii_digit()),
+            "Expected an unsigned decimal integer"
+        );
+        input.parse().map_err(|_| anyhow::anyhow!("Entry value is too large"))
+    }
+
     fn open_prompt(&mut self) {
         self.pending_count = None;
         self.prompt = Some(String::new());
@@ -805,7 +849,7 @@ impl App {
     fn enter_pitch(&mut self, pitch: crate::tracker::NotePitch, octave_offset: u8) {
         if let Some(octave) = self.octave.checked_add(octave_offset).filter(|octave| *octave <= 9) {
             let note = Note {
-                length_ticks: crate::tracker::NoteLength::default(),
+                length_ticks: self.entry_length,
                 pitch,
                 octave,
             };
