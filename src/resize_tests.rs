@@ -81,7 +81,11 @@ fn resize_force_restores_all_tracks_notes_and_saved_cursor_atomically() {
     assert!(matches!(app.playback_state, PlaybackState::Playing));
     prompt(&mut app, "resize! 4");
     assert!(app.take_stop_request());
-    assert!(app.project.patterns[0].tracks.iter().all(|t| t.len() == 4));
+    assert_eq!(app.project.patterns[0].num_rows, 4);
+    assert!(app.project.patterns[0]
+        .tracks
+        .iter()
+        .all(|track| track.events().is_empty()));
     app.handle_command(Command::ShowPattern);
     assert_eq!(app.cursor_row, 3);
     assert_eq!(app.mode, Mode::Normal);
@@ -106,7 +110,7 @@ fn resize_selected_pattern_roundtrips_repeated_order_and_neutral_channels() {
     assert!(app.project.patterns[1]
         .tracks
         .iter()
-        .all(|t| t.iter().all(|s| s.note.is_none())));
+        .all(|track| track.events().is_empty()));
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("resized.json");
     prompt(&mut app, &format!("w {}", path.display()));
