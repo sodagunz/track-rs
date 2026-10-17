@@ -29,6 +29,14 @@ move the playhead. Tab cycles entry steps of 0/1/2/4 rows.
 `{`/`}` halves/doubles note length (16 ticks per row); new notes last one row.
 Length sets note-off; the instrument's release rings afterward.
 
+F1 Normal Enter enters Audition: the same piano keys play **without writing**,
+including during playback. Arrows, PageUp/PageDown and `[`/`]` still work;
+brackets deliberately edit the shared instrument assignment. Notes don't move
+the cursor or add undo history. Esc returns to Normal. The strip says WRITE in
+Insert and NO WRITE in Audition (`I:W`/`A:N` when narrow). Audition has a 200 ms
+gate plus release, not key-held sustain; rapid notes replace bounded preview
+tails, not song voices. Terminal key release, chords and velocity aren't promised.
+
 Normal `y` copies, `d` cuts, `p` pastes, and `x`/Delete clears. Visual `y`/`d`/`x`
 acts on the rectangle and returns to Normal. Paste includes empty cells and clips
 at pattern edges. `u` undoes; Ctrl-r redoes. Bulk edits undo together.

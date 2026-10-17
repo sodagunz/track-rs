@@ -280,7 +280,8 @@ fn help_groups(view: View, mode: Option<Mode>) -> Vec<Vec<&'static crate::bindin
         .filter(|binding| {
             let shared = [Mode::Normal, Mode::Insert, Mode::Visual]
                 .iter()
-                .all(|mode| binding.available_in_mode(view, *mode));
+                .all(|mode| binding.available_in_mode(view, *mode))
+                && (view != View::Pattern || binding.available_in_mode(view, Mode::Audition));
             mode.map_or(shared, |mode| !shared && binding.available_in_mode(view, mode))
         })
         .collect();
@@ -327,6 +328,7 @@ fn help_lines(view: View, mode: Mode, width: u16) -> Vec<Line<'static>> {
         (Some(Mode::Normal), "Normal"),
         (Some(Mode::Insert), "Insert"),
         (Some(Mode::Visual), "Visual"),
+        (Some(Mode::Audition), "Audition (NO WRITE, 200 ms gate plus release)"),
     ];
     let key_width = sections
         .iter()
@@ -350,7 +352,9 @@ fn help_lines(view: View, mode: Mode, width: u16) -> Vec<Line<'static>> {
         ));
     }
     for (section, label) in sections {
-        if view == View::Mixer && section == Some(Mode::Visual) {
+        if (view == View::Mixer && section == Some(Mode::Visual))
+            || (view != View::Pattern && section == Some(Mode::Audition))
+        {
             continue;
         }
         let active = section == Some(mode);
@@ -1135,7 +1139,8 @@ mod tests {
             for binding in DEFAULT_BINDINGS {
                 let shared = [Mode::Normal, Mode::Insert, Mode::Visual]
                     .iter()
-                    .all(|mode| binding.available_in_mode(View::Pattern, *mode));
+                    .all(|mode| binding.available_in_mode(View::Pattern, *mode))
+                    && binding.available_in_mode(View::Pattern, Mode::Audition);
                 let expected = binding.available_in_view(View::Pattern)
                     && section.map_or(shared, |mode| !shared && binding.available_in_mode(View::Pattern, mode));
                 assert_eq!(

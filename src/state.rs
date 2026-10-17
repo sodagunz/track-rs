@@ -27,6 +27,7 @@ pub enum Mode {
     #[default]
     Normal,
     Insert,
+    Audition,
     Visual,
 }
 
@@ -36,6 +37,7 @@ impl Mode {
         match self {
             Self::Normal => "NORMAL",
             Self::Insert => "INSERT",
+            Self::Audition => "AUDITION",
             Self::Visual => "VISUAL",
         }
     }
@@ -289,7 +291,20 @@ impl App {
         })
     }
 
-    fn dismiss_feedback(&mut self, command: Command) {
+    fn prepare_command(&mut self, command: Command) {
+        if matches!(
+            command,
+            Command::EnterNormal
+                | Command::ToggleHelp
+                | Command::ShowPattern
+                | Command::ShowArrangement
+                | Command::ShowMixer
+                | Command::ShowInstrument
+        ) {
+            self.audition = None;
+        }
+        self.pending_prefix = None;
+
         if !self.help_visible
             || matches!(
                 command,
@@ -333,8 +348,7 @@ impl App {
 
     /// Apply an editor action without depending on terminal key events.
     pub fn handle_command(&mut self, command: Command) {
-        self.dismiss_feedback(command);
-        self.pending_prefix = None;
+        self.prepare_command(command);
         match command {
             Command::ToggleHelp => {
                 self.pending_count = None;
@@ -373,6 +387,7 @@ impl App {
             Command::AddTrack => self.add_track(),
             Command::OpenPrompt => self.open_prompt(),
             Command::EnterInsert => self.enter_insert(),
+            Command::EnterAudition => self.enter_audition(),
             Command::EnterNormal => {
                 self.mode = Mode::Normal;
                 self.selection_anchor = None;
@@ -501,8 +516,18 @@ impl App {
         Ok(())
     }
 
+    const fn enter_audition(&mut self) {
+        self.mode = Mode::Audition;
+        self.pending_count = None;
+        self.pending_prefix = None;
+        self.suppressed_repeat = true;
+        self.audition = None;
+    }
+
     const fn enter_insert(&mut self) {
         self.mode = Mode::Insert;
+        self.pending_count = None;
+        self.suppressed_repeat = true;
         self.selection_anchor = None;
     }
 
@@ -709,12 +734,28 @@ impl App {
 
     fn enter_pitch(&mut self, pitch: crate::tracker::NotePitch, octave_offset: u8) {
         if let Some(octave) = self.octave.checked_add(octave_offset).filter(|octave| *octave <= 9) {
-            self.enter_note(Note {
+            let note = Note {
                 length_ticks: crate::tracker::NoteLength::default(),
                 pitch,
                 octave,
-            });
+            };
+            if self.mode == Mode::Audition {
+                self.preview_note(note);
+            } else {
+                self.enter_note(note);
+            }
         }
+    }
+
+    fn preview_note(&mut self, note: Note) {
+        self.audition_active = true;
+        self.audition = Some(crate::transport::NoteEvent {
+            track: self.cursor_track,
+            instrument: self.project.instrument(self.cursor_track),
+            note,
+            beats: 0.0,
+            duration: crate::audio::DEFAULT_NOTE_DURATION,
+        });
     }
 
     fn enter_note(&mut self, mut note: Note) {
@@ -730,14 +771,7 @@ impl App {
         {
             self.insert_note_under_cursor(Some(note));
             if self.mode == Mode::Insert && self.view == View::Pattern {
-                self.audition_active = true;
-                self.audition = Some(crate::transport::NoteEvent {
-                    track: self.cursor_track,
-                    instrument: self.project.instrument(self.cursor_track),
-                    note,
-                    beats: 0.0,
-                    duration: crate::audio::DEFAULT_NOTE_DURATION,
-                });
+                self.preview_note(note);
             }
             if self.mode == Mode::Insert {
                 self.offset_cursor(&CursorOffset::Pos(self.edit_step), &CursorOffset::None);
