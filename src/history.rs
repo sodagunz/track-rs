@@ -98,7 +98,13 @@ impl Mutation {
             Self::Grid {
                 ref before, ref after, ..
             } => before != after,
-            Self::Event { before, after, .. } => before != after,
+            Self::Event {
+                before,
+                after,
+                before_id,
+                after_id,
+                ..
+            } => before != after || before_id != after_id,
             Self::Instrument { before, after, .. } => before != after,
             Self::Channel { before, after, .. } => before != after,
             Self::Tempo { before, after } => before != after,
@@ -400,6 +406,20 @@ impl Edit<'_> {
             });
         }
         Ok(())
+    }
+
+    pub(crate) fn insert_relocated_event(&mut self, pattern: usize, track: usize, event: PatternEvent, id: EventId) {
+        debug_assert!(self.project.patterns[pattern]
+            .event_at(track, event.start_tick)
+            .is_none());
+        self.try_set_event(pattern, track, event.start_tick, Some(event))
+            .expect("preflighted relocation fits");
+        self.project.patterns[pattern].tracks[track].restore_id(event.start_tick, id);
+        // Value normalization may have restored the old destination handle. Relocation
+        // deliberately carries the source handle, even when pitch/gate values coincide.
+        if let Some(Mutation::Event { after_id, .. }) = self.changes.last_mut() {
+            *after_id = Some(id);
+        }
     }
 
     pub(crate) fn check_range_replacement(

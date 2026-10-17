@@ -25,6 +25,9 @@ pub mod ui;
 
 pub mod project;
 pub mod project_file;
+mod quantize;
+#[cfg(test)]
+mod quantize_tests;
 
 #[cfg(test)]
 mod project_tests;

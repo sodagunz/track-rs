@@ -192,7 +192,7 @@ changes the pattern end. In F1 Normal, `:meter 3/4` sets pattern-local meter,
 `:grid 3` sets quarter-note triplets, and `:grid 64 bar` puts 256ths in the cursor's
 bar. Grid numbers are divisions per quarter; BPM always means quarter notes/minute.
 The gutter marks the edit row `>`, playing row `*`, denominator units `.`, and bars
-`|`. Status shows bar/unit/tick coordinates and partial final bars on custom grids.
+`|`. Status shows bar/unit/tick coordinates and partial final bars.
 
 A cell's `+N` (`+*` for ten or more) counts hidden off-grid starts, not merged notes.
 `:next-event` / `:prev-event` inspect exact starts on the cursor track. Single-cell
@@ -201,6 +201,18 @@ hidden events; cut/clear report the event count. Paste refuses to replace hidden
 starts unless you confirm with `:paste!`. Clipboard positions remain exact ticks.
 Legacy gate labels use 16 units per sixteenth, independent of grid density;
 non-legacy gates show exact PPQ ticks.
+
+In F1 Normal, `:quantize?` previews snapping the exact cursor event to the current
+local grid; `:quantize` applies it. In Visual, `:` accepts only these two commands
+and uses the selected tick interval/tracks, including hidden onsets. Nearest-grid
+ties go forward; bar overrides apply locally. Destinations may leave the selected
+interval, but collisions with selected or unselected events reject the whole edit.
+Snaps to the pattern-end boundary also reject: no wrapping, clamping, merging or
+force/drop variant. The preview reports moved-event, collision and end-hit counts,
+plus the first collision's exact track/tick. Refine the grid/selection or edit exact
+events to resolve conflicts. Success preserves pitches, gates, IDs, meter, grids
+and end, stops playback, and undoes in one transaction. Preview, rejection and
+no-op leave playback/history/selection unchanged.
 
 In the arrangement, `]` marks selection and `>` marks the playing Song entry.
 Repeated patterns have separate entries.

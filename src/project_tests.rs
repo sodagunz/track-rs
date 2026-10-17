@@ -246,7 +246,7 @@ fn decoder_rejects_each_allocation_limit_before_installation() {
 #[test]
 fn ordinary_clean_load_and_prompt_mode_event_rules() {
     let mut app = App::default();
-    for mode in [Mode::Insert, Mode::Visual] {
+    for mode in [Mode::Insert, Mode::Audition] {
         app.mode = mode;
         type_text(&mut app, ":");
         assert_eq!(app.prompt, None);

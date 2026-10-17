@@ -1,6 +1,6 @@
 # 019 — Musical time, meter and local grids
 
-Status: in progress, 2026-10-17. Implementation order and recommended design approved by “Let's start implementing in order.” Foundation before [016](016-metronome-and-record-arming.md), [017](017-quantized-live-recording.md) and recording integration in [018](018-midi-input.md). Device-free foundation and v4 tick-event persistence adapter implemented; no new dependency. Runtime notes, history patches, clipboard snapshots and pattern ends use ticks; production playback uses anchored tick deadlines. Projected editing now supports pattern-local meter and per-bar grids, exact sub-row entry/navigation and hidden-event safeguards. General gate resolution is now admitted with explicit duration entry; exact partial-end editing and admission are implemented. [Primary-source research](../.ideas/musical-time.md).
+Status: in progress, 2026-10-17. Implementation order and recommended design approved by “Let's start implementing in order.” Foundation before [016](016-metronome-and-record-arming.md), [017](017-quantized-live-recording.md) and recording integration in [018](018-midi-input.md). Device-free foundation and v4 tick-event persistence adapter implemented; no new dependency. Runtime notes, history patches, clipboard snapshots and pattern ends use ticks; production playback uses anchored tick deadlines. Projected editing now supports pattern-local meter and per-bar grids, exact sub-row entry/navigation and hidden-event safeguards. Exact gates, partial ends, sparse event budgets and collision-aware explicit grid quantization are implemented. Integration with count-in/recording remains in the following plans; no hardware timing certification is implied. [Primary-source research](../.ideas/musical-time.md).
 
 ## Outcome and vocabulary
 
@@ -157,6 +157,14 @@ Expose immutable run generation, absolute unwrapped tick/cycle, tempo segments a
 - Structural history weights count retained events, tracks and grid overrides. Populated snapshots still evict at the bounded retention limit; empty long grids do not. File byte limits bound JSON input before decoding, and event limits are validated before constructing/installing runtime patterns (not a streaming JSON allocation claim).
 - Added capacity, atomic paste/import, sparse high-density viewport, save/load, history-retention and real-entry failure regressions. Full locked all-target nextest: 231 passed; strict Clippy, formatting, doctests (zero cases), warning-free docs and whitespace checks passed. No DSP/transport changes or manual listening check.
 - Remaining: explicit collision-aware quantization; 016/020 untouched.
+
+### Explicit quantization checkpoint
+
+- Added F1 `:quantize?` (read-only preview) / `:quantize` (apply). Normal targets only the exact cursor event; Visual uses its tick interval/tracks, including hidden onsets. Pattern Visual can open a quantization-only prompt; other commands remain blocked there.
+- Snapping uses nearest local-grid neighbors, ties forward, including mixed-grid/bar boundaries. Preview reports move/collision/end-hit counts and first collision track/tick. Any collision with selected or unselected events, or a destination at the pattern end, rejects the entire edit. No force/drop, wrap or clamp policy. Destinations may leave the selected interval only if free.
+- Successful edits preserve pitch/gate/identity and meter/grid/end metadata, stop playback and finish selection; exact-event patches undo/redo together without whole-pattern snapshots. Planning is read-only and bounded by actual selected events, not projected cells. Preview, rejection and no-op preserve history/playback/selection.
+- Seven real-key/identity regressions cover mixed triplet/256th grids, cross-bar and unselected collisions, hidden events, ties, partial-end rejection, redo retention, format round-trip and relocation at 65536-event track capacity. Full locked all-target nextest: 238 passed; strict Clippy, formatting, doctests (zero cases), warning-free docs and whitespace checks passed. Existing narrow-terminal regressions pass; no manual UI/audio check or sample-accuracy claim.
+- Core 019 editing/storage/time slices are now delivered. Count-in, armed capture, timestamped live quantization and MIDI integration are still unimplemented in 016–018. This checkpoint does not mark those integration acceptance cases or historical listening checks complete; 016/020 were not started in this batch.
 
 ## Acceptance
 

@@ -79,6 +79,9 @@ impl Binding {
         {
             return false;
         }
+        if mode == Mode::Visual && self.command == Command::OpenPrompt && view != crate::state::View::Pattern {
+            return false;
+        }
         if view == crate::state::View::Mixer
             && matches!(self.command, Command::LowerOctave | Command::RaiseOctave)
             && mode != Mode::Visual
@@ -138,7 +141,8 @@ impl Binding {
                 | Command::CycleEditStep
                 | Command::DecreaseOctave
                 | Command::IncreaseOctave => &[Mode::Insert, Mode::Audition],
-                Command::OpenPrompt | Command::Undo | Command::Redo | Command::Paste => &[Mode::Normal],
+                Command::OpenPrompt => &[Mode::Normal, Mode::Visual],
+                Command::Undo | Command::Redo | Command::Paste => &[Mode::Normal],
                 Command::Copy | Command::Cut | Command::EnterInsert | Command::ToggleVisual => {
                     &[Mode::Normal, Mode::Visual]
                 }
@@ -572,7 +576,7 @@ pub const DEFAULT_BINDINGS: &[Binding] = &[
     Binding::new(
         KeyCode::Char(':'),
         Command::OpenPrompt,
-        "w [path], e[!] path, q[!], wq; Esc cancels",
+        "w/e[!]/q[!]/wq; settings; selection: quantize[?] only; Esc cancels",
         "Files",
     ),
     Binding {
