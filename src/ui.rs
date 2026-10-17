@@ -5,7 +5,7 @@ use crossterm::{
 use ratatui::{
     layout::Rect,
     prelude::CrosstermBackend,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
     Frame, Terminal,
@@ -68,6 +68,7 @@ impl<W: std::io::Write> TUI<W> {
 
 fn render(f: &mut Frame, state: &App) {
     let area = f.area();
+    f.render_widget(Block::default().style(state.theme.base()), area);
     let title_rows = u16::from(area.height >= 6);
     let order_rows = u16::from(area.height >= 7 && state.view == View::Pattern);
     let hint_rows = u16::from(area.height > 0 && (state.prompt.is_some() || !state.status.is_empty()));
@@ -131,7 +132,7 @@ fn render(f: &mut Frame, state: &App) {
             },
         );
         f.render_widget(
-            Paragraph::new(line),
+            Paragraph::new(line).style(state.theme.base()),
             Rect::new(area.x, area.bottom() - 1, area.width, 1),
         );
     }
@@ -167,7 +168,7 @@ fn draw_instrument(f: &mut Frame, area: Rect, state: &App) {
                     if selected { " (all patterns)" } else { "" }
                 ),
                 if selected {
-                    Style::default().fg(Color::Black).bg(Color::Cyan)
+                    state.theme.cursor()
                 } else {
                     Style::default()
                 },
@@ -228,7 +229,7 @@ fn draw_mixer(f: &mut Frame, area: Rect, state: &App) {
                     channel_header(track, state.project.channels()[track], any_solo)
                 ),
                 if track == state.cursor_track {
-                    Style::default().fg(Color::Cyan)
+                    state.theme.base().fg(state.theme.accent())
                 } else {
                     Style::default()
                 },
@@ -243,11 +244,11 @@ fn draw_mixer(f: &mut Frame, area: Rect, state: &App) {
         ))];
         for track in first..(first + count).min(state.project.channels().len()) {
             let style = if track == state.cursor_track && row == state.cursor_row {
-                Style::default().fg(Color::Black).bg(Color::Cyan)
+                state.theme.cursor()
             } else if state.is_selected(row, track) {
-                Style::default().add_modifier(Modifier::REVERSED | Modifier::UNDERLINED)
+                state.theme.selection().add_modifier(Modifier::UNDERLINED)
             } else if track == state.cursor_track {
-                Style::default().fg(Color::Cyan)
+                state.theme.base().fg(state.theme.accent())
             } else {
                 Style::default()
             };
@@ -282,11 +283,11 @@ fn draw_mixer(f: &mut Frame, area: Rect, state: &App) {
                 spans.push(Span::styled(
                     format!(" {bars}{}", if peak > 1.0 { '!' } else { ' ' }),
                     Style::default().fg(if peak > 1.0 {
-                        Color::Red
+                        state.theme.warning()
                     } else if track == state.cursor_track {
-                        Color::Cyan
+                        state.theme.accent()
                     } else {
-                        Color::DarkGray
+                        state.theme.muted()
                     }),
                 ));
             }
@@ -463,7 +464,9 @@ fn draw_help(f: &mut Frame, state: &App) {
     );
     f.render_widget(Clear, area);
     let bordered = width >= 40 && height >= 8;
-    let block = Block::default().borders(if bordered { Borders::ALL } else { Borders::NONE });
+    let block = Block::default()
+        .style(state.theme.base())
+        .borders(if bordered { Borders::ALL } else { Borders::NONE });
     let inner = block.inner(area);
     f.render_widget(block, area);
     if inner.height == 0 || inner.width == 0 {
@@ -536,9 +539,9 @@ fn draw_arrangement(f: &mut Frame, area: Rect, state: &App) {
                     state.project.patterns[pattern].num_rows
                 ),
                 if selected {
-                    Style::default().fg(Color::Black).bg(Color::Cyan)
+                    state.theme.cursor()
                 } else if playing {
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                    state.theme.base().fg(state.theme.accent()).add_modifier(Modifier::BOLD)
                 } else {
                     Style::default()
                 },
@@ -574,7 +577,7 @@ fn draw_order(f: &mut Frame, area: Rect, state: &App) {
                 pattern_label(*pattern)
             ),
             if index == state.selected_order {
-                Style::default().bg(Color::Green).fg(Color::Black)
+                state.theme.cursor()
             } else {
                 Style::default()
             },
@@ -585,8 +588,7 @@ fn draw_order(f: &mut Frame, area: Rect, state: &App) {
 
 fn draw_buffer_line(f: &mut Frame, area: Rect, state: &App) {
     f.render_widget(
-        Paragraph::new(Presentation(state).buffer_line(area.width))
-            .style(Style::default().bg(Color::Black).fg(Color::Gray)),
+        Paragraph::new(Presentation(state).buffer_line(area.width)).style(state.theme.base()),
         area,
     );
 }
@@ -655,7 +657,7 @@ fn draw_pattern_editor(f: &mut Frame, area: Rect, state: &App) {
                         .take(10)
                         .collect::<String>()
                 ),
-                Style::default().fg(Color::Green),
+                state.theme.base().fg(state.theme.accent()),
             ));
         }
         f.render_widget(
@@ -671,14 +673,11 @@ fn draw_pattern_editor(f: &mut Frame, area: Rect, state: &App) {
         for track in first_track..first_track + visible_tracks {
             let step = pattern.get_step(track, row).copied().expect("Pattern row must exist");
             let style = if row == state.cursor_row && track == state.cursor_track {
-                Style::default().bg(Color::Green).fg(Color::Black)
+                state.theme.cursor()
             } else if state.is_selected(row, track) {
-                Style::default()
-                    .bg(Color::Blue)
-                    .fg(Color::White)
-                    .add_modifier(Modifier::UNDERLINED)
+                state.theme.selection().add_modifier(Modifier::UNDERLINED)
             } else if playing {
-                Style::default().bg(Color::DarkGray)
+                state.theme.playback()
             } else {
                 Style::default()
             };
@@ -728,6 +727,90 @@ mod tests {
     use super::*;
     use crate::tracker::{Note, NotePitch};
     use ratatui::backend::{Backend, TestBackend};
+    use ratatui::style::Color;
+
+    #[test]
+    fn custom_theme_covers_views_modes_overlays_and_preserves_text() {
+        let custom = crate::theme::Theme::parse(
+            r##"{
+            "foreground":"#112233", "background":"#223344",
+            "accent":"#334455", "cursor":"#445566",
+            "selection":"#556677", "playback":"#667788",
+            "normal":"#778899", "insert":"#8899aa",
+            "visual":"#99aabb", "audition":"#aabbcc"
+        }"##,
+        )
+        .unwrap();
+        for view in [View::Pattern, View::Arrangement, View::Mixer, View::Instrument] {
+            for mode in [Mode::Normal, Mode::Insert, Mode::Visual, Mode::Audition] {
+                for (width, height) in [(100, 30), (32, 12), (9, 4), (1, 1)] {
+                    for overlay in 0..3 {
+                        let mut app = App {
+                            view,
+                            mode,
+                            ..App::default()
+                        };
+                        app.selection_anchor = Some((0, 0));
+                        app.help_visible = overlay == 1;
+                        app.prompt = (overlay == 2).then(|| "w 主题.json".to_owned());
+                        let project = app.project.clone();
+                        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                        terminal.draw(|f| render(f, &app)).unwrap();
+                        let original = screen(&terminal);
+                        app.theme = custom.clone();
+                        terminal.draw(|f| render(f, &app)).unwrap();
+                        assert_eq!(screen(&terminal), original, "{view:?} {mode:?} {width} {overlay}");
+                        assert_eq!(app.project, project);
+                        assert!(!app.is_dirty());
+                        let cells = &terminal.backend().buffer().content;
+                        for (index, cell) in cells.iter().enumerate() {
+                            // Ratatui resets continuation cells of full-width glyphs.
+                            let continuation = index > 0 && Line::from(cells[index - 1].symbol()).width() == 2;
+                            assert!(
+                                cell.bg != Color::Reset || continuation,
+                                "{view:?} {mode:?} {width} {overlay} cell {index}"
+                            );
+                        }
+                        if overlay == 0 && width == 100 {
+                            assert!(cells.iter().any(|cell| cell.bg == Color::Rgb(68, 85, 102)));
+                            let mode_color = match mode {
+                                Mode::Normal => Color::Rgb(119, 136, 153),
+                                Mode::Insert => Color::Rgb(136, 153, 170),
+                                Mode::Visual => Color::Rgb(153, 170, 187),
+                                Mode::Audition => Color::Rgb(170, 187, 204),
+                            };
+                            assert!(cells.iter().any(|cell| cell.bg == mode_color));
+                        }
+                        if overlay == 2 {
+                            assert_eq!(terminal.backend().buffer()[(0, height - 1)].bg, Color::Rgb(34, 51, 68));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn themed_note_entry_and_undo_match_defaults() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut plain = App::default();
+        let mut themed = App {
+            theme: crate::theme::Theme::parse(r#"{"cursor":"magenta"}"#).unwrap(),
+            ..App::default()
+        };
+        for key in ['i', 'z', 's'] {
+            for app in [&mut plain, &mut themed] {
+                crate::bindings::handle_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE), app);
+            }
+        }
+        assert_eq!(plain.project, themed.project);
+        assert!(themed.is_dirty());
+        for app in [&mut plain, &mut themed] {
+            app.handle_command(Command::Undo);
+        }
+        assert_eq!(plain.project, themed.project);
+        assert_eq!(themed.theme.cursor().bg, Some(Color::Magenta));
+    }
 
     #[test]
     fn mixer_flags_and_excluded_cells_do_not_depend_on_color() {
@@ -783,7 +866,7 @@ mod tests {
                     .buffer()
                     .content
                     .iter()
-                    .any(|cell| cell.bg == Color::Cyan));
+                    .any(|cell| cell.bg == Color::Green));
             }
             if width == 24 {
                 assert!(screen(&terminal).contains("Vol dB"));
@@ -923,7 +1006,7 @@ mod tests {
                     .buffer()
                     .content
                     .iter()
-                    .any(|cell| cell.modifier.contains(Modifier::UNDERLINED | Modifier::REVERSED)));
+                    .any(|cell| cell.modifier.contains(Modifier::UNDERLINED)));
             }
             if width >= 12 {
                 assert!(
@@ -1759,14 +1842,7 @@ mod tests {
                     );
                 }
                 assert!(buffer[(0, 0)].modifier.contains(Modifier::BOLD));
-                assert_eq!(
-                    buffer[(0, 0)].fg,
-                    if mode == Mode::Normal {
-                        Color::White
-                    } else {
-                        Color::Black
-                    }
-                );
+                assert_eq!(buffer[(0, 0)].fg, Color::Black);
                 if mode != Mode::Insert {
                     assert!(!text.contains("Oct:"));
                 }
@@ -1813,7 +1889,7 @@ mod tests {
         assert_eq!(buffer[(selected, 0)].bg, Color::DarkGray);
         assert!(buffer[(selected, 0)].modifier.contains(Modifier::BOLD));
         assert_eq!(buffer[(playing, 0)].fg, Color::Cyan);
-        assert_eq!(buffer[(79, 0)].bg, Color::Black);
+        assert_eq!(buffer[(79, 0)].bg, Color::Reset);
     }
 
     #[test]

@@ -5,6 +5,40 @@
 This project is mostly intended as a fidget and a tribute to retro digital
 audio. Sorry Mario, your blazingly fast modern tracker is in another repo.
 
+### Themes
+
+Defaults use your terminal's foreground/background and ANSI palette, not RGB.
+Optionally create `$XDG_CONFIG_HOME/track-rs/theme.json`; when XDG_CONFIG_HOME is
+unset or empty, use `$HOME/.config/track-rs/theme.json`. If neither is available,
+there's no discovered file. A missing discovered file is harmless.
+
+```json
+{
+  "accent": "magenta",
+  "cursor": "light-blue"
+}
+```
+
+`cargo run -- --theme /path/to/theme.json` overrides discovery entirely. An
+explicit missing file, unreadable file, unknown role or invalid color is an error
+before audio or terminal startup. Omitted roles keep their defaults; `{}` uses
+all defaults. Themes load at startup, not on save or reload of a project.
+
+Roles: `foreground`, `background`, `muted`, `accent`, `highlight_foreground`,
+`cursor`, `selection`, `playback`, `warning`, `normal`, `insert`, `visual`,
+`audition`. Cursor/selection/mode roles set backgrounds and share
+`highlight_foreground` (black by default). Selection also uses an underline.
+All views, help, prompts and buffer/status strips share these settings.
+
+Colors are lowercase ANSI names: `black`, `red`, `green`, `yellow`, `blue`,
+`magenta`, `cyan`, `gray`, `dark-gray`, `light-red`, `light-green`, `light-yellow`,
+`light-blue`, `light-magenta`, `light-cyan`, `white`; `default` inherits the
+terminal color. `indexed:0` through `indexed:255` select palette entries.
+Explicit `#RRGGBB` strings are also accepted for custom truecolor themes; they
+bypass the terminal palette and need terminal support. Choose highlight colors
+and foregrounds together for your terminal. Themes aren't stored in projects
+and don't affect editing, undo or audio.
+
 ### Controls
 
 Start in Normal mode. `i` enters Insert, `v` selects a rectangle, `Esc` returns

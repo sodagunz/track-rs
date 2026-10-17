@@ -62,6 +62,7 @@ pub enum PlaybackState {
     reason = "Input repeat suppression, help, shutdown, and transport stop flags are independent."
 )]
 pub struct App {
+    pub theme: crate::theme::Theme,
     pub meters: crate::meter::MeterDisplay,
     pub view: View,
     pub(crate) view_states: [ViewState; 4],
@@ -130,6 +131,7 @@ impl Default for App {
         let default_rows = 64;
         let default_tracks = 4;
         Self {
+            theme: crate::theme::Theme::default(),
             meters: crate::meter::MeterDisplay::default(),
             view: View::Pattern,
             view_states: [ViewState::default(); 4],

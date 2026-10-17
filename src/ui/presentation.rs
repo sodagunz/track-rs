@@ -1,7 +1,7 @@
 use std::fmt::Write as _;
 
 use ratatui::{
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
 };
 
@@ -207,7 +207,7 @@ impl Presentation<'_> {
     pub(super) fn status_with_buffer(&self, width: u16, buffer_visible: bool) -> Line<'static> {
         let width = usize::from(width);
         let app = self.0;
-        let base = Style::default();
+        let base = app.theme.base();
         let dirty = if app.is_dirty() && !buffer_visible { "*" } else { "" };
         let piano = app.view == crate::state::View::Pattern && matches!(app.mode, Mode::Insert | Mode::Audition);
         let audition = app.mode == Mode::Audition;
@@ -345,24 +345,15 @@ impl Presentation<'_> {
         };
         vec![
             Span::raw(" "),
-            Span::styled("┃".repeat(head), base.fg(Color::Cyan)),
-            Span::styled(cue, base.fg(Color::White).add_modifier(Modifier::BOLD)),
-            Span::styled("─".repeat(cells - head - 1), base.fg(Color::DarkGray)),
+            Span::styled("┃".repeat(head), base.fg(app.theme.accent())),
+            Span::styled(cue, base.fg(app.theme.accent()).add_modifier(Modifier::BOLD)),
+            Span::styled("─".repeat(cells - head - 1), base.fg(app.theme.muted())),
             Span::raw(" ".repeat(width - cells - 1)),
         ]
     }
 
     fn mode_style(&self) -> Style {
-        let (foreground, background) = match self.0.mode {
-            Mode::Normal => (Color::White, Color::Blue),
-            Mode::Insert => (Color::Black, Color::Green),
-            Mode::Audition => (Color::Black, Color::Yellow),
-            Mode::Visual => (Color::Black, Color::Cyan),
-        };
-        Style::default()
-            .fg(foreground)
-            .bg(background)
-            .add_modifier(Modifier::BOLD)
+        self.0.theme.mode(self.0.mode).add_modifier(Modifier::BOLD)
     }
 
     pub(super) fn buffer_line(&self, width: u16) -> Line<'static> {
@@ -435,7 +426,7 @@ impl Presentation<'_> {
             active
         };
 
-        let base = Style::default().bg(Color::Black).fg(Color::Gray);
+        let base = app.theme.base();
         let mut spans = Vec::new();
         for field in [basename.as_str(), dirty, window.as_str()]
             .into_iter()
@@ -449,9 +440,9 @@ impl Presentation<'_> {
                     spans.push(Span::raw(" "));
                 }
                 let style = if token.contains('[') && token.contains(&pattern_label(app.selected_pattern)) {
-                    base.bg(Color::DarkGray).fg(Color::White).add_modifier(Modifier::BOLD)
+                    app.theme.playback().add_modifier(Modifier::BOLD)
                 } else if token.starts_with('>') {
-                    base.fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                    base.fg(app.theme.accent()).add_modifier(Modifier::BOLD)
                 } else {
                     base.add_modifier(Modifier::DIM)
                 };

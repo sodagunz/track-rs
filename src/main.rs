@@ -7,10 +7,15 @@ use std::{
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Startup:
+    let explicit = track_rs::theme::theme_argument(std::env::args_os().skip(1))?;
+    let discovered = track_rs::theme::discover(std::env::var_os("XDG_CONFIG_HOME"), std::env::var_os("HOME"));
+    let theme = track_rs::theme::load(explicit.as_deref(), discovered.as_deref())?;
+
+    // Validate configuration before opening audio or changing terminal mode.
     let mut audio_engine = AudioEngine::new()?;
     let mut tui = TUI::new(stdout())?;
     let mut app_state = App::default();
+    app_state.theme = theme;
 
     let listener = bindings::listen();
 
