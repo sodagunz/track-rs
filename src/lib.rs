@@ -51,4 +51,7 @@ pub mod meter;
 #[cfg(test)]
 mod metronome_tests;
 pub mod musical_time;
+pub mod recording;
+#[cfg(test)]
+mod recording_tests;
 mod tone;

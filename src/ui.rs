@@ -418,6 +418,18 @@ fn help_lines(view: View, mode: Mode, width: u16) -> Vec<Line<'static>> {
     }
     if view == View::Pattern {
         lines.push(Line::from(
+            "Stopped Insert step-writes; playing Insert previews unless armed. Audition never writes.",
+        ));
+        lines.push(Line::from(
+            ":record on/off/toggle; :countin 0/1 bars in Normal. Count input previews only; Song capture unavailable.",
+        ));
+        lines.push(Line::from(
+            "REC pins playing Pattern/track; F1 Insert must display it. Cursor movement never retargets capture.",
+        ));
+        lines.push(Line::from(
+            "Capture snaps nearest local grid, ties forward; fixed New gate, no held durations. Undo per pass.",
+        ));
+        lines.push(Line::from(
             ":meter N/D; :meter! confirms incompatible override removal. BPM is quarter-based.",
         ));
         lines.push(Line::from(
@@ -1599,7 +1611,7 @@ mod tests {
         let text = lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
         let positions: Vec<_> = ["Shared", "Normal", "Insert (active)", "Visual"]
             .iter()
-            .map(|label| text.find(label).unwrap())
+            .map(|label| lines.iter().position(|line| line.to_string() == *label).unwrap())
             .collect();
         assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(text.contains("q/Q") && text.contains("1–9/0") && text.contains("0 only trailing"));

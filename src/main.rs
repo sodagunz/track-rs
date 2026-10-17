@@ -31,7 +31,7 @@ fn main_loop<W: std::io::Write>(
     app_state: &mut App,
     tui: &mut TUI<W>,
     audio_engine: &mut AudioEngine,
-    listener: &Receiver<crossterm::event::KeyEvent>,
+    listener: &Receiver<(crossterm::event::KeyEvent, Instant)>,
 ) {
     let frame_period = Duration::from_millis(50);
     let mut next_frame = Instant::now();
@@ -40,8 +40,15 @@ fn main_loop<W: std::io::Write>(
 
     let mut pending = None;
     loop {
-        if let Some(key) = pending.take() {
-            bindings::handle_key(key, app_state);
+        if let Some((key, at)) = pending.take() {
+            // Advance the transport in the receipt clock domain before admitting input.
+            for event in transport.update_app(at, app_state, || audio_engine.stop()) {
+                audio_engine.play_event(event);
+            }
+            if let Some(event) = transport.take_metronome_event() {
+                audio_engine.metronome_event(event);
+            }
+            bindings::handle_key_at(key, app_state, at);
         }
         audio_engine.sync_channels(app_state.project.channels());
         let now = Instant::now();

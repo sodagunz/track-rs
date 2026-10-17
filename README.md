@@ -9,8 +9,8 @@ audio. Sorry Mario, your blazingly fast modern tracker is in another repo.
 
 The [canonical backlog](.plans/README.md) records current acceptance and delivery
 order: musical time and grids, metronome/count-in and arming, quantized live
-recording, then MIDI input. Musical time/grid editing and the playback metronome
-are implemented; count-in, arming, live recording and MIDI remain planned.
+recording, then MIDI input. Musical time/grid editing, metronome/count-in,
+arming and fixed-gate Pattern recording are implemented. MIDI remains planned.
 
 ### Themes
 
@@ -72,8 +72,10 @@ In Pattern Insert, `zsxdcvgbhnjm` plays C through B chromatically;
 Arrows navigate; PageUp/PageDown lowers/raises entry octave (0–9). Upper notes
 at octave 9 are rejected. These are QWERTY characters, not physical key positions.
 Esc returns to Normal for counts, transposition, undo, clipboard, prompts or quit.
-Each note enters once and immediately auditions the selected track's
-instrument for 200 ms plus release, including when re-entering the same note.
+While stopped, each note step-enters once and immediately auditions the selected
+track's instrument for 200 ms plus release, including when re-entering the same
+note. **During playback, unarmed Insert now previews only**; it no longer edits
+the cursor cell. Arm explicitly for live capture (below).
 Reported Repeat/Release events are ignored for notes; legacy terminals may report
 held keys as repeated Press events and retrigger. Previews use the track's mixer settings and
 separate bounded voices, so entry during playback doesn't cut off song notes or
@@ -92,8 +94,8 @@ Length sets note-off; the instrument's release rings afterward.
 
 For exact musical gates, F1 Normal `:duration 320t` sets quarter-triplet length
 at 960 ticks per quarter (range 1–61440). This session-only New setting replaces
-`:length` until either command is used again; pitch replacement retains the
-existing gate. Non-legacy cell gates use `@` instead of `:` and status labels
+`:length` until either command is used again; stopped step-entry pitch replacement
+retains the existing gate. Live capture replaces both pitch and gate. Non-legacy cell gates use `@` instead of `:` and status labels
 use `ppqt` to distinguish canonical ticks from legacy `:length` ticks. `{`/`}`
 retain legacy adjustment for representable gates; other gates halve (rounding
 odd ticks down, minimum one) or double, capped at 61440 ticks.
@@ -101,8 +103,9 @@ odd ticks down, minimum one) or double, capped at 61440 ticks.
 F1 Normal Enter enters Audition: the same piano keys play **without writing**,
 including during playback. Arrows, PageUp/PageDown and `[`/`]` still work;
 brackets deliberately edit the shared instrument assignment. Notes don't move
-the cursor or add undo history. Esc returns to Normal. The strip says WRITE in
-Insert and NO WRITE in Audition (`I:W`/`A:N` when narrow). Audition has a 200 ms
+the cursor or add undo history. Esc returns to Normal. The strip says WRITE for
+stopped Insert, PREVIEW for unarmed playing Insert, and NO WRITE in Audition
+(`I:W`/`I:P`/`A:N` when narrow). Audition has a 200 ms
 gate plus release, not key-held sustain; rapid notes replace bounded preview
 tails, not song voices. Terminal key release, chords and velocity aren't promised.
 
@@ -137,8 +140,53 @@ The separate ten-millisecond fixed-gain voice bypasses channel mute/solo/tone an
 joins the master sum before clip telemetry. It is not a project track or note.
 This is soft-deadline dispatch, not sample-accurate output; click level, physical
 alignment and device latency still need listening checks. There is no limiter.
-Count-in and record arming are not implemented yet; no REC indicator or capture
-is implied. Playing Insert still step-edits, as before.
+
+### Pattern recording
+
+1. In F1 Normal, choose the pattern, track and start cursor. Set a fixed New gate
+   with `:duration 320t` or `:length 1r` if needed.
+2. `:record on` arms; `:countin 1` requests one full destination-meter bar.
+3. Space starts at the cursor; Ctrl-Space or `:restart` starts at the beginning.
+   Enter Insert with `i` and play. Count-in input previews only and isn't queued.
+4. Esc then `:record off` disarms without stopping playback. `u` undoes each take.
+
+Normal commands work in every view: `:record on|off|toggle`, `:countin 0|1`
+(bars). Defaults are unarmed and zero count-in. The count-in setting applies to
+the next start; disarming is how to cancel a running count. Settings aren't saved
+or undoable.
+Stop retains arming; successful load disarms but retains count-in/metronome
+preferences. Disarming during count-in stops it. Count-in clicks sound even with
+`:metronome off`; song playback and unarmed starts never count in.
+
+Recording is **Pattern-only, one pinned track**. Starting armed pins the playing
+pattern and selected track; arming during playback pins the current playing
+Pattern, not a different edit pattern. Only F1 Insert displaying that pattern
+can capture. Cursor/track movement doesn't retarget the take. Leaving Insert,
+changing views/patterns, help or prompts suspends capture and closes the take;
+returning to eligibility starts a new take on the same target. Song mode says
+capture unavailable. Audition always previews without writing.
+
+`REC ARMED` means intent, `COUNT` shows beats in its own full-bar progress,
+and `REC P… T…` means eligible capture. Narrow status keeps COUNT/REC/ARM cues
+and the pinned target. Hits snap to the nearest local grid (default sixteenths),
+ties forward, wrapping a final-boundary hit to the next loop's tick zero.
+Per-bar grids apply; edits to the capture grid take effect at the next bar or
+partial-pattern loop. Edit step is ignored. Last hit at an exact lane/tick wins,
+replacing pitch and the fixed New gate; other off-grid events survive.
+
+Monitoring uses the separate preview voice immediately. A newly captured future
+occurrence is skipped by song dispatch to avoid hearing the same hit twice;
+the stored note joins playback on the following pass. Gates use New length,
+not unreliable key releases. Reported Repeat/Release is ignored; old terminals
+may still retrigger held keys as Press events. No chord allocation or velocity.
+
+Each pass is one undo transaction; stop/restart, disarm, save, eligibility loss
+and unrelated edits close it. Undo/redo while armed and playing stops transport
+before applying history. No-op hits don't dirty the project. Capacity errors
+leave storage/history unchanged and report feedback, while still previewing.
+Timing uses terminal receipt timestamps and transport tempo segments; stale or
+out-of-order hits are dropped with feedback. This is quantized storage with
+soft-deadline monitoring, not sample-accurate input or latency compensation.
 
 ### Views
 

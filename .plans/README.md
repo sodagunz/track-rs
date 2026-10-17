@@ -38,14 +38,14 @@ previews and rejects collisions/end-boundary snaps atomically, preserving IDs.
 See [019 checkpoints](019-musical-time-and-grids.md#implementation-checkpoint)
 for validation and remaining integration acceptance, not hardware certification.
 
-016 has a working session-only playback metronome, with meter-aware anchored
-clicks (including automatic compound grouping), separate bounded audio,
-cancellation and text status. Its device-free full-bar count-in clock and explicit
-transport phases are tested, but count-in has no terminal control yet. Arming,
-live recording and MIDI in 016–018 are still planned, not implemented controls. 016/017 share the first armed-recording checkpoint.
-Audition always means no note writes. The planned recording behavior is: stopped
-Insert step-edits; playing Insert previews when unarmed and live-records only
-when armed and eligible. Current Insert still step-edits during playback.
+016 now has usable `:record on|off|toggle` and `:countin 0|1` controls, meter-aware
+full-bar count-in and honest ARM/COUNT/REC status. 017's first terminal slice
+records fixed-gate notes on one pinned playing Pattern track, using receipt
+timestamps, local-grid quantization and undo per pass. Stopped Insert step-edits;
+playing Insert previews when unarmed and records only when armed and eligible.
+Audition always means no note writes; Song capture is explicitly unavailable.
+Automated acceptance is recorded in 016/017; physical listening remains pending.
+MIDI in 018 is still planned. No 020 implementation is implied.
 
 Musical-time scope is resolved in favor of 019's proposed sparse event timeline and fixed 960 PPQ, separating meter, pattern length, grid, edit step and duration. Per-bar grid changes must not retime music. Pattern-local meter first; arbitrary tuplets and continuous song meter automation remain deferred. The user approved starting implementation in this order. Approval is not an implemented-status label.
 

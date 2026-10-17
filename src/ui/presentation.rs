@@ -111,6 +111,9 @@ impl Presentation<'_> {
             PlaybackMode::Pattern => "Pattern",
             PlaybackMode::Song => "Song",
         };
+        if matches!(app.recording.phase, crate::transport::TransportPhase::Counting { .. }) {
+            return app.recording_label();
+        }
         let text = match app.playback_state {
             PlaybackState::Stopped => format!("{mode} Stopped"),
             PlaybackState::Playing => format!(
@@ -241,15 +244,16 @@ impl Presentation<'_> {
         let dirty = if app.is_dirty() && !buffer_visible { "*" } else { "" };
         let piano = app.view == crate::state::View::Pattern && matches!(app.mode, Mode::Insert | Mode::Audition);
         let audition = app.mode == Mode::Audition;
-        let short = if audition { "A:N" } else { "I:W" };
-        let mut mode = if audition {
-            "AUDITION NO WRITE".into()
-        } else if piano {
-            "INSERT WRITE".into()
-        } else {
-            self.mode()
-        };
+        let counting = matches!(app.recording.phase, crate::transport::TransportPhase::Counting { .. });
+        let (short, mut mode) = self.input_mode(piano, audition);
         let mut cursor = self.cursor().replace(' ', "");
+        if let crate::transport::TransportPhase::Counting { beat, total } = app.recording.phase {
+            cursor = format!("{}/{total}", beat.max(1));
+        } else if let Some((pattern, track)) = app.recording.target.filter(|_| app.capture_eligible()) {
+            cursor = format!("P{pattern}T{}", track_number(track));
+        } else if app.recording.armed && app.playback_mode == PlaybackMode::Song {
+            cursor = "Song:N/A".into();
+        }
         let compact = format!(
             "{} {}{}",
             if app.playback_mode == PlaybackMode::Song {
@@ -265,15 +269,19 @@ impl Presentation<'_> {
             if app.metronome { " CLK" } else { "" }
         );
         if Line::from(format!("{mode}{dirty} {cursor} {compact}")).width() > width {
-            mode = if piano { short.into() } else { app.mode.label().into() };
+            mode = if piano || counting || app.recording.armed {
+                short.into()
+            } else {
+                app.mode.label().into()
+            };
         }
         if Line::from(format!("{mode}{dirty} {cursor} {compact}")).width() > width {
-            mode = if piano {
+            mode = if piano || counting || app.recording.armed {
                 short.into()
             } else {
                 app.mode.label()[..1].into()
             };
-            if app.view == crate::state::View::Pattern {
+            if app.view == crate::state::View::Pattern && !counting && !app.recording.armed {
                 cursor = format!("R{}T{}", app.cursor_row, track_number(app.cursor_track));
             }
         }
@@ -282,7 +290,10 @@ impl Presentation<'_> {
             Span::styled(format!("{mode}{dirty}"), self.mode_style()),
             Span::raw(format!(" {cursor}")),
         ];
-        let fields = self.context_fields(audition, piano);
+        let mut fields = self.context_fields(audition, piano);
+        if app.recording.armed {
+            fields.insert(0, app.recording_label());
+        }
         // Editor context owns only the space it needs; transport gets everything left.
         for field in fields {
             let used = Line::from(spans.clone()).width() + Line::from(right.as_str()).width();
@@ -328,6 +339,29 @@ impl Presentation<'_> {
         }
     }
 
+    fn input_mode(&self, piano: bool, audition: bool) -> (&'static str, String) {
+        let app = self.0;
+        if matches!(app.recording.phase, crate::transport::TransportPhase::Counting { .. }) {
+            return ("COUNT", app.recording_label());
+        }
+        if app.capture_eligible() {
+            return ("REC", app.recording_label());
+        }
+        if audition {
+            return ("A:N", "AUDITION NO WRITE".into());
+        }
+        if piano && matches!(app.playback_state, PlaybackState::Playing) {
+            return ("I:P", "INSERT PREVIEW".into());
+        }
+        if piano {
+            return ("I:W", "INSERT WRITE".into());
+        }
+        if app.recording.armed {
+            return ("ARM", app.recording_label());
+        }
+        ("I:W", self.mode())
+    }
+
     fn entry_length(&self) -> String {
         if let Some(duration) = self.0.entry_duration {
             return format!("{}ppqt", duration.ticks());
@@ -349,6 +383,19 @@ impl Presentation<'_> {
                 format!("Oct:{}", app.octave),
                 "Gate:200ms+release".into(),
             ]
+        } else if piano && matches!(app.playback_state, PlaybackState::Playing) {
+            let mut fields = vec![
+                if app.capture_eligible() {
+                    app.recording_label()
+                } else {
+                    "PREVIEW".into()
+                },
+                format!("New:{}", self.entry_length()),
+            ];
+            if app.capture_eligible() {
+                fields.push(app.grid_context());
+            }
+            fields
         } else if piano {
             vec![
                 app.project.instrument(app.cursor_track).label().to_owned(),
@@ -386,18 +433,23 @@ impl Presentation<'_> {
                 .map_or(0, |pattern| pattern.length_ticks().0)
         };
         let local = app.playback_tick.0.min(ticks(app.playing_pattern).saturating_sub(1));
-        let (position, total) = match app.playback_mode {
-            PlaybackMode::Pattern => (local, ticks(app.playing_pattern)),
-            PlaybackMode::Song => {
-                let before: u64 = app
-                    .project
-                    .order
-                    .iter()
-                    .take(app.playing_order)
-                    .map(|&index| ticks(index))
-                    .sum();
-                let total = app.project.order.iter().map(|&index| ticks(index)).sum();
-                (before.saturating_add(local), total)
+        let (position, total) = if let crate::transport::TransportPhase::Counting { beat, total } = app.recording.phase
+        {
+            (beat.saturating_sub(1), total)
+        } else {
+            match app.playback_mode {
+                PlaybackMode::Pattern => (local, ticks(app.playing_pattern)),
+                PlaybackMode::Song => {
+                    let before: u64 = app
+                        .project
+                        .order
+                        .iter()
+                        .take(app.playing_order)
+                        .map(|&index| ticks(index))
+                        .sum();
+                    let total = app.project.order.iter().map(|&index| ticks(index)).sum();
+                    (before.saturating_add(local), total)
+                }
             }
         };
         let cells = width - 2;
@@ -948,6 +1000,42 @@ mod tests {
     }
 
     #[test]
+    fn recording_status_keeps_count_and_pinned_target_honest_at_narrow_widths() {
+        let mut app = App::default();
+        app.execute_prompt("meter 6/8");
+        app.execute_prompt("record on");
+        app.execute_prompt("countin 1");
+        for width in [12, 24, 80] {
+            let text = Presentation(&app).status_line(width).to_string();
+            assert!(text.contains("ARM"), "{text}");
+        }
+        app.restart_playback();
+        app.handle_command(Command::EnterInsert);
+        let now = std::time::Instant::now();
+        let mut clock = crate::transport::Transport::default();
+        clock.update_app(now, &mut app, || {});
+        for width in [12, 24, 80] {
+            let line = Presentation(&app).status_line(width);
+            let text = line.to_string();
+            assert_eq!(line.width(), usize::from(width));
+            assert!(text.contains("COUNT"), "{text}");
+            assert!(text.contains("1/2"), "{text}");
+            assert!(!text.contains("Playing"));
+        }
+        clock.update_app(now + std::time::Duration::from_millis(1500), &mut app, || {});
+        app.cursor_track = 2;
+        for width in [12, 24, 80] {
+            let text = Presentation(&app).status_line(width).to_string();
+            assert!(text.contains("REC"), "{text}");
+            assert!(text.contains("T1"), "{text}");
+        }
+        app.handle_command(Command::EnterAudition);
+        let text = Presentation(&app).status_line(80).to_string();
+        assert!(text.contains("NO WRITE"));
+        assert!(!app.capture_eligible());
+    }
+
+    #[test]
     fn status_prioritizes_dirty_cursor_and_right_aligned_transport() {
         let mut app = App::default();
         app.handle_command(Command::IncreaseTempo);
@@ -962,7 +1050,7 @@ mod tests {
                 let line = Presentation(&app).status_line(width);
                 let text = line.to_string();
                 assert_eq!(line.width(), usize::from(width));
-                assert!(text.starts_with(mode.label()) || (mode == Mode::Insert && text.starts_with("I:W")));
+                assert!(text.starts_with(mode.label()) || (mode == Mode::Insert && text.starts_with("I:P")));
                 assert!(text.contains('*'));
                 assert!(text.contains("T1"));
                 if width <= 40 {

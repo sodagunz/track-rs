@@ -74,6 +74,7 @@ pub struct App {
     pub(crate) clipboard: EventClipboard,
     /// Session-only click preference; not a document or record-arm flag.
     pub metronome: bool,
+    pub recording: crate::recording::Recording,
     pub edit_step: usize,
     pub entry_length: crate::tracker::NoteLength,
     pub(crate) entry_duration: Option<crate::musical_time::DurationTicks>,
@@ -149,6 +150,7 @@ impl Default for App {
             history: History::default(),
             clipboard: EventClipboard::default(),
             metronome: false,
+            recording: crate::recording::Recording::default(),
             edit_step: 0,
             entry_length: crate::tracker::NoteLength::default(),
             entry_duration: None,
@@ -245,6 +247,7 @@ impl App {
         );
         match command {
             "quantize" | "quantize?" => self.quantize(command == "quantize?", remainder.trim())?,
+            "record" | "countin" => self.recording_command(command, remainder.trim())?,
             "metronome" => {
                 anyhow::ensure!(self.mode == Mode::Normal, "Metronome requires Normal mode");
                 self.metronome = match remainder.trim() {
@@ -268,6 +271,7 @@ impl App {
                 } else {
                     std::path::PathBuf::from(remainder)
                 };
+                self.recording.close_take();
                 crate::project_file::save(&self.project, &path)?;
                 self.path = Some(path);
                 self.saved_revision = self.revision();
@@ -284,6 +288,8 @@ impl App {
                 );
                 let path = std::path::PathBuf::from(remainder);
                 let project = crate::project_file::load(&path)?;
+                self.recording.stop();
+                self.recording.armed = false;
                 self.project = project;
                 self.audition = None;
                 self.audition_active = false;
@@ -604,6 +610,7 @@ impl App {
     }
 
     fn prepare_command(&mut self, command: Command) {
+        self.mixer_gesture = None;
         if matches!(
             command,
             Command::EnterNormal
@@ -660,7 +667,6 @@ impl App {
 
     /// Apply an editor action without depending on terminal key events.
     pub fn handle_command(&mut self, command: Command) {
-        self.mixer_gesture = None;
         self.prepare_command(command);
         match command {
             Command::ToggleHelp => {
@@ -761,6 +767,7 @@ impl App {
             Command::DecreaseOctave => self.octave = self.octave.saturating_sub(1).min(9),
             Command::IncreaseOctave => self.octave = self.octave.saturating_add(1).min(9),
         }
+        self.reconcile_recording();
     }
 
     fn handle_mixer(&mut self, command: Command) -> bool {
@@ -993,6 +1000,10 @@ impl App {
                 let redo = command == Command::Redo;
                 let tick = self.cursor_tick();
                 let grid = self.project.patterns[self.selected_pattern].grid().clone();
+                if self.recording.armed && matches!(self.playback_state, PlaybackState::Playing) {
+                    self.stop_playback();
+                }
+                self.recording.close_take();
                 let structural = self.history.structural_next(redo);
                 if structural {
                     self.stop_playback();
@@ -1038,7 +1049,8 @@ impl App {
         self.offset_cursor(&CursorOffset::None, &CursorOffset::None);
     }
 
-    const fn stop_playback(&mut self) {
+    pub(crate) fn stop_playback(&mut self) {
+        self.recording.stop();
         self.audition = None;
         self.audition_active = false;
         self.playback_state = PlaybackState::Stopped;
@@ -1140,6 +1152,8 @@ impl App {
             };
             if self.mode == Mode::Audition {
                 self.preview_note(note);
+            } else if matches!(self.playback_state, PlaybackState::Playing) {
+                self.live_note(note);
             } else {
                 self.enter_note(note);
             }
@@ -1147,10 +1161,14 @@ impl App {
     }
 
     fn preview_note(&mut self, note: Note) {
+        self.preview_note_on(note, self.cursor_track);
+    }
+
+    pub(crate) fn preview_note_on(&mut self, note: Note, track: usize) {
         self.audition_active = true;
         self.audition = Some(crate::transport::NoteEvent {
-            track: self.cursor_track,
-            instrument: self.project.instrument(self.cursor_track),
+            track,
+            instrument: self.project.instrument(track),
             note,
             beats: 0.0,
             duration: crate::audio::DEFAULT_NOTE_DURATION,
@@ -1412,10 +1430,13 @@ impl App {
         });
         self.playback_tick = self.playback_start_tick.unwrap_or(Tick(0));
         self.playback_state = PlaybackState::Playing;
+        self.recording.target = (self.recording.armed && self.playback_mode == PlaybackMode::Pattern)
+            .then_some((self.playing_pattern, self.cursor_track));
     }
 
     /// Apply one document transaction, including future multi-cell operations.
     pub fn edit(&mut self, operation: impl FnOnce(&mut Edit<'_>)) {
+        self.recording.close_take();
         if self.history.edit(&mut self.project, operation) {
             self.invalidate_view_selections();
             self.stop_playback();
@@ -1593,11 +1614,11 @@ mod tests {
         };
         app.handle_command(Command::DismissHelp);
         assert!(!app.shutdown);
-        app.handle_command(Command::TogglePlayback);
         app.handle_command(Command::InsertNote {
             pitch: NotePitch::C,
             octave_offset: 0,
         });
+        app.handle_command(Command::TogglePlayback);
         let note = app.project.patterns[app.selected_pattern].get_step(0, 0).unwrap().note;
         app.handle_command(Command::ToggleHelp);
         for binding in crate::bindings::DEFAULT_BINDINGS {

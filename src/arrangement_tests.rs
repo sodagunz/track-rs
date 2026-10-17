@@ -129,8 +129,10 @@ fn pattern_loop_is_pinned_until_explicit_stop_restart_or_mode_toggle() {
     assert_eq!(tick(&mut app, &mut clock, start).unwrap().pattern, 0);
     plain(&mut app, KeyCode::PageDown);
     text(&mut app, "iz");
+    assert!(app.take_audition().is_some());
     plain(&mut app, KeyCode::Esc);
-    assert_eq!(app.project.patterns[1].get_step(0, 0).unwrap().note, Some(note()));
+    // Playing Insert is preview-only unless armed; changing edit patterns cannot write.
+    assert_eq!(app.project.patterns[1].get_step(0, 0).unwrap().note, None);
     assert_eq!(app.project.patterns[0].get_step(0, 0).unwrap().note, None);
     let event = tick(&mut app, &mut clock, start + Duration::from_millis(250)).unwrap();
     assert_eq!((event.pattern, event.row.row), (0, 0));

@@ -601,6 +601,44 @@ impl History {
         self.position -= 1;
     }
 
+    /// Merge only contiguous writes from one recording pass on its pinned lane.
+    pub(crate) fn join_record_edits(&mut self, previous: Revision, pattern: usize, track: usize) -> bool {
+        if self.position != self.entries.len() || self.position < 2 {
+            return true;
+        }
+        let last = &self.entries[self.position - 1];
+        let prior = &self.entries[self.position - 2];
+        if last.before != previous
+            || prior.after != previous
+            || !last.changes.iter().chain(prior.changes.iter()).all(
+                |change| matches!(change, Mutation::Event { pattern: p, track: t, .. } if *p == pattern && *t == track),
+            )
+        {
+            return true;
+        }
+        let last = self.entries.pop_back().expect("last recording edit");
+        let prior = self.entries.back_mut().expect("previous recording edit");
+        self.mutations -= last.weight() + prior.weight();
+        let mut changes = BTreeMap::new();
+        for change in prior.changes.iter().cloned().chain(last.changes) {
+            changes
+                .entry(change.key())
+                .and_modify(|existing: &mut Mutation| existing.merge(change.clone()))
+                .or_insert(change);
+        }
+        prior.changes = changes.into_values().filter(Mutation::changed).collect();
+        prior.after = last.after;
+        self.mutations += prior.weight();
+        self.position -= 1;
+        if prior.changes.is_empty() {
+            self.revision = prior.before;
+            self.entries.pop_back();
+            self.position -= 1;
+            return false;
+        }
+        true
+    }
+
     #[must_use]
     pub fn structural_next(&self, redo: bool) -> bool {
         let index = if redo {
