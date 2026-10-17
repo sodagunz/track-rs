@@ -70,8 +70,17 @@ instrument for 200 ms plus release, including when re-entering the same note.
 Reported Repeat/Release events are ignored for notes; legacy terminals may report
 held keys as repeated Press events and retrigger. Previews use the track's mixer settings and
 separate bounded voices, so entry during playback doesn't cut off song notes or
-move the playhead. Tab cycles entry steps of 0/1/2/4 rows.
-`{`/`}` halves/doubles note length (16 ticks per row); new notes last one row.
+move the playhead. Tab cycles entry steps of 0/1/2/4 rows (an arbitrary step
+returns to zero). In F1 Normal, `:step 3` sets an exact advance in rows, from
+0–4096; zero stays on the same cell. `:length 4r` or `:length 64t` sets the
+length for new notes in empty cells (16 ticks per row, 1–4096 ticks). Length
+requires an integer with a lowercase `r` or `t` suffix; bare numbers are rejected.
+Counts don't multiply these commands. Insert and Audition must first Esc to
+Normal; other views reject them. Both settings are session-only: no project or
+undo changes, and switching views or loading projects retains them.
+The Insert strip separates `New` length and `Step` from cursor `Cell` detail.
+`{`/`}` halves/doubles only the cursor note's length; replacing its pitch preserves
+that length. New notes default to one row until `:length` changes it.
 Length sets note-off; the instrument's release rings afterward.
 
 F1 Normal Enter enters Audition: the same piano keys play **without writing**,

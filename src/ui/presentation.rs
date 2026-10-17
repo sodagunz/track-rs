@@ -143,9 +143,10 @@ impl Presentation<'_> {
         );
         if app.mode == Mode::Insert {
             format!(
-                "{} Oct:{} New:1r Step:{}r Cell:{cell}",
+                "{} Oct:{} New:{} Step:{}r Cell:{cell}",
                 app.project.instrument(app.cursor_track).label(),
                 app.octave,
+                self.entry_length(),
                 app.edit_step
             )
         } else {
@@ -297,6 +298,16 @@ impl Presentation<'_> {
         }
     }
 
+    fn entry_length(&self) -> String {
+        let ticks = self.0.entry_length.ticks();
+        let row = crate::tracker::NoteLength::TICKS_PER_ROW;
+        if ticks.is_multiple_of(row) {
+            format!("{}r", ticks / row)
+        } else {
+            format!("{ticks}t")
+        }
+    }
+
     fn context_fields(&self, audition: bool, piano: bool) -> Vec<String> {
         let app = self.0;
         if audition {
@@ -309,7 +320,7 @@ impl Presentation<'_> {
             vec![
                 app.project.instrument(app.cursor_track).label().to_owned(),
                 format!("Oct:{}", app.octave),
-                format!("New:1r Step:{}r", app.edit_step),
+                format!("New:{} Step:{}r", self.entry_length(), app.edit_step),
             ]
         } else {
             vec![self.context()]
@@ -750,6 +761,32 @@ mod tests {
         let status = Presentation(&app).status_line(100).to_string();
         assert!(status.contains("P2R00T1"));
         assert!(status.ends_with("Song Playing O3 P1 R16"));
+    }
+
+    #[test]
+    fn numeric_entry_context_separates_new_length_from_cell_at_all_widths() {
+        let mut app = App::default();
+        app.execute_prompt("length 3t");
+        app.execute_prompt("step 7");
+        app.handle_command(Command::EnterInsert);
+        assert!(Presentation(&app).context().contains("New:3t Step:7r Cell:Empty"));
+        for ticks in [1, 64, 4096] {
+            app.entry_length = crate::tracker::NoteLength::try_from(ticks).unwrap();
+            for width in [0, 12, 24, 40, 80, 120] {
+                let line = Presentation(&app).status_line(width);
+                assert!(line.width() <= usize::from(width));
+                if width == 120 {
+                    let expected = if ticks == 1 {
+                        "New:1t"
+                    } else if ticks == 64 {
+                        "New:4r"
+                    } else {
+                        "New:256r"
+                    };
+                    assert!(line.to_string().contains(expected));
+                }
+            }
+        }
     }
 
     #[test]

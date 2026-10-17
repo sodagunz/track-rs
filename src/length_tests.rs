@@ -285,3 +285,136 @@ fn invalid_v2_forced_load_keeps_live_lengths_history_and_playback() {
     app.handle_command(Command::Redo);
     assert_eq!(ticks(&app), 64);
 }
+
+fn prompt(app: &mut App, command: &str) {
+    text(app, command);
+    handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), app);
+}
+
+#[test]
+fn numeric_entry_settings_validate_without_document_or_history_changes() {
+    let mut app = App::default();
+    let project = app.project.clone();
+    let revision = app.revision();
+    prompt(&mut app, ":step 4096");
+    prompt(&mut app, ":length 256r");
+    assert_eq!(app.edit_step, 4096);
+    assert_eq!(app.entry_length.ticks(), 4096);
+    for command in [
+        ":step",
+        ":step -1",
+        ":step +1",
+        ":step 4097",
+        ":step 1r",
+        ":step 1.5",
+        ":step NaN",
+        ":step 1 2",
+        ":step 99999999999999999999999",
+        ":length",
+        ":length 64",
+        ":length 0t",
+        ":length 4097t",
+        ":length 257r",
+        ":length -1r",
+        ":length +1t",
+        ":length 1.5r",
+        ":length NaNt",
+        ":length 65535r",
+        ":length 1 t",
+        ":length 1T",
+        ":length 1t 2t",
+    ] {
+        prompt(&mut app, command);
+        assert_eq!(app.edit_step, 4096, "{command}");
+        assert_eq!(app.entry_length.ticks(), 4096, "{command}");
+        assert!(!app.status.is_empty(), "{command}");
+    }
+    prompt(&mut app, "12:step 3"); // Existing count policy rejects counted prompts.
+    assert_eq!(app.edit_step, 4096);
+    app.handle_command(Command::EnterNormal);
+    prompt(&mut app, ":step 3");
+    prompt(&mut app, ":length 1t");
+    assert_eq!(app.edit_step, 3);
+    assert_eq!(app.entry_length.ticks(), 1);
+    assert_eq!(app.project, project);
+    assert_eq!(app.revision(), revision);
+    assert!(!app.is_dirty());
+    for view in [Command::ShowArrangement, Command::ShowMixer, Command::ShowInstrument] {
+        app.handle_command(view);
+        prompt(&mut app, ":step 2");
+        prompt(&mut app, ":length 2r");
+        assert!(app.status.contains("Pattern Normal"));
+        assert_eq!(app.edit_step, 3);
+        assert_eq!(app.entry_length.ticks(), 1);
+        assert_eq!(app.project, project);
+    }
+}
+
+#[test]
+fn numeric_entry_composes_with_piano_cell_lengths_previews_and_history() {
+    let mut app = App::default();
+    prompt(&mut app, ":step 3");
+    prompt(&mut app, ":length 4r");
+    text(&mut app, "is2");
+    assert_eq!(app.cursor_row, 6);
+    assert_eq!(note(&app, 0, 0).unwrap().pitch, NotePitch::Cs);
+    assert_eq!(note(&app, 0, 3).unwrap().octave, 5);
+    assert_eq!(note(&app, 0, 3).unwrap().length_ticks.ticks(), 64);
+    assert_eq!(app.audition.unwrap().duration, Duration::from_millis(200));
+    assert!(app.is_dirty());
+    app.handle_command(Command::EnterNormal);
+    app.handle_command(Command::Undo);
+    prompt(&mut app, ":length 3t");
+    app.handle_command(Command::Redo);
+    assert_eq!(note(&app, 0, 3).unwrap().length_ticks.ticks(), 64);
+    prompt(&mut app, ":step 0");
+    app.cursor_row = 0;
+    text(&mut app, "is");
+    let revision = app.revision();
+    text(&mut app, "s");
+    assert_eq!(app.revision(), revision);
+    assert_eq!(app.cursor_row, 0);
+    text(&mut app, "x{");
+    assert_eq!(ticks(&app), 32);
+    assert_eq!(app.entry_length.ticks(), 3);
+    handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &mut app);
+    text(&mut app, "z");
+    assert_eq!(ticks(&app), 3);
+    app.handle_command(Command::EnterNormal);
+    prompt(&mut app, ":step 3");
+    text(&mut app, "i");
+    handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &mut app);
+    assert_eq!(app.edit_step, 0);
+    app.handle_command(Command::EnterNormal);
+    prompt(&mut app, ":step 4096");
+    text(&mut app, "iz");
+    assert_eq!(app.cursor_row, 63);
+}
+
+#[test]
+fn entry_settings_survive_views_and_successful_and_failed_loads() {
+    let mut app = App::default();
+    prompt(&mut app, ":step 7");
+    prompt(&mut app, ":length 5t");
+    text(&mut app, "i");
+    app.handle_command(Command::ShowMixer);
+    app.handle_command(Command::ShowPattern);
+    assert_eq!(app.mode, crate::state::Mode::Insert);
+    assert_eq!(app.entry_length.ticks(), 5);
+    app.handle_command(Command::EnterNormal);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("song.json");
+    project_file::save(&app.project, &path).unwrap();
+    prompt(&mut app, &format!(":e {}", path.display()));
+    assert!(app.status.starts_with("Loaded"));
+    assert_eq!(app.edit_step, 7);
+    assert_eq!(app.entry_length.ticks(), 5);
+    fs::write(&path, "invalid").unwrap();
+    prompt(&mut app, &format!(":e {}", path.display()));
+    assert_eq!(app.edit_step, 7);
+    assert_eq!(app.entry_length.ticks(), 5);
+    assert!(!app.is_dirty());
+    text(&mut app, "iz");
+    assert_eq!(note(&app, 0, 0).unwrap().length_ticks.ticks(), 5);
+    assert_eq!(app.cursor_row, 7);
+}
