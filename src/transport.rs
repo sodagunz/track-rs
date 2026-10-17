@@ -1,4 +1,6 @@
 //! Device-free playback clock. Anchored tick deadlines, not redraws, own advancement.
+#[path = "transport_click.rs"]
+mod click;
 #[path = "transport_clock.rs"]
 mod clock;
 use std::time::{Duration, Instant};
@@ -101,6 +103,22 @@ pub struct PlaybackEvent {
     pub scheduled_at: Instant,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClickEvent {
+    pub accent: bool,
+    pub pattern: usize,
+    pub order: Option<usize>,
+    pub tick: crate::musical_time::Tick,
+    pub absolute_tick: u64,
+    pub scheduled_at: Instant,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MetronomeEvent {
+    Click(ClickEvent),
+    Stop,
+}
+
 /// Immutable tempo segment for timestamp mapping. A restarted run has a new generation.
 #[derive(Clone, Copy, Debug)]
 pub struct ClockSnapshot {
@@ -136,6 +154,7 @@ pub struct Transport {
     next_tick: u64,
     clock: Option<clock::TickClock>,
     generation: u64,
+    metronome: click::Metronome,
 }
 
 impl Transport {
@@ -190,7 +209,19 @@ impl Transport {
                 break;
             }
         }
+        self.metronome.update(
+            now,
+            app.metronome,
+            self.clock,
+            &app.project,
+            self.route.unwrap_or(route),
+        );
         notes
+    }
+
+    /// Consume at most one click/cancellation per update; notes remain on their own path.
+    pub const fn take_metronome_event(&mut self) -> Option<MetronomeEvent> {
+        self.metronome.take_event()
     }
 
     /// Locate the latest elapsed musical boundary; skip whole cycles arithmetically.
@@ -347,11 +378,15 @@ impl Transport {
     }
 
     #[must_use]
-    pub const fn deadline(&self) -> Option<Instant> {
-        self.deadline
+    pub fn deadline(&self) -> Option<Instant> {
+        match (self.deadline, self.metronome.deadline(self.clock)) {
+            (Some(note), Some(click)) => Some(note.min(click)),
+            (note, click) => note.or(click),
+        }
     }
 
     pub const fn stop(&mut self) {
+        self.metronome.clear();
         self.clock = None;
         self.tick_start = 0;
         self.next_tick = 0;

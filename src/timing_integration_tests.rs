@@ -114,4 +114,7 @@ fn mixed_grid_quantize_clipboard_and_reload_keep_exact_repeated_song_timing() {
         app.execute_prompt("grid 5 bar");
     }
     assert_eq!(trace(&mut app, cycle), expected);
+    // Click deadlines may add wakes but cannot move any musical event or gate.
+    app.metronome = true;
+    assert_eq!(trace(&mut app, cycle), expected);
 }

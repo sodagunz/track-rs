@@ -576,7 +576,7 @@ pub const DEFAULT_BINDINGS: &[Binding] = &[
     Binding::new(
         KeyCode::Char(':'),
         Command::OpenPrompt,
-        "w/e[!]/q[!]/wq; settings; selection: quantize[?] only; Esc cancels",
+        "w/e[!]/q[!]/wq; metronome on/off/toggle; selection: quantize[?] only; Esc cancels",
         "Files",
     ),
     Binding {

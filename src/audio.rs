@@ -1,5 +1,8 @@
 #![allow(clippy::precedence)]
 
+#[path = "audio_click.rs"]
+mod click;
+
 use crate::{
     tracker::{Instrument, Note},
     transport::NoteEvent,
@@ -87,6 +90,7 @@ fn smooth_gain(phase: f64) -> f32 {
 }
 
 enum OutputCommand {
+    Click(Option<click::ClickVoice>),
     ResetMeters(u32),
     Channel {
         track: usize,
@@ -215,6 +219,7 @@ struct Output {
     previews: Vec<TrackVoices>,
     meters: Arc<crate::meter::Meters>,
     channel_samples: Vec<(f32, f32)>,
+    click: Option<click::ClickVoice>,
 }
 
 impl Output {
@@ -225,6 +230,7 @@ impl Output {
             retired,
             meters: Arc::default(),
             channel_samples: vec![(0.0, 0.0); crate::project_file::MAX_TRACKS],
+            click: None,
             previews: (0..crate::project_file::MAX_TRACKS)
                 .map(|_| TrackVoices::default())
                 .collect(),
@@ -239,6 +245,7 @@ impl Output {
         // the control thread sends commands while this callback is draining it.
         while let Ok(command) = self.commands.try_recv() {
             match command {
+                OutputCommand::Click(voice) => self.click = voice,
                 OutputCommand::ResetMeters(generation) => self.meters.reset(generation),
                 OutputCommand::Channel {
                     track,
@@ -254,6 +261,7 @@ impl Output {
                     }
                 }
                 OutputCommand::Replace(renderer) => {
+                    self.click = None;
                     for track in self.tracks.iter_mut().chain(&mut self.previews) {
                         track.clear(&self.retired);
                         track.mixer.reset();
@@ -289,6 +297,14 @@ impl Output {
                 .channel(index, (channel.0 + preview.0, channel.1 + preview.1));
             sample.0 += preview.0;
             sample.1 += preview.1;
+        }
+        if let Some(voice) = &mut self.click {
+            if let Some(value) = voice.sample() {
+                sample.0 += value;
+                sample.1 += value;
+            } else {
+                self.click = None;
+            }
         }
         self.meters.master(sample);
         sample
@@ -441,6 +457,17 @@ impl AudioEngine {
             track: event.track,
             voice: GatedVoice::new(event, self.sample_rate, self.dry, rand::random()),
         });
+    }
+
+    /// Separate fixed-gain click; cancellation never resets project or preview voices.
+    pub fn metronome_event(&mut self, event: crate::transport::MetronomeEvent) {
+        let voice = match event {
+            crate::transport::MetronomeEvent::Click(event) => {
+                Some(click::ClickVoice::new(self.sample_rate, event.accent))
+            }
+            crate::transport::MetronomeEvent::Stop => None,
+        };
+        let _ = self.replacements.send(OutputCommand::Click(voice));
     }
 
     /// Audition without retriggering a song voice on the same track.
@@ -623,6 +650,122 @@ fn build_net(sample_rate: f64, sequencer_backend: SequencerBackend) -> Net {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn click_voices_are_finite_short_and_accented_at_supported_rates() {
+        for rate in [8000.0, 44100.0, 48000.0, 96000.0] {
+            let mut energies = Vec::new();
+            for accent in [false, true] {
+                let mut voice = click::ClickVoice::new(rate, accent);
+                let mut energy = 0.0;
+                let mut samples = 0;
+                while let Some(sample) = voice.sample() {
+                    assert!(sample.is_finite() && sample.abs() <= 0.101);
+                    energy += f64::from(sample).powi(2);
+                    samples += 1;
+                    assert!(samples <= 961, "bounded ten-millisecond tail");
+                }
+                assert!(energy > 0.0001);
+                assert!(f64::from(samples) / rate <= 0.010 + rate.recip());
+                energies.push(energy);
+            }
+            assert!(energies[1] > energies[0]);
+        }
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn click_bypasses_channels_joins_master_meter_and_cancels_without_resetting_notes() {
+        use crate::{meter::MeterDisplay, project::ChannelSettings};
+        let rate = 8000.0;
+        let (_, renderer) = prepare(rate);
+        let (sender, receiver) = mpsc::channel();
+        let (retired, _rx) = mpsc::channel();
+        let mut output = Output::new(renderer, receiver, retired);
+        sender
+            .send(OutputCommand::Trigger {
+                track: 0,
+                voice: GatedVoice {
+                    renderer: BlockRateAdapter::new(Box::new(fundsp::prelude32::dc((0.99, 0.99)))),
+                    elapsed: 1.0,
+                    duration: 10.0,
+                    attack: 0.001,
+                    release: 0.001,
+                    sample_period: rate.recip(),
+                },
+            })
+            .unwrap();
+        sender
+            .send(OutputCommand::Click(Some(click::ClickVoice::new(rate, true))))
+            .unwrap();
+        for _ in 0..80 {
+            output.sample();
+        }
+        let mut display = MeterDisplay::default();
+        display.update(&output.meters, 0, 1, Duration::ZERO);
+        assert!(display.clipped); // Click participates in master, not per-channel telemetry.
+        assert!(display.channels[0][0] < 1.0);
+        let mut cached = Vec::new();
+        sync_channel_targets(
+            &sender,
+            &mut cached,
+            &[ChannelSettings {
+                muted: true,
+                solo: true,
+                volume_db: Some(-60.0),
+                ..ChannelSettings::default()
+            }],
+            rate,
+        );
+        for _ in 0..100 {
+            output.sample();
+        }
+        sender.send(OutputCommand::ResetMeters(1)).unwrap();
+        sender
+            .send(OutputCommand::Click(Some(click::ClickVoice::new(rate, true))))
+            .unwrap();
+        let peak = (0..80).map(|_| output.sample().0.abs()).fold(0.0_f32, f32::max);
+        assert!(peak > 0.01);
+        display.update(&output.meters, 1, 1, Duration::ZERO);
+        assert_eq!(display.channels[0], [0.0, 0.0]);
+        sender.send(OutputCommand::Click(None)).unwrap();
+        assert_eq!(output.sample(), (0.0, 0.0));
+        assert!(output.tracks[0].active.is_some());
+        sync_channel_targets(&sender, &mut cached, &[ChannelSettings::default()], rate);
+        for _ in 0..100 {
+            output.sample();
+        }
+        assert!((output.sample().0 - 0.99).abs() < 1e-6);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn graph_cancellation_discards_clicks_in_fifo_order() {
+        let rate = 8000.0;
+        let (_, renderer) = prepare(rate);
+        let (sender, receiver) = mpsc::channel();
+        let (retired, _rx) = mpsc::channel();
+        let mut output = Output::new(renderer, receiver, retired);
+        sender
+            .send(OutputCommand::Click(Some(click::ClickVoice::new(rate, true))))
+            .unwrap();
+        for _ in 0..10 {
+            output.sample();
+        }
+        assert!(output.click.is_some());
+        let (_, replacement) = prepare(rate);
+        sender.send(OutputCommand::Replace(replacement)).unwrap();
+        assert_eq!(output.sample(), (0.0, 0.0));
+        assert!(output.click.is_none());
+        sender
+            .send(OutputCommand::Click(Some(click::ClickVoice::new(rate, false))))
+            .unwrap();
+        assert!((0..80).any(|_| output.sample().0.abs() > 0.01));
+        sender.send(OutputCommand::Click(None)).unwrap();
+        for _ in 0..100 {
+            assert_eq!(output.sample(), (0.0, 0.0));
+        }
+    }
 
     #[test]
     #[allow(clippy::float_cmp)]

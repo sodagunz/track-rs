@@ -38,8 +38,9 @@ previews and rejects collisions/end-boundary snaps atomically, preserving IDs.
 See [019 checkpoints](019-musical-time-and-grids.md#implementation-checkpoint)
 for validation and remaining integration acceptance, not hardware certification.
 
-Count-in, arming, live recording and MIDI in 016–018 are still planned, not
-implemented controls. 016/017 share the first armed-recording checkpoint.
+016 has a working session-only playback metronome, with meter-aware anchored
+clicks, separate bounded audio, cancellation and text status. Count-in, arming,
+live recording and MIDI in 016–018 are still planned, not implemented controls. 016/017 share the first armed-recording checkpoint.
 Audition always means no note writes. The planned recording behavior is: stopped
 Insert step-edits; playing Insert previews when unarmed and live-records only
 when armed and eligible. Current Insert still step-edits during playback.
