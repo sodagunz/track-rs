@@ -1541,7 +1541,7 @@ mod tests {
             });
             app.handle_command(Command::EnterNormal);
             app.handle_command(Command::Copy);
-            assert!(!app.clipboard.is_empty() && app.is_dirty());
+            assert!(!app.clipboard.tracks.is_empty() && app.is_dirty());
             app.mode = mode;
             app.selection_anchor = Some((0, 0));
             app.pending_count = Some(12);

@@ -99,8 +99,9 @@ fn cut_clear_cancel_and_clipboard_survive_history() {
         keys(&mut app, "u");
     }
     keys(&mut app, "d");
-    assert_eq!(app.clipboard.len(), 1);
-    assert_eq!(app.clipboard[0].len(), 1);
+    assert_eq!(app.clipboard.tracks.len(), 1);
+    assert_eq!(app.clipboard.span_ticks, 240);
+    assert_eq!(app.clipboard.tracks[0].len(), 1);
     keys(&mut app, "u");
     let clipboard = app.clipboard.clone();
     handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL), &mut app);
