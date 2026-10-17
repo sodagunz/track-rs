@@ -245,7 +245,7 @@ impl EventDocument {
             project
                 .patterns
                 .iter()
-                .all(|pattern| (1..=MAX_ROWS).contains(&pattern.num_rows)),
+                .all(|pattern| (1..=MAX_ROWS).contains(&pattern.num_rows())),
             "Rows must be 1..={MAX_ROWS}"
         );
         Ok(Self {
@@ -259,7 +259,7 @@ impl EventDocument {
                 .patterns
                 .iter()
                 .map(|pattern| EventPattern {
-                    end_tick: pattern.num_rows as u64 * crate::musical_time::LEGACY_ROW_TICKS,
+                    end_tick: pattern.length_ticks().0,
                     meter: [4, 4],
                     tracks: pattern
                         .tracks

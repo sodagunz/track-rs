@@ -15,9 +15,7 @@ pub struct EventClipboard {
 
 impl EventClipboard {
     pub(crate) fn capture(pattern: &Pattern, tracks: Range<usize>, range: Range<Tick>) -> Self {
-        let Ok(end) = pattern.end_tick() else {
-            return Self::default();
-        };
+        let end = pattern.length_ticks();
         if range.start >= range.end
             || range.end > end
             || tracks.start >= tracks.end
@@ -47,9 +45,7 @@ impl EventClipboard {
         let Some(target) = edit.pattern(pattern) else {
             return;
         };
-        let Ok(end) = target.end_tick() else {
-            return;
-        };
+        let end = target.length_ticks();
         if self.span_ticks == 0 || first_track >= target.tracks.len() || target.validate_event(start, None).is_err() {
             return;
         }

@@ -59,7 +59,7 @@ impl Mutation {
     fn weight(&self) -> usize {
         match self {
             Self::Pattern { value, before, .. } => {
-                value.num_rows * value.tracks.len() + before.as_ref().map_or(0, |p| p.num_rows * p.tracks.len())
+                value.num_rows() * value.tracks.len() + before.as_ref().map_or(0, |p| p.num_rows() * p.tracks.len())
             }
             Self::Track {
                 compatibility_cells, ..
@@ -207,7 +207,12 @@ impl Edit<'_> {
         let change = Mutation::Track {
             columns,
             instrument: Instrument::Pluck,
-            compatibility_cells: self.project.patterns.iter().map(|pattern| pattern.num_rows).sum(),
+            compatibility_cells: self
+                .project
+                .patterns
+                .iter()
+                .map(crate::tracker::Pattern::num_rows)
+                .sum(),
         };
         change.apply(self.project, true);
         self.changes.push(change);
@@ -219,9 +224,14 @@ impl Edit<'_> {
         let Some(pattern) = self.project.patterns.get(source) else {
             return;
         };
-        let rows = pattern.num_rows;
+        let rows = pattern.num_rows();
         let tracks = self.project.instruments.len();
-        let total: usize = self.project.patterns.iter().map(|p| p.num_rows * p.tracks.len()).sum();
+        let total: usize = self
+            .project
+            .patterns
+            .iter()
+            .map(|p| p.num_rows() * p.tracks.len())
+            .sum();
         if self.project.patterns.len() >= MAX_PATTERNS
             || !(1..=MAX_ROWS).contains(&rows)
             || !(1..=MAX_TRACKS).contains(&tracks)
@@ -255,7 +265,7 @@ impl Edit<'_> {
             .patterns
             .get(index)
             .ok_or_else(|| anyhow::anyhow!("No edited pattern"))?;
-        if rows == pattern.num_rows {
+        if Tick::from_legacy_row(rows as u64).ok() == Some(pattern.length_ticks()) {
             return Ok(());
         }
         let total = self
@@ -264,7 +274,7 @@ impl Edit<'_> {
             .iter()
             .enumerate()
             .try_fold(0usize, |total, (i, p)| {
-                total.checked_add(if i == index { rows } else { p.num_rows }.checked_mul(p.tracks.len())?)
+                total.checked_add(if i == index { rows } else { p.num_rows() }.checked_mul(p.tracks.len())?)
             });
         anyhow::ensure!(
             total.is_some_and(|total| total <= MAX_CELLS),

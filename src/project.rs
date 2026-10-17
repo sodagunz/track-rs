@@ -39,10 +39,10 @@ impl Project {
         self.patterns
             .iter()
             .try_fold(0usize, |total, pattern| {
-                if !(1..=MAX_ROWS).contains(&pattern.num_rows) || pattern.tracks.len() != tracks {
+                if !(1..=MAX_ROWS).contains(&pattern.num_rows()) || pattern.tracks.len() != tracks {
                     return None;
                 }
-                total.checked_add(pattern.num_rows.checked_mul(tracks + 1)?)
+                total.checked_add(pattern.num_rows().checked_mul(tracks + 1)?)
             })
             .is_some_and(|total| total <= MAX_CELLS)
     }
