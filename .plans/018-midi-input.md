@@ -50,3 +50,12 @@ a hard timeout. No reliable hot-unplug detection is claimed. No physical device
 or non-Linux platform was tested. The list is status-line output and can clip on
 narrow terminals. Real-device mapping, placement, mixer level and unplug/reconnect
 checks remain manual follow-up, not completed acceptance evidence.
+
+## Regression hardening
+
+Main-loop regression tests reproduced revision-triggered take splitting with MIDI
+disconnected and future MIDI receipt times dropping earlier terminal hits. The
+shared device-free loop now keeps recording-owned revisions in one take and drains
+MIDI only through the pending key receipt (equal times: MIDI first). Packet budgets
+also cover stale/filtered input; future packets retain generation/filter/overflow
+checks. Real-device validation remains pending.
