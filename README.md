@@ -35,15 +35,26 @@ backend's microsecond clock, and the same quantizer, pinned target and grouped
 undo as terminal recording. At most 64 packets are drained per loop (128 queued).
 Overflow disconnects and disarms with a warning; reconnect explicitly.
 
-Notes use fixed dynamics (velocity magnitude is ignored) and record fixed New
-length, not key-held duration. MIDI monitoring holds the instrument gate until
+Notes use fixed dynamics (velocity magnitude is ignored). Armed live MIDI capture
+starts with provisional New length, then replaces its gate on release. Onset and
+end snap to the nearest active local grid (ties forward), with a one-tick minimum.
+Duration uses unwrapped transport ticks across tempo changes and pattern loops,
+not elapsed seconds multiplied by the release BPM. Gates may cross the pattern
+end; holds beyond 61,440 ticks clamp with a status warning. Stopped step entry and
+terminal recording keep fixed New length. MIDI monitoring holds the gate until
 Note Off/zero-velocity Note On, then plays its release tail. One-shot instruments
 can decay naturally while held. Terminal previews still use a 200 ms gate.
 Chords are last-note-on wins, not polyphonic entry; an older key's release never
 stops its replacement or resumes an older note. Repeated Note On for the same
 channel/pitch replaces the gate; the first matching Note Off releases it (MIDI
 has no per-press identity). MIDI release never steals terminal or song voices.
-Focus/target/run changes clear MIDI previews and discard pending old input.
+Stop, disarm and terminal focus/target changes close captured holds at the last
+transport position. Load discards old holds; disconnect, reconnect and overflow
+leave provisional onsets intact but discard pending duration updates. Changed or
+removed events aren't overwritten or resurrected by late releases. Duration edits
+join the onset take only while that take is still the latest history transaction;
+otherwise they are separate undo steps. Focus/target/run changes clear MIDI
+previews and discard pending old input.
 Monitoring uses bounded main-loop input batches, not sample-accurate scheduling.
 Sustain pedal, CC (including all-notes-off), pitch bend, MIDI clock/output and
 auto-reconnect aren't implemented. There is no reliable backend hot-unplug
@@ -219,8 +230,8 @@ replacing pitch and the fixed New gate; other off-grid events survive.
 
 Monitoring uses the separate preview voice immediately. A newly captured future
 occurrence is skipped by song dispatch to avoid hearing the same hit twice;
-the stored note joins playback on the following pass. Gates use New length,
-not unreliable key releases. Reported Repeat/Release is ignored; old terminals
+the stored note joins playback on the following pass (including provisional MIDI
+gates if a key is still held). Terminal gates use New length, not unreliable key releases. Reported Repeat/Release is ignored; old terminals
 may still retrigger held keys as Press events. No chord allocation or velocity.
 
 Each pass is one undo transaction; stop/restart, disarm, save, eligibility loss

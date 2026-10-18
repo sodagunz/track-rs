@@ -5,7 +5,7 @@ use crate::{
     history::Revision,
     musical_time::{GridMap, Tick},
     state::{App, Mode, PlaybackMode, PlaybackState, View},
-    tracker::{Note, PatternEvent},
+    tracker::{EventId, Note, PatternEvent},
     transport::{ClockSnapshot, TransportPhase},
 };
 
@@ -18,12 +18,29 @@ pub struct Recording {
     pub(crate) clock: Option<ClockSnapshot>,
     pub(crate) input_time: Option<Instant>,
     last_input: Option<Instant>,
+    now: Option<Instant>,
+    pub(crate) midi_key: Option<(u8, u8)>,
+    held: BTreeMap<(u8, u8), HeldCapture>,
     take: Option<(u64, Revision)>,
     grid: Option<(u64, GridMap)>,
     monitored: BTreeMap<(usize, u64), u64>,
 }
 
+#[derive(Clone, Debug)]
+struct HeldCapture {
+    pattern: usize,
+    track: usize,
+    id: EventId,
+    baseline: PatternEvent,
+    onset: u64,
+    generation: u64,
+    group: Option<Revision>,
+}
+
 impl Recording {
+    pub(crate) fn discard_held(&mut self) {
+        self.held.clear();
+    }
     pub(crate) fn owns_revision(&self, revision: Revision) -> bool {
         self.take.is_some_and(|(_, take_revision)| take_revision == revision)
     }
@@ -33,6 +50,7 @@ impl Recording {
     }
 
     pub(crate) fn stop(&mut self) {
+        self.held.clear();
         self.target = None;
         self.clock = None;
         self.phase = TransportPhase::Stopped;
@@ -67,6 +85,7 @@ impl App {
             _ => anyhow::bail!("Expected :record on|off|toggle"),
         };
         if armed != self.recording.armed {
+            self.finish_midi_holds();
             self.recording.close_take();
             self.recording.grid = None;
             self.recording.last_input = None;
@@ -127,6 +146,7 @@ impl App {
             self.recording.last_input = None;
             self.recording.monitored.clear();
         }
+        self.recording.now = Some(now);
         self.recording.phase = phase;
         self.recording.clock = snapshot;
         if let (Some(clock), Some((pattern, _)), Some((pass, _))) =
@@ -223,15 +243,136 @@ impl App {
         });
         result?;
         if self.revision() != before {
+            let joining = self.recording.take == Some((pass, before));
             let retained =
                 self.recording.take != Some((pass, before)) || self.history.join_record_edits(before, pattern, track);
             self.recording.take = retained.then_some((pass, self.revision()));
+            if joining && retained {
+                let revision = self.revision();
+                for held in self.recording.held.values_mut() {
+                    if held.group == Some(before) {
+                        held.group = Some(revision);
+                    }
+                }
+            }
+        }
+        // A replacement onset owns this cell even when pitch/gate compare equal.
+        self.recording
+            .held
+            .retain(|_, held| held.pattern != pattern || held.track != track || held.baseline.start_tick != start);
+        if let Some(key) = self.recording.midi_key {
+            let id = self.project.patterns[pattern].tracks[track]
+                .event_id(start)
+                .expect("captured identity");
+            self.recording.held.insert(
+                key,
+                HeldCapture {
+                    pattern,
+                    track,
+                    id,
+                    baseline: event,
+                    onset: destination,
+                    generation: clock.generation(),
+                    group: self
+                        .recording
+                        .take
+                        .map(|(_, revision)| revision)
+                        .filter(|revision| *revision == self.revision()),
+                },
+            );
         }
         // Monitor now; don't also dispatch this newly stored occurrence as a song voice.
         if destination > clock.previous_tick() {
             self.recording.monitored.insert((track, start.0), destination);
         }
         Ok(())
+    }
+
+    pub(crate) fn finish_midi_holds(&mut self) {
+        if let Some(now) = self.recording.now {
+            let keys: Vec<_> = self.recording.held.keys().copied().collect();
+            for key in keys {
+                self.finish_midi_note(key, now);
+            }
+        }
+        self.recording.held.clear();
+    }
+
+    pub(crate) fn finish_midi_note(&mut self, key: (u8, u8), at: Instant) {
+        let Some(held) = self.recording.held.remove(&key) else {
+            return;
+        };
+        let Some(clock) = self
+            .recording
+            .clock
+            .filter(|clock| clock.generation() == held.generation)
+        else {
+            return;
+        };
+        let Some(absolute) = clock.tick_at(at) else { return };
+        let Some(pattern) = self.project.patterns.get(held.pattern) else {
+            return;
+        };
+        let Some(track) = pattern.tracks.get(held.track) else {
+            return;
+        };
+        // Identity alone is insufficient: quantization preserves IDs, and user edits own their
+        // values.
+        if track.event_by_id(held.id) != Some(&held.baseline) {
+            return;
+        }
+        let length = pattern.length_ticks().0;
+        let local = Tick(absolute % length);
+        let grid = self
+            .recording
+            .grid
+            .as_ref()
+            .map_or_else(|| pattern.grid(), |(_, grid)| grid);
+        let Ok((lower, upper)) = grid.neighbors(local) else {
+            return;
+        };
+        let snapped = if local.0 - lower.0 < upper.0 - local.0 {
+            lower
+        } else {
+            upper
+        };
+        let Some(end) = (absolute / length)
+            .checked_mul(length)
+            .and_then(|prefix| prefix.checked_add(snapped.0))
+        else {
+            return;
+        };
+        let ticks = end.saturating_sub(held.onset).max(1);
+        let maximum = u64::from(crate::musical_time::MAX_DURATION_TICKS);
+        let mut event = held.baseline;
+        event.duration_ticks =
+            crate::musical_time::DurationTicks::new(u32::try_from(ticks.min(maximum)).expect("bounded duration"))
+                .expect("positive duration");
+        let before = self.revision();
+        self.history.edit(&mut self.project, |edit| {
+            edit.set_event(held.pattern, held.track, event.start_tick, Some(event));
+        });
+        if before != self.revision() {
+            if held.group == Some(before) {
+                self.history.join_record_edits(before, held.pattern, held.track);
+                let revision = self.revision();
+                for pending in self.recording.held.values_mut() {
+                    if pending.group == Some(before) {
+                        pending.group = Some(revision);
+                    }
+                }
+                if let Some((_, revision)) = &mut self.recording.take {
+                    if *revision == before {
+                        *revision = self.history.revision();
+                    }
+                }
+            } else {
+                self.recording.close_take();
+            }
+        }
+        if ticks > maximum {
+            self.status = format!("Recording: held duration clamped to {maximum} ticks");
+        }
     }
 
     #[must_use]
