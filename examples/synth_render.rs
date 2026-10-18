@@ -4,12 +4,16 @@ use std::io::{BufWriter, Write};
 use track_rs::synth::{SynthPatch, SynthVoice, Waveform};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let destination = std::env::args().nth(1).ok_or("usage: synth_render OUTPUT.wav")?;
-    // create_new avoids overwriting an existing recording.
-    let file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(destination)?;
+    let file = if let Some(destination) = std::env::args().nth(1) {
+        // create_new avoids overwriting an existing recording.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(destination)?
+    } else {
+        eprintln!("No filename supplied; rendering to an anonymous temporary file.");
+        tempfile::tempfile()?
+    };
     let mut output = BufWriter::new(file);
     let rate = 48_000_u32;
     let samples = rate * 3;
