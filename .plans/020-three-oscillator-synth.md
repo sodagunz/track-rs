@@ -1,6 +1,6 @@
 # 020 — Three-oscillator subtractive synth
 
-Status: planned, 2026-10-17. A small, manual-friendly DSP project, not implementation approval. The user may want to write the interesting DSP themselves; ownership is still optional and unassigned. **Do not auto-implement this plan in a future batch unless explicitly asked.**
+Status: in progress, 2026-10-18. The user explicitly approved starting 020. The first checkpoint is the independently renderable DSP core; tracker integration, persistence/history and F4 editing remain unfinished. Plans 021/022 remain unapproved.
 
 ## Outcome
 
@@ -50,6 +50,42 @@ Version and validate persistence explicitly. Old project versions retain their e
 Expose a small concrete DSP interface: construct/prepare with a validated patch and sample rate, gate-on/off, apply live targets, render samples/blocks, report finished. Offline tests use that same interface. Don't add a mock framework or generalized synth trait just for one implementation.
 
 F4 first shows the selected track's patch as numeric/choice controls with reset, validation and existing undo conventions. Audition uses that patch and the same channel processing; it remains ephemeral, NO WRITE, and doesn't dirty the project. Pattern entry previews stay isolated from song voices. Numeric editing is enough; no graphical envelope editor.
+
+## DSP checkpoint — 2026-10-18
+
+`src/synth.rs` exposes a concrete `SynthVoice`: validated construction, gate-on/off,
+live patch targets, sample/block rendering and completion. `examples/synth_render.rs`
+renders a three-second mono PCM WAV without an audio device:
+
+```sh
+cargo run --example synth_render -- /tmp/track-synth.wav
+```
+
+The destination must not already exist. Edit the example's patch to experiment.
+This is not yet an instrument assignment in the tracker.
+
+Decisions for this checkpoint:
+
+- Use the proposed parameter ranges; Q is 0.5–4.0, default 0.707. Default cutoff
+  is 4000 Hz, oscillator 1 is saw at gain 1, others silent. ADSR defaults are
+  0.01/0.15/0.7/0.2 (seconds except sustain).
+- Phases restart at zero. Saw/square use PolyBLEP edge correction; triangle is
+  analytic and not band-limited. No alias-free claim. Tuned frequency and effective
+  filter cutoff clamp at 45% of actual sample rate; requested values stay intact.
+- Use a topology-preserving state-variable low-pass and linear envelope segments.
+  Release starts at the current level; repeating gate-off doesn't restart it.
+- Divide the oscillator sum by three, then apply 0.25 output trim. No limiter;
+  resonance can boost peaks. The WAV writer counts clipped samples.
+- Gain/tuning/cutoff/Q use a 10 ms exponential time constant, independent of block
+  size. Waveform and ADSR changes apply at the next gate-on. Each render sample
+  does fixed work without allocation, locking, I/O or graph destruction.
+- The standalone voice does not own transport, note duration or retirement slots.
+  Integration must preserve existing bounded retirement and avoid double envelopes.
+
+Nine device-free tests cover pitch/mix, filter attenuation, envelope timing,
+zero stages/gate, live release targets, invalid values, deterministic retrigger,
+block-size independence and finite high-Q/high-tuning output at 8/12/48/96 kHz.
+Physical listening and integration acceptance below remain pending.
 
 ## Delivery and acceptance
 
