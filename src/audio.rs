@@ -48,7 +48,9 @@ const RETRIGGER_SECONDS: f64 = 0.005;
 struct GatedVoice {
     renderer: Renderer,
     elapsed: f64,
-    duration: f64,
+    duration: Option<f64>,
+    midi_token: Option<u64>,
+    release_level: f32,
     attack: f64,
     release: f64,
     sample_period: f64,
@@ -64,19 +66,54 @@ impl GatedVoice {
         Self {
             renderer: BlockRateAdapter::new(unit),
             elapsed: 0.0,
-            duration,
+            duration: Some(duration),
+            midi_token: None,
+            release_level: 1.0,
             attack,
             release,
             sample_period: sample_rate.recip(),
         }
     }
 
-    fn sample(&mut self) -> Option<(f32, f32)> {
-        if self.duration == 0.0 || self.elapsed >= self.duration + self.release {
-            return None;
+    fn held(event: NoteEvent, token: u64, sample_rate: f64, dry: bool, seed: u64) -> Self {
+        let mut voice = Self::new(event, sample_rate, dry, seed);
+        voice.duration = None;
+        voice.midi_token = Some(token);
+        (voice.attack, voice.release) = preset_envelope_times(event.instrument);
+        voice
+    }
+
+    fn release_gate(&mut self, token: u64) {
+        if self.midi_token == Some(token) && self.duration.is_none() {
+            self.duration = Some(self.elapsed);
+            self.release_level = if self.attack == 0.0 {
+                1.0
+            } else {
+                smooth_gain(self.elapsed / self.attack)
+            };
+            self.attack = 0.0;
         }
-        let gain = smooth_gain(self.elapsed / self.attack)
-            * smooth_gain((self.duration + self.release - self.elapsed) / self.release);
+    }
+
+    fn sample(&mut self) -> Option<(f32, f32)> {
+        let release_gain = if let Some(duration) = self.duration {
+            if duration == 0.0 || self.elapsed >= duration + self.release {
+                return None;
+            }
+            if self.release == 0.0 {
+                1.0
+            } else {
+                smooth_gain((duration + self.release - self.elapsed) / self.release)
+            }
+        } else {
+            1.0
+        };
+        let attack_gain = if self.attack == 0.0 {
+            1.0
+        } else {
+            smooth_gain(self.elapsed / self.attack)
+        };
+        let gain = attack_gain * release_gain * self.release_level;
         let (l, r) = self.renderer.get_stereo();
         self.elapsed += self.sample_period;
         Some((l * gain, r * gain))
@@ -95,6 +132,7 @@ enum OutputCommand {
         voice: GatedVoice,
     },
     StopMidiPreview,
+    ReleaseMidiPreview(u64),
     Click(Option<click::ClickVoice>),
     ResetMeters(u32),
     Channel {
@@ -282,6 +320,13 @@ impl Output {
                     }
                     let old = std::mem::replace(&mut self.renderer, renderer);
                     let _ = self.retired.send(old);
+                }
+                OutputCommand::ReleaseMidiPreview(token) => {
+                    for track in &mut self.midi_previews {
+                        if let Some(voice) = &mut track.active {
+                            voice.release_gate(token);
+                        }
+                    }
                 }
                 OutputCommand::StopMidiPreview => {
                     for track in &mut self.midi_previews {
@@ -504,11 +549,16 @@ impl AudioEngine {
         let _ = self.replacements.send(OutputCommand::StopMidiPreview);
     }
 
-    pub fn midi_preview_event(&mut self, event: NoteEvent) {
+    /// Release one physical key without cancelling its instrument's release tail.
+    pub fn release_midi_preview(&mut self, token: u64) {
+        let _ = self.replacements.send(OutputCommand::ReleaseMidiPreview(token));
+    }
+
+    pub fn midi_preview_event(&mut self, event: NoteEvent, token: u64) {
         self.collect_retired();
         let _ = self.replacements.send(OutputCommand::MidiPreview {
             track: event.track,
-            voice: GatedVoice::new(event, self.sample_rate, self.dry, rand::random()),
+            voice: GatedVoice::held(event, token, self.sample_rate, self.dry, rand::random()),
         });
     }
 
@@ -578,7 +628,12 @@ fn schedule_voice(
 // Duration is the note-off time, not the end of the release tail.
 // Keep a short gate's attack brief without truncating the preset's release.
 fn envelope_times(instrument: Instrument, duration: f64) -> (f64, f64) {
-    let (attack, release) = match instrument {
+    let (attack, release) = preset_envelope_times(instrument);
+    (attack.min(duration * 0.25), release)
+}
+
+const fn preset_envelope_times(instrument: Instrument) -> (f64, f64) {
+    match instrument {
         Instrument::Pad => (0.35, 0.6),
         Instrument::Drone => (0.2, 0.45),
         Instrument::Sustain => (0.008, 0.04),
@@ -587,8 +642,7 @@ fn envelope_times(instrument: Instrument, duration: f64) -> (f64, f64) {
         Instrument::Pluck | Instrument::Sine | Instrument::Square | Instrument::Saw => {
             (DEFAULT_FADE_IN, DEFAULT_FADE_OUT)
         }
-    };
-    (attack.min(duration * 0.25), release)
+    }
 }
 
 /// Construct a seeded stereo voice. The caller supplies the gate's attack/release.
@@ -730,7 +784,9 @@ mod tests {
                 voice: GatedVoice {
                     renderer: BlockRateAdapter::new(Box::new(fundsp::prelude32::dc((0.99, 0.99)))),
                     elapsed: 1.0,
-                    duration: 10.0,
+                    duration: Some(10.0),
+                    midi_token: None,
+                    release_level: 1.0,
                     attack: 0.001,
                     release: 0.001,
                     sample_period: rate.recip(),
@@ -917,7 +973,9 @@ mod tests {
         let constant = || GatedVoice {
             renderer: BlockRateAdapter::new(Box::new(fundsp::prelude32::dc((0.6, -0.6)))),
             elapsed: 1.0,
-            duration: 10.0,
+            duration: Some(10.0),
+            midi_token: None,
+            release_level: 1.0,
             attack: 0.001,
             release: 0.001,
             sample_period: 1.0 / rate,
@@ -1095,6 +1153,298 @@ mod tests {
         let (_, renderer) = prepare(rate);
         sender.send(OutputCommand::Replace(renderer)).unwrap();
         assert_eq!(output.sample(), (0.0, 0.0));
+    }
+
+    #[test]
+    fn fake_midi_input_reaches_offline_audio_and_overflow_clears_held_gate() {
+        struct Offline {
+            output: Output,
+            sender: Sender<OutputCommand>,
+        }
+        impl crate::midi::Output for Offline {
+            fn stop(&mut self) {}
+            fn play_event(&mut self, _: NoteEvent) {}
+            fn metronome_event(&mut self, _: crate::transport::MetronomeEvent) {}
+            fn midi_preview_event(&mut self, event: NoteEvent, token: u64) {
+                self.sender
+                    .send(OutputCommand::MidiPreview {
+                        track: event.track,
+                        voice: GatedVoice::held(event, token, 8_000.0, true, 42),
+                    })
+                    .unwrap();
+            }
+            fn release_midi_preview(&mut self, token: u64) {
+                self.sender.send(OutputCommand::ReleaseMidiPreview(token)).unwrap();
+            }
+            fn stop_midi_preview(&mut self) {
+                self.sender.send(OutputCommand::StopMidiPreview).unwrap();
+            }
+        }
+        let now = std::time::Instant::now();
+        let (mut session, input) = crate::midi::Session::test_input(now);
+        let (_, renderer) = prepare(8_000.0);
+        let (sender, receiver) = mpsc::channel();
+        let (retired, _rx) = mpsc::channel();
+        let mut audio = Offline {
+            output: Output::new(renderer, receiver, retired),
+            sender,
+        };
+        let mut app = crate::state::App {
+            mode: crate::state::Mode::Audition,
+            ..crate::state::App::default()
+        };
+        app.project.set_instrument(0, Instrument::Sine);
+        let mut transport = crate::transport::Transport::default();
+        input.receive_at(&[0x90, 60, 80], now);
+        session.poll(&mut app, &mut audio, &mut transport, now);
+        for _ in 0..8_000 {
+            audio.output.sample();
+        }
+        assert!(audio.output.midi_previews[0]
+            .active
+            .as_ref()
+            .unwrap()
+            .duration
+            .is_none());
+        input.receive_at(&[0x80, 60, 0], now + Duration::from_secs(1));
+        session.poll(&mut app, &mut audio, &mut transport, now + Duration::from_secs(1));
+        audio.output.sample();
+        assert!(audio.output.midi_previews[0]
+            .active
+            .as_ref()
+            .unwrap()
+            .duration
+            .is_some());
+        for _ in 0..1700 {
+            audio.output.sample();
+        }
+        assert!(audio.output.midi_previews[0].active.is_none());
+        input.receive_at(&[0x90, 64, 80], now + Duration::from_secs(2));
+        session.poll(&mut app, &mut audio, &mut transport, now + Duration::from_secs(2));
+        audio.output.sample();
+        assert!(audio.output.midi_previews[0].active.is_some());
+        for _ in 0..256 {
+            input.receive_at(&[0x90, 67, 80], now + Duration::from_secs(3));
+        }
+        session.poll(&mut app, &mut audio, &mut transport, now + Duration::from_secs(3));
+        assert_eq!(audio.output.sample(), (0.0, 0.0));
+        assert!(audio.output.midi_previews[0].active.is_none());
+        assert!(app.status.contains("overflow"));
+        assert!(!app.recording.armed);
+    }
+
+    #[test]
+    fn held_midi_gates_keep_pitch_and_release_at_physical_noteoff() {
+        for rate in [8_000_u32, 44_100, 48_000] {
+            for instrument in [
+                Instrument::Sine,
+                Instrument::Pad,
+                Instrument::Drone,
+                Instrument::Sustain,
+                Instrument::Kick,
+            ] {
+                let event = NoteEvent {
+                    instrument,
+                    ..sine_event(0, DEFAULT_NOTE_DURATION)
+                };
+                let mut held = GatedVoice::held(event, 7, f64::from(rate), true, 42);
+                let mut reference = GatedVoice::new(
+                    NoteEvent {
+                        duration: Duration::from_secs(2),
+                        ..event
+                    },
+                    f64::from(rate),
+                    true,
+                    42,
+                );
+                // Both paths use the same oscillator and preset envelope once the attack completes.
+                for index in 0..rate {
+                    let sample = held.sample().unwrap();
+                    let expected = reference.sample().unwrap();
+                    assert!(
+                        sample.0.is_finite() && sample.1.is_finite(),
+                        "{instrument:?} at {rate} Hz sample {index}; timed reference: {expected:?}"
+                    );
+                    if index > rate / 2 {
+                        assert_eq!(sample, expected);
+                    }
+                }
+                assert!(held.duration.is_none());
+                held.release_gate(6);
+                assert!(held.duration.is_none());
+                held.release_gate(7);
+                let release = held.release;
+                let tail: Vec<_> = (0..rate).map(|_| held.sample()).collect();
+                assert!(tail[0].is_some());
+                let end =
+                    usize::try_from(Duration::from_secs_f64(release).as_nanos() * u128::from(rate) / 1_000_000_000)
+                        .unwrap();
+                assert!(tail[end + 2..].iter().all(Option::is_none));
+                if instrument != Instrument::Kick {
+                    assert!(tail[..end / 4].iter().flatten().any(|s| s.0.abs() > 0.0001));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn held_midi_retriggers_are_bounded_and_old_tokens_cannot_release_replacements() {
+        let (_, renderer) = prepare(8_000.0);
+        let (sender, receiver) = mpsc::channel();
+        let (retired, _rx) = mpsc::channel();
+        let mut output = Output::new(renderer, receiver, retired);
+        for token in 1..=32 {
+            sender
+                .send(OutputCommand::MidiPreview {
+                    track: 0,
+                    voice: GatedVoice::held(sine_event(0, DEFAULT_NOTE_DURATION), token, 8_000.0, true, 42),
+                })
+                .unwrap();
+            sender.send(OutputCommand::ReleaseMidiPreview(token - 1)).unwrap();
+            output.sample();
+            let slot = &output.midi_previews[0];
+            assert!(slot.active.as_ref().unwrap().duration.is_none());
+            assert_eq!(slot.active.as_ref().unwrap().midi_token, Some(token));
+            assert_eq!(slot.releasing.is_some(), token > 1);
+        }
+        for _ in 0..50 {
+            output.sample();
+        }
+        assert!(output.midi_previews[0].releasing.is_none());
+        sender.send(OutputCommand::StopMidiPreview).unwrap();
+        sender
+            .send(OutputCommand::MidiPreview {
+                track: 0,
+                voice: GatedVoice::held(sine_event(0, DEFAULT_NOTE_DURATION), 33, 8_000.0, true, 42),
+            })
+            .unwrap();
+        sender.send(OutputCommand::ReleaseMidiPreview(32)).unwrap();
+        output.sample();
+        assert!(output.midi_previews[0].active.as_ref().unwrap().duration.is_none());
+        sender.send(OutputCommand::ReleaseMidiPreview(33)).unwrap();
+        for _ in 0..1700 {
+            output.sample();
+        }
+        assert!(output.midi_previews[0].active.is_none());
+    }
+
+    #[test]
+    fn midi_release_and_reset_leave_song_samples_bit_exact() {
+        let make = || {
+            let (_, renderer) = prepare(8_000.0);
+            let (sender, receiver) = mpsc::channel();
+            let (retired, rx) = mpsc::channel();
+            let output = Output::new(renderer, receiver, retired);
+            sender
+                .send(OutputCommand::Trigger {
+                    track: 0,
+                    voice: GatedVoice::new(sine_event(0, Duration::from_secs(2)), 8_000.0, true, 42),
+                })
+                .unwrap();
+            (output, sender, rx)
+        };
+        let (mut reference, _sender, _rx) = make();
+        let (mut output, sender, _retired) = make();
+        sender
+            .send(OutputCommand::MidiPreview {
+                track: 0,
+                voice: GatedVoice::held(sine_event(0, DEFAULT_NOTE_DURATION), 1, 8_000.0, true, 43),
+            })
+            .unwrap();
+        sender.send(OutputCommand::ReleaseMidiPreview(1)).unwrap();
+        sender.send(OutputCommand::StopMidiPreview).unwrap();
+        for _ in 0..8_000 {
+            assert_eq!(output.sample(), reference.sample());
+        }
+    }
+
+    #[test]
+    fn held_midi_uses_live_channel_processing_and_meters() {
+        let (_, renderer) = prepare(8_000.0);
+        let (sender, receiver) = mpsc::channel();
+        let (retired, _rx) = mpsc::channel();
+        let mut output = Output::new(renderer, receiver, retired);
+        sender
+            .send(OutputCommand::MidiPreview {
+                track: 0,
+                voice: GatedVoice::held(sine_event(0, DEFAULT_NOTE_DURATION), 1, 8_000.0, true, 42),
+            })
+            .unwrap();
+        for _ in 0..4_000 {
+            output.sample();
+        }
+        assert!(output.sample().0.abs() > 0.0001);
+        let mut display = crate::meter::MeterDisplay::default();
+        display.update(&output.meters, 0, 1, Duration::from_millis(33));
+        assert!(display.channels[0][0] > 0.0);
+        sender
+            .send(OutputCommand::Channel {
+                track: 0,
+                gains: (0.0, 0.5),
+                tone: crate::tone::targets(crate::project::ChannelSettings::default(), 8_000.0),
+                sample_rate: 8_000.0,
+            })
+            .unwrap();
+        for _ in 0..81 {
+            output.sample();
+        }
+        let panned = output.sample();
+        assert_eq!(panned.0, 0.0);
+        assert!(panned.1.abs() > 0.0001);
+        sender
+            .send(OutputCommand::Channel {
+                track: 0,
+                gains: (0.0, 0.0),
+                tone: crate::tone::targets(crate::project::ChannelSettings::default(), 8_000.0),
+                sample_rate: 8_000.0,
+            })
+            .unwrap();
+        for _ in 0..81 {
+            output.sample();
+        }
+        assert_eq!(output.sample(), (0.0, 0.0));
+        assert!(output.midi_previews[0].active.as_ref().unwrap().duration.is_none());
+    }
+
+    #[test]
+    fn early_noteoff_releases_from_current_attack_level() {
+        let mut held = GatedVoice::held(
+            NoteEvent {
+                instrument: Instrument::Pad,
+                ..sine_event(0, DEFAULT_NOTE_DURATION)
+            },
+            1,
+            8_000.0,
+            true,
+            42,
+        );
+        for _ in 0..80 {
+            held.sample();
+        }
+        let level = smooth_gain(held.elapsed / held.attack);
+        held.release_gate(1);
+        assert_eq!(held.release_level, level);
+        assert_eq!(held.attack, 0.0);
+        for _ in 0..80 {
+            held.sample();
+        }
+        held.release_gate(1);
+        assert_eq!(held.release_level, level);
+        assert!(held.release_level < 0.001);
+    }
+
+    #[test]
+    fn held_gate_zero_fades_are_finite_and_immediate_release_retires() {
+        let mut held = GatedVoice::held(sine_event(0, DEFAULT_NOTE_DURATION), 1, 8_000.0, true, 42);
+        held.attack = 0.0;
+        held.release = 0.0;
+        let sample = held.sample().unwrap();
+        assert!(sample.0.is_finite() && sample.1.is_finite());
+        held.release_gate(1);
+        assert!(held.sample().is_none());
+        let mut immediate = GatedVoice::held(sine_event(0, DEFAULT_NOTE_DURATION), 2, 8_000.0, true, 42);
+        immediate.release_gate(2);
+        assert!(immediate.sample().is_none());
     }
 
     #[test]
@@ -1755,7 +2105,7 @@ mod tests {
         assert_eq!(app.playing_pattern, 0);
         assert_eq!(next.duration, Duration::from_secs(4));
         assert!(voice.sample().is_some());
-        assert_eq!(voice.duration, 2.0);
+        assert_eq!(voice.duration, Some(2.0));
     }
 
     fn render_output(instruments: &[Instrument], rate: u32, event: NoteEvent) -> Vec<(f32, f32)> {

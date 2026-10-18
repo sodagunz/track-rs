@@ -1,6 +1,6 @@
 # 018 — MIDI input
 
-Status: functional fixed-length input implemented, 2026-10-18; real-device validation pending. Reuse [017](017-quantized-live-recording.md)'s recording decisions and [016](016-metronome-and-record-arming.md)'s session controls. MIDI input only, not output, sync or transport clock. Live recording also depends on [019](019-musical-time-and-grids.md)'s tick timeline and per-bar quantizer; device-free decoding and preview-only work can proceed independently.
+Status: held-note monitoring and fixed-length recording implemented, 2026-10-18; real-device validation pending. Reuse [017](017-quantized-live-recording.md)'s recording decisions and [016](016-metronome-and-record-arming.md)'s session controls. MIDI input only, not output, sync or transport clock. Live recording also depends on [019](019-musical-time-and-grids.md)'s tick timeline and per-bar quantizer; device-free decoding and preview-only work can proceed independently.
 
 ## First delivery
 
@@ -14,7 +14,7 @@ Implemented Normal commands: `:midi list`, `:midi connect N`, `:midi disconnect`
 - The OS callback only validates/copies bounded messages into a bounded queue and stamps receipt time. Never mutate App/history, construct DSP voices, block on a full queue, or call terminal rendering from the callback. Drain a bounded batch in the existing main loop; wake/poll without busy spinning or starving transport deadlines.
 - Normalize driver timestamps, when reliable, into the transport's monotonic domain through one adapter. Otherwise use callback receipt time and expose/document that fallback. Reject old run generations and stale events using 017. Don't confuse microseconds-since-connection with `Instant`, wall clock, or audio sample time. Map normalized high-resolution timestamps through 019's active tempo segments before nearest-grid quantization (ties forward), including per-bar grid changes and loop rollover; never round milliseconds using an independently sampled BPM.
 - Decode Note On, Note Off and velocity-zero Note On as Note Off. Track held notes by connection generation/channel/pitch. Clamp nothing silently: reject MIDI pitches outside the tracker's C0–B9 range after explicit octave mapping (define MIDI 60 as C4). Use event ordering to make simultaneous arrivals deterministic.
-- Initial monitoring and recording use fixed New length, with the existing 200 ms preview gate, not held sustain. Note-offs update the ledger and cancel the current MIDI preview, without changing the recorded fixed gate. One track remains monophonic: last note-on wins; chords do not create tracks. Releasing an older held key must not cancel a newer preview. True key-held monitoring and duration capture remain deferred.
+- Monitoring holds an explicit gate until physical Note Off, then uses the instrument's release; one-shot voices may decay naturally while held. Recording still uses fixed New length; terminal previews still use a 200 ms gate. One track remains monophonic: last note-on wins, with one bounded retrigger tail; chords do not create tracks. Releasing an older held key must not cancel a newer preview. Repeated Note On on the same channel/pitch replaces the gate and the first matching Note Off releases it; MIDI cannot distinguish those presses. Held recording duration remains deferred.
 - Accept velocity 1–127 but initially ignore its magnitude for both preview and storage; show/document fixed dynamics. The project has no per-note velocity. Defer schema changes, sustain pedal, CC mapping, pitch bend, aftertouch, program changes, SysEx and MIDI clock. Ignore unsupported messages without affecting transport.
 
 ## Failure and lifecycle
@@ -41,9 +41,16 @@ Receipt-time filtering invalidates pending input after terminal focus/target/run
 changes without replacing the active callback producer. Reconnect replaces the
 queue generation; overflow closes the connection and disarms until reconnect.
 
-Monitoring remains bounded to 200 ms, but explicit Note Off now cancels the
-current MIDI slot; it does not capture held duration or restore previous keys.
-This deliberately amends the original note-off-does-not-shorten-preview policy.
+Monitoring now uses an explicit held gate, not a sentinel duration or a 200 ms
+cap. Token-matched Note Off starts the preset release without rebuilding the DSP
+graph. Tokens survive input invalidations; stale releases cannot own replacement
+voices. MIDI-only lifecycle cancellation clears active and retrigger slots without
+stealing terminal/song voices. This amends the earlier fixed-monitoring policy;
+recording still stores fixed New length and never restores previous held keys.
+Input uses bounded receipt-time batches, not sample-accurate audio scheduling.
+Sustain pedal and CC all-notes-off/all-sound-off remain unsupported. A lost Note
+Off can leave a sustained voice ringing until focus invalidation or explicit
+`:midi disconnect`; no automatic unplug cleanup is claimed.
 
 Backend discovery/connect run on the control thread; they are not isolated with
 a hard timeout. No reliable hot-unplug detection is claimed. No physical device
@@ -59,3 +66,15 @@ shared device-free loop now keeps recording-owned revisions in one take and drai
 MIDI only through the pending key receipt (equal times: MIDI first). Packet budgets
 also cover stale/filtered input; future packets retain generation/filter/overflow
 checks. Real-device validation remains pending.
+
+Held-monitoring coverage uses fake input through the shared loop into offline
+audio, checks overflow cancellation, token replacement, early release, zero fades,
+channel processing/meters and bit-exact song isolation. Offline held-gate checks
+run at 8, 44.1 and 48 kHz; the full checkpoint has 313 passing tests. Formatting,
+strict Clippy, docs/doc-tests, dependency policy, actionlint and the ALSA-null
+example pass (dependency policy reports duplicate-version warnings).
+
+A longer probe also found Pluck producing NaNs at 8 kHz after about 579 ms in
+both held and unchanged timed gates. That oscillator/filter issue is not fixed
+here; held one-shot coverage uses Kick instead. Do not interpret this checkpoint
+as all-preset long-hold validation. Real MIDI hardware remains unchecked.
