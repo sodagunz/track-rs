@@ -16,7 +16,9 @@ arming, fixed-gate Pattern recording and optional MIDI input are implemented.
 
 Start disconnected; no MIDI device opens automatically. In Normal mode:
 
-- `:midi list` refreshes and opens a read-only input browser (zero-based indices).
+- `:midi list` starts discovery, then opens a read-only input browser (zero-based
+  indices). Any intervening key, including Esc, cancels presentation and keeps
+  the previous snapshot.
   Left/Right or h/l selects a port; Up/Down or j/k scrolls its wrapped name.
   PgUp/PgDn scrolls ten lines; Esc closes. Enter does not connect.
 - `:midi connect 0` connects the listed port; list again if it changes.
@@ -31,8 +33,14 @@ replacing the previous list. Control characters in names display as escapes;
 wide glyphs use Unicode escapes in a one-column viewport. Stored identities are
 unchanged. Connection failures appear in status and preserve an existing
 connection.
-Discovery/connect run synchronously on the control thread, never the audio
-callback; backend calls have no guaranteed timeout and can briefly pause the UI.
+Discovery, connect and backend cleanup run on one lazy worker, never the UI or
+audio callback. Only one request is pending; busy requests are rejected without
+changing existing input. The UI reports failure after five seconds and disables
+further backend requests for this session; restart to retry. This is a UI deadline,
+not a hard OS timeout: midir calls cannot be interrupted, and no replacement
+threads are spawned. Disconnect immediately detaches queued/callback input,
+silences MIDI voices and disarms; physical connection cleanup may wait for a
+blocked backend call. Shutdown doesn't join a stalled worker.
 
 In F1 Pattern Insert, stopped notes step-enter; playing notes preview unless
 Pattern recording is armed. F1 Audition previews without writes, even if armed.
