@@ -42,26 +42,20 @@ fn main_loop<W: std::io::Write>(
     let mut midi = track_rs::midi::Session::default();
     loop {
         if let Some((key, at)) = pending.take() {
-            midi.poll(app_state, audio_engine, &mut transport);
-            let focus = midi_focus(app_state);
-            // Advance the transport in the receipt clock domain before admitting input.
-            for event in transport.update_app(at, app_state, || audio_engine.stop()) {
-                audio_engine.play_event(event);
-            }
-            if let Some(event) = transport.take_metronome_event() {
-                audio_engine.metronome_event(event);
-            }
-            bindings::handle_key_at(key, app_state, at);
-            if focus != midi_focus(app_state) {
-                midi.invalidate(app_state, audio_engine);
+            if !midi.terminal_key(app_state, audio_engine, &mut transport, key, at, Instant::now()) {
+                pending = Some((key, at));
+                continue;
             }
             if let Some(command) = app_state.midi_command.take() {
                 midi.command(&command, app_state, audio_engine);
             }
         }
-        midi.poll(app_state, audio_engine, &mut transport);
-        audio_engine.sync_channels(app_state.project.channels());
         let now = Instant::now();
+        if !midi.poll(app_state, audio_engine, &mut transport, now) {
+            pending = listener.try_recv().ok();
+            continue;
+        }
+        audio_engine.sync_channels(app_state.project.channels());
         let focus = midi_focus(app_state);
         for event in transport.update_app(now, app_state, || audio_engine.stop()) {
             audio_engine.play_event(event);

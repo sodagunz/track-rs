@@ -115,6 +115,8 @@ pub struct InputQueue {
     overflow: Arc<AtomicBool>,
     channel: Option<u8>,
     since: Instant,
+    pending: Option<InputEvent>,
+    budget_exhausted: bool,
 }
 
 impl InputQueue {
@@ -132,6 +134,8 @@ impl InputQueue {
                 overflow,
                 channel: None,
                 since,
+                pending: None,
+                budget_exhausted: false,
             },
         )
     }
@@ -159,12 +163,25 @@ impl InputQueue {
     /// Consume at most `MAX_DRAIN` packets, including filtered/stale packets.
     /// Overflow remains latched and ambiguous pending packets are never delivered.
     pub fn drain(&mut self) -> InputBatch {
+        self.drain_before(None)
+    }
+
+    /// Drain in arrival order up to an inclusive receipt cutoff, retaining the first future packet.
+    pub fn drain_before(&mut self, cutoff: Option<Instant>) -> InputBatch {
+        self.budget_exhausted = false;
         if self.overflow.load(Ordering::Acquire) {
             return InputBatch::ResetRequired;
         }
         let mut notes = Vec::new();
-        for _ in 0..MAX_DRAIN {
-            let Ok(event) = self.receiver.try_recv() else { break };
+        for packet in 0..MAX_DRAIN {
+            let Some(event) = self.pending.take().or_else(|| self.receiver.try_recv().ok()) else {
+                break;
+            };
+            if cutoff.is_some_and(|cutoff| event.received_at > cutoff) {
+                self.pending = Some(event);
+                break;
+            }
+            self.budget_exhausted = packet + 1 == MAX_DRAIN;
             if event.received_at >= self.since && self.channel.is_none_or(|channel| channel == event.message.channel) {
                 notes.push(event);
             }
@@ -194,6 +211,33 @@ fn select_port<'a, P: PartialEq>(
     );
     anyhow::ensure!(available.contains(selected), "Port changed; run :midi list again");
     Ok(selected)
+}
+
+/// Audio side effects of the device-free input loop.
+pub trait Output {
+    fn stop(&mut self);
+    fn play_event(&mut self, event: crate::transport::NoteEvent);
+    fn metronome_event(&mut self, event: crate::transport::MetronomeEvent);
+    fn midi_preview_event(&mut self, event: crate::transport::NoteEvent);
+    fn stop_midi_preview(&mut self);
+}
+
+impl Output for crate::audio::AudioEngine {
+    fn stop(&mut self) {
+        Self::stop(self);
+    }
+    fn play_event(&mut self, event: crate::transport::NoteEvent) {
+        Self::play_event(self, event);
+    }
+    fn metronome_event(&mut self, event: crate::transport::MetronomeEvent) {
+        Self::metronome_event(self, event);
+    }
+    fn midi_preview_event(&mut self, event: crate::transport::NoteEvent) {
+        Self::midi_preview_event(self, event);
+    }
+    fn stop_midi_preview(&mut self) {
+        Self::stop_midi_preview(self);
+    }
 }
 
 /// Device ownership stays on the control thread. No input is opened at startup.
@@ -293,15 +337,19 @@ impl Session {
         }
     }
 
-    fn reset(&mut self, app: &mut crate::state::App, audio: &mut crate::audio::AudioEngine, now: Instant) {
+    fn reset(&mut self, app: &mut crate::state::App, audio: &mut impl Output, now: Instant) {
+        app.recording.close_take();
+        self.invalidate_at(audio, now);
+    }
+
+    fn invalidate_at(&mut self, audio: &mut impl Output, now: Instant) {
         self.held.clear();
         self.current = None;
         self.since = Some(now);
-        app.recording.close_take();
         audio.stop_midi_preview();
     }
 
-    pub fn disconnect(&mut self, app: &mut crate::state::App, audio: &mut crate::audio::AudioEngine) {
+    pub fn disconnect(&mut self, app: &mut crate::state::App, audio: &mut impl Output) {
         self.connection = None;
         self.queue = None;
         self.reset(app, audio, Instant::now());
@@ -309,18 +357,31 @@ impl Session {
     }
 
     /// Invalidate pending receipt times after a terminal action changes focus or target.
-    pub fn invalidate(&mut self, app: &mut crate::state::App, audio: &mut crate::audio::AudioEngine) {
+    pub fn invalidate(&mut self, app: &mut crate::state::App, audio: &mut impl Output) {
         self.reset(app, audio, Instant::now());
     }
 
+    /// Drain through `now`; false means defer clock advancement until the backlog is drained.
     pub fn poll(
         &mut self,
         app: &mut crate::state::App,
-        audio: &mut crate::audio::AudioEngine,
+        audio: &mut impl Output,
         transport: &mut crate::transport::Transport,
+        now: Instant,
+    ) -> bool {
+        self.poll_before(app, audio, transport, Some(now));
+        !self.queue.as_ref().is_some_and(|queue| queue.budget_exhausted)
+    }
+
+    fn poll_before(
+        &mut self,
+        app: &mut crate::state::App,
+        audio: &mut impl Output,
+        transport: &mut crate::transport::Transport,
+        cutoff: Option<Instant>,
     ) {
         let Some(queue) = &mut self.queue else { return };
-        let batch = queue.drain();
+        let batch = queue.drain_before(cutoff);
         let InputBatch::Notes(events) = batch else {
             self.disconnect(app, audio);
             app.status = "MIDI queue overflow: disconnected and disarmed; reconnect explicitly".into();
@@ -343,6 +404,45 @@ impl Session {
                 audio.stop_midi_preview();
             }
         }
+    }
+
+    /// Process MIDI through the inclusive key cutoff, then the terminal receipt.
+    /// Equal receipt times use MIDI arrival order before the terminal key.
+    /// Returns false when the packet budget requires deferring the key.
+    pub fn terminal_key(
+        &mut self,
+        app: &mut crate::state::App,
+        audio: &mut impl Output,
+        transport: &mut crate::transport::Transport,
+        key: crossterm::event::KeyEvent,
+        at: Instant,
+        processed_at: Instant,
+    ) -> bool {
+        self.poll_before(app, audio, transport, Some(at));
+        if self.queue.as_ref().is_some_and(|queue| queue.budget_exhausted) {
+            return false;
+        }
+        let focus = midi_focus(app);
+        let revision = app.revision();
+        for event in transport.update_app(at, app, || audio.stop()) {
+            audio.play_event(event);
+        }
+        if let Some(event) = transport.take_metronome_event() {
+            audio.metronome_event(event);
+        }
+        crate::bindings::handle_key_at(key, app, at);
+        if focus != midi_focus(app) {
+            app.recording.close_take();
+            self.invalidate_at(audio, processed_at);
+        } else if revision != app.revision() {
+            if app.recording.owns_revision(app.revision()) {
+                self.invalidate_at(audio, at);
+            } else {
+                app.recording.close_take();
+                self.invalidate_at(audio, processed_at);
+            }
+        }
+        true
     }
 
     fn deliver(&mut self, event: InputEvent, app: &mut crate::state::App) -> Option<crate::transport::NoteEvent> {
@@ -380,10 +480,255 @@ impl Session {
     }
 }
 
+fn midi_focus(app: &crate::state::App) -> impl PartialEq {
+    (
+        app.view,
+        app.mode,
+        app.help_visible,
+        app.prompt.is_some(),
+        matches!(app.playback_state, crate::state::PlaybackState::Playing),
+        app.selected_pattern,
+        app.cursor_track,
+        app.recording.target,
+        app.shutdown,
+        (app.playback_mode, app.midi_reset_requested()),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[derive(Default)]
+    struct Silent;
+    impl Output for Silent {
+        fn stop(&mut self) {}
+        fn play_event(&mut self, _: crate::transport::NoteEvent) {}
+        fn metronome_event(&mut self, _: crate::transport::MetronomeEvent) {}
+        fn midi_preview_event(&mut self, _: crate::transport::NoteEvent) {}
+        fn stop_midi_preview(&mut self) {}
+    }
+    fn recording_loop() -> (Session, crate::state::App, crate::transport::Transport, Instant) {
+        let now = Instant::now();
+        let mut app = crate::state::App::default();
+        app.recording.armed = true;
+        app.toggle_playback();
+        app.mode = crate::state::Mode::Insert;
+        let mut transport = crate::transport::Transport::default();
+        transport.update_app(now, &mut app, || {});
+        (Session::default(), app, transport, now)
+    }
+    fn terminal(
+        session: &mut Session,
+        app: &mut crate::state::App,
+        transport: &mut crate::transport::Transport,
+        at: Instant,
+        ch: char,
+    ) {
+        session.terminal_key(
+            app,
+            &mut Silent,
+            transport,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(ch),
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            at,
+            at,
+        );
+    }
+    #[test]
+    fn loop_disconnected_terminal_pass_has_single_undo() {
+        let (mut session, mut app, mut transport, now) = recording_loop();
+        let before = app.project.clone();
+        terminal(&mut session, &mut app, &mut transport, now, 'z');
+        terminal(
+            &mut session,
+            &mut app,
+            &mut transport,
+            now + Duration::from_millis(125),
+            'x',
+        );
+        app.mode = crate::state::Mode::Normal;
+        app.handle_command(crate::command::Command::Undo);
+        assert_eq!(app.project, before);
+    }
+    #[test]
+    fn loop_future_midi_does_not_drop_earlier_terminal() {
+        let (mut session, mut app, mut transport, now) = recording_loop();
+        let (sender, queue) = InputQueue::new(now);
+        session.queue = Some(queue);
+        sender.receive_at(&[0x90, 60, 80], now);
+        sender.receive_at(&[0x90, 64, 80], now + Duration::from_millis(250));
+        terminal(
+            &mut session,
+            &mut app,
+            &mut transport,
+            now + Duration::from_millis(125),
+            'x',
+        );
+        assert_eq!(
+            app.project.patterns[0]
+                .event_at(0, crate::musical_time::Tick(240))
+                .unwrap()
+                .pitch,
+            crate::tracker::NotePitch::D
+        );
+        session.poll_before(
+            &mut app,
+            &mut Silent,
+            &mut transport,
+            Some(now + Duration::from_millis(250)),
+        );
+        assert_eq!(
+            app.project.patterns[0]
+                .event_at(0, crate::musical_time::Tick(480))
+                .unwrap()
+                .pitch,
+            crate::tracker::NotePitch::E
+        );
+    }
+
+    #[test]
+    fn cutoff_retains_future_and_reselection_discards_it() {
+        let now = Instant::now();
+        let future = now + Duration::from_secs(1);
+        let (old, mut queue) = InputQueue::new(now);
+        old.receive_at(&[0x90, 60, 1], future);
+        assert_eq!(events(queue.drain_before(Some(now))), []);
+        assert_eq!(events(queue.drain_before(Some(future)))[0].message.pitch, 60);
+        old.receive_at(&[0x90, 61, 1], future);
+        assert_eq!(events(queue.drain_before(Some(now))), []);
+        let new = queue.reselect(now);
+        old.receive_at(&[0x90, 62, 1], future);
+        new.receive_at(&[0x90, 63, 1], now);
+        assert_eq!(events(queue.drain())[0].message.pitch, 63);
+        assert_eq!(events(queue.drain()), []);
+    }
+    #[test]
+    fn loop_budget_defers_key_and_ties_use_midi_before_terminal() {
+        let (mut session, mut app, mut transport, now) = recording_loop();
+        let (sender, mut queue) = InputQueue::new(now);
+        queue.set_channel(Some(1));
+        session.queue = Some(queue);
+        for _ in 0..MAX_DRAIN {
+            sender.receive_at(&[0x90, 60, 1], now);
+        }
+        sender.receive_at(&[0x91, 64, 1], now);
+        let key = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('x'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        assert!(!session.terminal_key(&mut app, &mut Silent, &mut transport, key, now, now));
+        assert!(app.project.patterns[0]
+            .event_at(0, crate::musical_time::Tick(0))
+            .is_none());
+        assert!(session.terminal_key(&mut app, &mut Silent, &mut transport, key, now, now));
+        assert_eq!(
+            app.project.patterns[0]
+                .event_at(0, crate::musical_time::Tick(0))
+                .unwrap()
+                .pitch,
+            crate::tracker::NotePitch::D
+        );
+    }
+    #[test]
+    fn retained_future_overflow_still_requires_reset() {
+        let now = Instant::now();
+        let (sender, mut queue) = InputQueue::new(now);
+        sender.receive_at(&[0x90, 60, 1], now + Duration::from_secs(1));
+        assert_eq!(events(queue.drain_before(Some(now))), []);
+        for _ in 0..=CAPACITY {
+            sender.receive_at(&[0x90, 60, 1], now);
+        }
+        assert_eq!(queue.drain_before(Some(now)), InputBatch::ResetRequired);
+    }
+
+    #[test]
+    fn loop_same_cell_later_midi_wins_after_terminal() {
+        let (mut session, mut app, mut transport, now) = recording_loop();
+        let (sender, queue) = InputQueue::new(now);
+        session.queue = Some(queue);
+        sender.receive_at(&[0x90, 64, 80], now + Duration::from_millis(110));
+        terminal(
+            &mut session,
+            &mut app,
+            &mut transport,
+            now + Duration::from_millis(100),
+            'x',
+        );
+        assert_eq!(
+            app.project.patterns[0]
+                .event_at(0, crate::musical_time::Tick(240))
+                .unwrap()
+                .pitch,
+            crate::tracker::NotePitch::D
+        );
+        session.poll_before(
+            &mut app,
+            &mut Silent,
+            &mut transport,
+            Some(now + Duration::from_millis(110)),
+        );
+        assert_eq!(
+            app.project.patterns[0]
+                .event_at(0, crate::musical_time::Tick(240))
+                .unwrap()
+                .pitch,
+            crate::tracker::NotePitch::E
+        );
+    }
+
+    #[test]
+    fn loop_undo_invalidates_retained_packet() {
+        let (mut session, mut app, mut transport, now) = recording_loop();
+        terminal(&mut session, &mut app, &mut transport, now, 'z');
+        app.mode = crate::state::Mode::Normal;
+        let (sender, queue) = InputQueue::new(now);
+        session.queue = Some(queue);
+        sender.receive_at(&[0x90, 64, 80], now + Duration::from_millis(100));
+        let key = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('u'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        assert!(session.terminal_key(
+            &mut app,
+            &mut Silent,
+            &mut transport,
+            key,
+            now + Duration::from_millis(50),
+            now + Duration::from_millis(150)
+        ));
+        app.mode = crate::state::Mode::Insert;
+        session.poll_before(
+            &mut app,
+            &mut Silent,
+            &mut transport,
+            Some(now + Duration::from_millis(200)),
+        );
+        assert!(app.project.patterns[0]
+            .event_at(0, crate::musical_time::Tick(240))
+            .is_none());
+        assert!(app.project.patterns[0]
+            .event_at(0, crate::musical_time::Tick(0))
+            .is_none());
+    }
+
+    #[test]
+    fn stale_cutoff_packets_count_against_budget_and_retained_filter_is_current() {
+        let now = Instant::now();
+        let (sender, mut queue) = InputQueue::new(now);
+        for _ in 0..MAX_DRAIN {
+            sender.receive_at(&[0x90, 60, 1], now.checked_sub(Duration::from_secs(1)).unwrap());
+        }
+        sender.receive_at(&[0x90, 64, 1], now + Duration::from_secs(1));
+        assert_eq!(events(queue.drain_before(Some(now))), []);
+        assert!(queue.budget_exhausted);
+        assert_eq!(events(queue.drain_before(Some(now))), []);
+        queue.set_channel(Some(1));
+        assert_eq!(events(queue.drain()), []);
+    }
 
     #[test]
     fn decode_channels_velocity_and_exact_packets() {

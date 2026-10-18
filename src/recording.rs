@@ -24,6 +24,10 @@ pub struct Recording {
 }
 
 impl Recording {
+    pub(crate) fn owns_revision(&self, revision: Revision) -> bool {
+        self.take.is_some_and(|(_, take_revision)| take_revision == revision)
+    }
+
     pub(crate) const fn close_take(&mut self) {
         self.take = None;
     }
