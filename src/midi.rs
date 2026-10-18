@@ -14,6 +14,15 @@ use std::{
 
 use crate::tracker::{Note, NoteLength, NotePitch};
 
+#[path = "midi_backend.rs"]
+mod backend;
+
+struct PendingBackend {
+    generation: u64,
+    deadline: Instant,
+    open_browser: bool,
+}
+
 pub const CAPACITY: usize = 128;
 pub const MAX_DRAIN: usize = 64;
 
@@ -333,12 +342,13 @@ fn display_name(name: &str) -> String {
     displayed
 }
 
-/// Device ownership stays on the control thread. No input is opened at startup.
+/// Backend ownership stays on one lazy worker. No input is opened at startup.
 #[derive(Default)]
 pub struct Session {
-    listed: Vec<(midir::MidiInputPort, String)>,
-    active_port: Option<midir::MidiInputPort>,
-    connection: Option<midir::MidiInputConnection<InputSender>>,
+    worker: Option<backend::Worker>,
+    pending_backend: Option<PendingBackend>,
+    backend_generation: u64,
+    backend_unavailable: bool,
     queue: Option<InputQueue>,
     channel: Option<u8>,
     held: Vec<(u8, u8)>,
@@ -361,6 +371,8 @@ impl Session {
         )
     }
 
+    /// Submit a session command without waiting for OS discovery, connection or cleanup.
+    /// Busy requests preserve input; timed-out workers remain unavailable until restart.
     pub fn command(&mut self, text: &str, app: &mut crate::state::App, audio: &mut crate::audio::AudioEngine) {
         let result = self.control(text, app, audio);
         app.status = result.unwrap_or_else(|error| format!("MIDI: {error:#}"));
@@ -374,46 +386,11 @@ impl Session {
     ) -> anyhow::Result<String> {
         let args: Vec<_> = text.split_whitespace().collect();
         match args.as_slice() {
-            ["list"] => {
-                let input = midir::MidiInput::new("track-rs discovery")?;
-                let (listed, browser) = discover_ports(
-                    input.ports(),
-                    |port| Ok(input.port_name(port)?),
-                    self.active_port.as_ref(),
-                )?;
-                self.open_browser(browser, app, audio, Instant::now());
-                self.listed = listed;
-                Ok("MIDI browser: h/l ports, j/k scroll, Esc close; :midi connect N".into())
-            }
-            ["connect", index] => {
-                let index: usize = index.parse()?;
-                let mut input = midir::MidiInput::new("track-rs input")?;
-                input.ignore(midir::Ignore::None);
-                let available = input
-                    .ports()
-                    .into_iter()
-                    .map(|port| {
-                        let name = input.port_name(&port)?;
-                        Ok((port, name))
-                    })
-                    .collect::<anyhow::Result<Vec<_>>>()?;
-                let (port, name) = select_port(&self.listed, &available, index)?;
-                let now = Instant::now();
-                let (sender, mut queue) = InputQueue::new(now);
-                queue.set_channel(self.channel);
-                let connection = input
-                    .connect(port, "track-rs notes", |_, bytes, sender| sender.receive(bytes), sender)
-                    .map_err(|error| anyhow::anyhow!("{error}"))?;
-                let status = format!("MIDI connected: {}", display_name(name));
-                self.active_port = Some(port.clone());
-                self.reset(app, audio, now);
-                self.connection = Some(connection);
-                self.queue = Some(queue);
-                Ok(status)
-            }
+            ["list"] => self.request_backend(backend::Operation::List),
+            ["connect", index] => self.request_backend(backend::Operation::Connect(index.parse()?)),
             ["disconnect"] => {
                 self.disconnect(app, audio);
-                Ok("MIDI disconnected".into())
+                Ok("MIDI input detached and disarmed; backend cleanup requested".into())
             }
             ["channel", value] => {
                 let channel = if matches!(*value, "omni" | "all") {
@@ -431,6 +408,100 @@ impl Session {
                 Ok(format!("MIDI channel: {value}"))
             }
             _ => anyhow::bail!("Expected :midi list|connect N|disconnect|channel omni|1..16"),
+        }
+    }
+
+    fn request_backend(&mut self, operation: backend::Operation) -> anyhow::Result<String> {
+        anyhow::ensure!(
+            !self.backend_unavailable,
+            "Backend unavailable for this session after timeout/failure; restart to retry"
+        );
+        anyhow::ensure!(self.pending_backend.is_none(), "Backend busy; existing input unchanged");
+        if self.worker.is_none() {
+            self.worker = Some(backend::Worker::new()?);
+        }
+        self.backend_generation = self
+            .backend_generation
+            .checked_add(1)
+            .expect("MIDI backend generation exhausted");
+        let deadline = Instant::now() + backend::DEADLINE;
+        self.worker
+            .as_ref()
+            .unwrap()
+            .request(self.backend_generation, operation, deadline)?;
+        self.pending_backend = Some(PendingBackend {
+            generation: self.backend_generation,
+            deadline,
+            open_browser: matches!(operation, backend::Operation::List),
+        });
+        Ok(match operation {
+            backend::Operation::List => "MIDI discovering… (Esc cancels browser presentation)",
+            backend::Operation::Connect(_) => "MIDI connecting…; existing input remains usable",
+        }
+        .into())
+    }
+
+    fn poll_backend(&mut self, app: &mut crate::state::App, audio: &mut impl Output, now: Instant) {
+        if self
+            .pending_backend
+            .as_ref()
+            .is_some_and(|pending| now >= pending.deadline)
+        {
+            self.pending_backend = None;
+            self.backend_unavailable = true;
+            app.status = "MIDI backend timed out; existing input unchanged; backend unavailable this session (OS call \
+                          cannot be interrupted)"
+                .into();
+        }
+        // At most one result per frame, including stale results.
+        let reply = match self.worker.as_ref().map(|worker| worker.replies.try_recv()) {
+            Some(Ok(reply)) => reply,
+            Some(Err(TryRecvError::Disconnected)) if self.pending_backend.is_some() => {
+                self.pending_backend = None;
+                self.backend_unavailable = true;
+                app.status = "MIDI backend stopped; restart to retry".into();
+                return;
+            }
+            _ => return,
+        };
+        if self
+            .pending_backend
+            .as_ref()
+            .is_none_or(|pending| pending.generation != reply.generation)
+        {
+            let _ = reply.accept.try_send(false);
+            return;
+        }
+        let pending = self.pending_backend.take().unwrap();
+        match reply.result {
+            Ok(payload) => {
+                if matches!(payload, backend::Payload::List(_)) && !pending.open_browser {
+                    let _ = reply.accept.try_send(false);
+                    return;
+                }
+                if reply.accept.try_send(true).is_err() {
+                    self.backend_unavailable = true;
+                    app.status = "MIDI backend expired; existing input unchanged; restart to retry".into();
+                    return;
+                }
+                match payload {
+                    backend::Payload::List(browser) => {
+                        if pending.open_browser {
+                            self.open_browser(browser, app, audio, now);
+                            app.status = "MIDI browser: h/l ports, j/k scroll, Esc close; :midi connect N".into();
+                        }
+                    }
+                    backend::Payload::Connected(mut queue, name) => {
+                        queue.set_channel(self.channel);
+                        self.reset(app, audio, now);
+                        self.queue = Some(queue);
+                        app.status = format!("MIDI connected: {name}");
+                    }
+                }
+            }
+            Err(error) => {
+                app.status = format!("MIDI: {error}");
+            }
         }
     }
 
@@ -463,8 +534,10 @@ impl Session {
     }
 
     pub fn disconnect(&mut self, app: &mut crate::state::App, audio: &mut impl Output) {
-        self.connection = None;
-        self.active_port = None;
+        self.pending_backend = None;
+        if let Some(worker) = &self.worker {
+            worker.disconnect();
+        }
         self.queue = None;
         self.reset(app, audio, Instant::now());
         app.recording.armed = false;
@@ -483,6 +556,7 @@ impl Session {
         transport: &mut crate::transport::Transport,
         now: Instant,
     ) -> bool {
+        self.poll_backend(app, audio, now);
         self.poll_before(app, audio, transport, Some(now));
         !self.queue.as_ref().is_some_and(|queue| queue.budget_exhausted)
     }
@@ -553,6 +627,11 @@ impl Session {
             audio.metronome_event(event);
         }
         crate::bindings::handle_key_at(key, app, at);
+        // Any intervening key cancels automatic browser presentation, including
+        // Esc when the refreshed snapshot has not arrived yet.
+        if let Some(pending) = &mut self.pending_backend {
+            pending.open_browser = false;
+        }
         if focus != midi_focus(app) {
             app.finish_midi_holds();
             app.recording.clear_monitor();
@@ -795,7 +874,7 @@ mod tests {
     use std::time::Duration;
 
     #[derive(Default)]
-    struct Silent;
+    pub(super) struct Silent;
     impl Output for Silent {
         fn stop(&mut self) {}
         fn play_event(&mut self, _: crate::transport::NoteEvent) {}
@@ -1927,7 +2006,7 @@ mod tests {
             crate::bindings::handle_key_at(KeyEvent::new(code, KeyModifiers::NONE), &mut app, Instant::now());
         }
         assert_eq!(app.midi_command.as_deref(), Some("channel omni"));
-        assert!(Session::default().connection.is_none());
+        assert!(Session::default().worker.is_none());
     }
     #[test]
     fn fake_ports_keep_list_identity_and_reject_replacement_or_duplicates() {

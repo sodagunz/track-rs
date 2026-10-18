@@ -1,6 +1,6 @@
 # 018 — MIDI input
 
-Status: held-note monitoring and held-duration live MIDI recording implemented, 2026-10-18; real-device validation pending. Reuse [017](017-quantized-live-recording.md)'s recording decisions and [016](016-metronome-and-record-arming.md)'s session controls. MIDI input only, not output, sync or transport clock. Live recording also depends on [019](019-musical-time-and-grids.md)'s tick timeline and per-bar quantizer; device-free decoding and preview-only work can proceed independently.
+Status: implementation complete for the approved MIDI scope, including isolated backend discovery/connect, 2026-10-18; real-device validation pending. Reuse [017](017-quantized-live-recording.md)'s recording decisions and [016](016-metronome-and-record-arming.md)'s session controls. MIDI input only, not output, sync or transport clock. Live recording also depends on [019](019-musical-time-and-grids.md)'s tick timeline and per-bar quantizer; device-free decoding and preview-only work can proceed independently.
 
 ## First delivery
 
@@ -54,8 +54,16 @@ Sustain pedal and CC all-notes-off/all-sound-off remain unsupported. A lost Note
 Off can leave a sustained voice ringing until focus invalidation or explicit
 `:midi disconnect`; no automatic unplug cleanup is claimed.
 
-Backend discovery/connect run on the control thread; they are not isolated with
-a hard timeout. No reliable hot-unplug detection is claimed. No physical device
+Backend discovery/connect and connection drop now run on one lazy worker, not
+the control or audio thread. A five-second UI deadline disables further backend
+requests for this session; it cannot interrupt a hung OS call. No replacement
+workers are spawned. Disconnect immediately detaches MIDI input and silences
+its voices; physical resource cleanup may wait for the backend. Shutdown never
+joins that worker. Failed, expired and stale candidates don't replace usable
+input. Discovery only replaces the saved snapshot when accepted; any intervening
+key cancels browser presentation. One pending request and capacity-one job/result
+channels bound work; the UI polls at most one result per frame.
+No reliable hot-unplug detection is claimed. No physical device
 or non-Linux platform was tested. The read-only device browser described below
 replaces clipped status-line lists. Real-device mapping, placement, mixer level and unplug/reconnect
 checks remain manual follow-up, not completed acceptance evidence.
@@ -213,3 +221,32 @@ surviving song/terminal samples through the offline session-closure path.
 Formatting, strict all-target/all-feature Clippy, warning-denied docs and
 doc-tests pass. ALSA-null hardware setup was not rerun: no production audio
 code changed. Physical MIDI unplug/reconnect remains untested.
+
+## Isolated backend checkpoint
+
+The single backend worker owns discovery handles and active/candidate connections;
+none of those types cross threads. A prepared connection or list needs explicit
+main-loop acceptance before replacing existing state. Disconnect epochs prevent
+late acceptance from reviving input. Callback work and the audio graph are unchanged.
+The fake backend deliberately isn't Send, and controlled channels hold operations
+without sleeping or requiring MIDI hardware.
+
+Checkpoint: 349 all-target tests pass (342 inherited, seven worker regressions).
+Coverage includes blocked connect with usable old input, busy rejection, one-slot
+backpressure, failure preservation, timeout without replacement workers, stale
+connect replies, Esc during discovery, disconnect cancellation and nonjoining
+shutdown. Formatting, strict all-target Clippy, dependency policy (existing duplicate
+warnings only), doc-tests and warning-denied docs pass. The null-ALSA example and
+a bounded PTY smoke run passed discovery/channel/disconnect commands and clean quit.
+These are Linux, device-free checks, not listening or physical MIDI acceptance.
+
+Remaining manual acceptance (record OS, controller and audio device):
+
+- [ ] Discover/connect a real controller; confirm MIDI 60 = C4 and channel filtering.
+- [ ] Check held-note release, preview/mixer level and armed recording placement.
+- [ ] Disconnect while holding a note; confirm MIDI-only silence and disarming.
+- [ ] Unplug/reconnect explicitly and check backend behavior; don't infer automatic detection.
+
+The approved 018 implementation scope is complete. Physical validation remains
+pending; CCs, velocity storage/dynamics, pedal, clock/output and auto-reconnect
+remain explicitly deferred.

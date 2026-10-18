@@ -55,7 +55,11 @@ offline proof is recorded in 018. The Pluck 8 kHz NaN issue is fixed at
 MIDI producer closure now performs MIDI-only disconnect cleanup; this is not
 physical-unplug detection. MIDI discovery now uses a read-only, wrapped snapshot
 browser instead of clipped status-line output; connect remains explicit. See 018
-for controls, bounds and the limited closure guarantee.
+for controls, bounds and the limited closure guarantee. 018's final implementation
+gap is closed: discovery/connect and cleanup are isolated on one bounded worker,
+with a UI deadline rather than hard OS cancellation. Approved 016/017/018 scope
+is implemented; their specialized listening/physical-device checks remain pending.
+Song capture, velocity/expression, clock and auto-reconnect remain deferred.
 No 020 implementation is implied.
 
 Musical-time scope is resolved in favor of 019's proposed sparse event timeline and fixed 960 PPQ, separating meter, pattern length, grid, edit step and duration. Per-bar grid changes must not retime music. Pattern-local meter first; arbitrary tuplets and continuous song meter automation remain deferred. The user approved starting implementation in this order. Approval is not an implemented-status label.
