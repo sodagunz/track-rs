@@ -58,7 +58,7 @@ struct GatedVoice {
 
 impl GatedVoice {
     fn new(event: NoteEvent, sample_rate: f64, dry: bool, seed: u64) -> Self {
-        let mut unit = voice(event.note, event.instrument, dry, seed);
+        let mut unit = voice(event.note, event.instrument, dry, seed, sample_rate);
         unit.set_sample_rate(sample_rate);
         unit.allocate();
         let duration = event.duration.as_secs_f64();
@@ -510,6 +510,7 @@ impl AudioEngine {
             Instrument::Pluck,
             DEFAULT_NOTE_DURATION,
             self.dry,
+            self.sample_rate,
         );
     }
     /// Send only changed targets, before scheduling transport or audition events.
@@ -595,12 +596,19 @@ impl AudioEngine {
 }
 
 #[cfg(test)]
-fn schedule_note(sequencer: &mut Sequencer, note: Note, duration: Duration) {
-    schedule_instrument(sequencer, note, Instrument::Pluck, duration, false);
+fn schedule_note(sequencer: &mut Sequencer, note: Note, duration: Duration, sample_rate: f64) {
+    schedule_instrument(sequencer, note, Instrument::Pluck, duration, false, sample_rate);
 }
 
-fn schedule_instrument(sequencer: &mut Sequencer, note: Note, instrument: Instrument, duration: Duration, dry: bool) {
-    schedule_voice(sequencer, note, instrument, duration, dry, rand::random());
+fn schedule_instrument(
+    sequencer: &mut Sequencer,
+    note: Note,
+    instrument: Instrument,
+    duration: Duration,
+    dry: bool,
+    sample_rate: f64,
+) {
+    schedule_voice(sequencer, note, instrument, duration, dry, rand::random(), sample_rate);
 }
 
 fn schedule_voice(
@@ -610,6 +618,7 @@ fn schedule_voice(
     duration: Duration,
     dry: bool,
     seed: u64,
+    sample_rate: f64,
 ) {
     let seconds = duration.as_secs_f64();
     let (attack, release) = envelope_times(instrument, seconds);
@@ -620,7 +629,7 @@ fn schedule_voice(
             Fade::Smooth,
             attack,
             release,
-            voice(note, instrument, dry, seed),
+            voice(note, instrument, dry, seed, sample_rate),
         );
     }
 }
@@ -648,16 +657,19 @@ const fn preset_envelope_times(instrument: Instrument) -> (f64, f64) {
 /// Construct a seeded stereo voice. The caller supplies the gate's attack/release.
 /// Kick sweeps 150 to 45 Hz; snare uses 180 Hz plus noise; hi-hat uses high-passed
 /// noise. All percussion ignores note pitch. Only Pluck uses the legacy chorus.
-fn voice(note: Note, instrument: Instrument, dry: bool, seed: u64) -> Box<dyn AudioUnit> {
+fn voice(note: Note, instrument: Instrument, dry: bool, seed: u64, sample_rate: f64) -> Box<dyn AudioUnit> {
     #[allow(clippy::cast_possible_truncation)]
     let hz = note.freq() as f32;
+    // Leave a margin below Nyquist: FunDSP filters do not clamp cutoff inputs.
+    #[allow(clippy::cast_possible_truncation)]
+    let max_cutoff = (sample_rate * 0.45) as f32;
     let waveform = match instrument {
         Instrument::Pluck => {
             let waveform = Net::wrap(Box::new(
                 zero() >> pluck(hz, DEFAULT_PLUCK_DECAY, DEFAULT_PLUCK_DAMPING) * DEFAULT_VOICE_GAIN,
             ));
             let filter = Net::wrap(Box::new(
-                (pass() | lfo(move |t| (xerp11(400.0, 10000.0, cos_hz(0.1, t)), 0.6))) >> moog(),
+                (pass() | lfo(move |t| (xerp11(400.0, 10000.0, cos_hz(0.1, t)).min(max_cutoff), 0.6))) >> moog(),
             ));
             waveform >> filter >> dcblock()
         }
@@ -676,19 +688,20 @@ fn voice(note: Note, instrument: Instrument, dry: bool, seed: u64) -> Box<dyn Au
         )),
         Instrument::Sustain => Net::wrap(Box::new((sine_hz(hz) + sine_hz(hz * 2.0) * 0.15) * 0.15)),
         Instrument::OpenHat => Net::wrap(Box::new(
-            (noise() >> highpass_hz(7000.0, 0.7)) * lfo(|t: f32| HIHAT_GAIN * (-t * 8.0).exp()),
+            (noise() >> highpass_hz(7000.0_f32.min(max_cutoff), 0.7)) * lfo(|t: f32| HIHAT_GAIN * (-t * 8.0).exp()),
         )),
         Instrument::Kick => Net::wrap(Box::new(
             (lfo(|t: f32| 105.0_f32.mul_add((-t * 35.0).exp(), 45.0)) >> sine())
                 * lfo(|t: f32| KICK_GAIN * (-t * 16.0).exp()),
         )),
         Instrument::Snare => Net::wrap(Box::new(
-            ((noise() >> highpass_hz(1200.0, 0.7) >> lowpass_hz(10000.0, 0.7)) * SNARE_NOISE_GAIN
+            ((noise() >> highpass_hz(1200.0_f32.min(max_cutoff), 0.7) >> lowpass_hz(10000.0_f32.min(max_cutoff), 0.7))
+                * SNARE_NOISE_GAIN
                 + sine_hz(180.0) * SNARE_TONE_GAIN)
                 * lfo(|t: f32| (-t * 24.0).exp()),
         )),
         Instrument::HiHat => Net::wrap(Box::new(
-            (noise() >> highpass_hz(7000.0, 0.7)) * lfo(|t: f32| HIHAT_GAIN * (-t * 65.0).exp()),
+            (noise() >> highpass_hz(7000.0_f32.min(max_cutoff), 0.7)) * lfo(|t: f32| HIHAT_GAIN * (-t * 65.0).exp()),
         )),
     };
     let mut stereo = waveform >> pan(0.0);
@@ -1823,6 +1836,103 @@ mod tests {
         assert_eq!(output.tracks[0].mixer.target, (0.0, 0.0));
     }
 
+    #[test]
+    fn valid_rate_cutoffs_preserve_samples_bit_exactly() {
+        for rate in [48_000_u32, 96_000] {
+            for instrument in Instrument::ALL {
+                for dry in [true, false] {
+                    let mut note = sine_event(0, Duration::ZERO).note;
+                    note.pitch = NotePitch::C;
+                    let mut actual = voice(note, instrument, dry, 42, f64::from(rate));
+                    // At 192 kHz every original cutoff is below the cap. Render
+                    // that unchanged graph at the same actual rate as the candidate.
+                    let mut original = voice(note, instrument, dry, 42, 192_000.0);
+                    for unit in [&mut actual, &mut original] {
+                        unit.set_sample_rate(f64::from(rate));
+                        unit.allocate();
+                    }
+                    for frame in 0..rate {
+                        let (al, ar) = actual.get_stereo();
+                        let (ol, or) = original.get_stereo();
+                        assert_eq!(
+                            (al.to_bits(), ar.to_bits()),
+                            (ol.to_bits(), or.to_bits()),
+                            "{instrument:?} rate={rate} dry={dry} frame={frame}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn low_rate_presets_remain_finite_through_held_and_timed_release() {
+        for rate in [8_000_u32, 12_000, 48_000, 96_000] {
+            for instrument in Instrument::ALL {
+                for dry in [true, false] {
+                    for held in [false, true] {
+                        let mut event = sine_event(0, Duration::from_millis(800));
+                        event.instrument = instrument;
+                        event.note.pitch = NotePitch::C;
+                        let mut voice = if held {
+                            GatedVoice::held(event, 1, f64::from(rate), dry, 42)
+                        } else {
+                            GatedVoice::new(event, f64::from(rate), dry, 42)
+                        };
+                        let (mut seq, mut legacy) = prepare(f64::from(rate));
+                        schedule_voice(
+                            &mut seq,
+                            event.note,
+                            instrument,
+                            event.duration,
+                            dry,
+                            42,
+                            f64::from(rate),
+                        );
+                        let hold_frames = if held && instrument == Instrument::Pluck {
+                            rate * 10
+                        } else {
+                            rate * 4 / 5
+                        };
+                        let mut retired = false;
+                        let mut audible = false;
+                        for frame in 0..hold_frames + rate {
+                            if !held {
+                                let (l, r) = legacy.get_stereo();
+                                assert!(
+                                    l.is_finite() && r.is_finite(),
+                                    "legacy {instrument:?} rate={rate} dry={dry} first nonfinite frame={frame}: {l}, \
+                                     {r}"
+                                );
+                            }
+                            if held && frame == hold_frames {
+                                voice.release_gate(1);
+                            }
+                            if let Some((l, r)) = voice.sample() {
+                                audible |= l.abs() + r.abs() > 1e-5;
+                                assert!(
+                                    l.is_finite() && r.is_finite(),
+                                    "{instrument:?} rate={rate} dry={dry} held={held} first nonfinite frame={frame}: \
+                                     {l}, {r}"
+                                );
+                            } else {
+                                retired = true;
+                                break;
+                            }
+                        }
+                        assert!(retired, "{instrument:?} did not retire at {rate}");
+                        assert!(audible, "{instrument:?} silent at {rate}");
+                        if !held {
+                            for _ in 0..128 {
+                                assert_eq!(legacy.get_stereo(), (0.0, 0.0));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn sine_event(track: usize, duration: Duration) -> NoteEvent {
         NoteEvent {
             track,
@@ -1866,7 +1976,7 @@ mod tests {
                 let (sender, receiver) = mpsc::channel();
                 let (retired, _retired_rx) = mpsc::channel();
                 if legacy {
-                    schedule_voice(&mut seq, note, instrument, event.duration, false, 42);
+                    schedule_voice(&mut seq, note, instrument, event.duration, false, 42, 48_000.0);
                 } else {
                     sender
                         .send(OutputCommand::Trigger {
@@ -1876,13 +1986,21 @@ mod tests {
                         .unwrap();
                 }
                 let mut output = Output::new(renderer, receiver, retired);
-                let mut raw = voice(note, instrument, false, 42);
+                let mut raw = voice(note, instrument, false, 42, 48_000.0);
                 raw.set_sample_rate(f64::from(rate));
                 raw.allocate();
                 let mut reference = BlockRateAdapter::new(raw);
                 let (mut reference_seq, mut legacy_reference) = prepare(f64::from(rate));
                 if legacy {
-                    schedule_voice(&mut reference_seq, note, instrument, Duration::from_secs(10), false, 42);
+                    schedule_voice(
+                        &mut reference_seq,
+                        note,
+                        instrument,
+                        Duration::from_secs(10),
+                        false,
+                        42,
+                        48_000.0,
+                    );
                 }
                 let end = 192_000;
                 let tail =
@@ -1941,7 +2059,7 @@ mod tests {
                 };
                 let mut gated = GatedVoice::new(event, 48_000.0, false, 42);
                 let (mut seq, mut renderer) = prepare(48_000.0);
-                schedule_voice(&mut seq, event.note, instrument, duration, false, 42);
+                schedule_voice(&mut seq, event.note, instrument, duration, false, 42, 48_000.0);
                 for _ in 0..30000 {
                     let sample = gated.sample().unwrap_or((0.0, 0.0));
                     let legacy = renderer.get_stereo();
@@ -2400,6 +2518,7 @@ mod tests {
                 duration,
                 dry,
                 42,
+                48_000.0,
             );
         }
         let release = instruments
@@ -2506,6 +2625,7 @@ mod tests {
                 instrument,
                 true,
                 42,
+                48_000.0,
             );
             let mut high = voice(
                 Note {
@@ -2516,6 +2636,7 @@ mod tests {
                 instrument,
                 true,
                 42,
+                48_000.0,
             );
             low.set_sample_rate(48_000.0);
             high.set_sample_rate(48_000.0);
@@ -2538,7 +2659,7 @@ mod tests {
                 octave: 4,
             };
             for instrument in Instrument::ALL {
-                schedule_instrument(&mut seq, note, instrument, Duration::from_secs(2), dry);
+                schedule_instrument(&mut seq, note, instrument, Duration::from_secs(2), dry, 48_000.0);
             }
             let mut heard = false;
             for _ in 0..10_000 {
@@ -2548,7 +2669,7 @@ mod tests {
             }
             assert!(heard);
             for instrument in Instrument::ALL {
-                schedule_instrument(&mut seq, note, instrument, Duration::from_secs(2), dry);
+                schedule_instrument(&mut seq, note, instrument, Duration::from_secs(2), dry, 48_000.0);
             }
             let (mut next, renderer) = prepare(48_000.0);
             tx.send(OutputCommand::Replace(renderer)).unwrap();
@@ -2556,7 +2677,7 @@ mod tests {
                 assert_eq!(output.sample(), (0.0, 0.0));
             }
             drop(rx.try_recv().unwrap());
-            schedule_note(&mut next, note, DEFAULT_NOTE_DURATION);
+            schedule_note(&mut next, note, DEFAULT_NOTE_DURATION, 48_000.0);
             assert!((0..10_000).any(|_| {
                 let (l, r) = output.sample();
                 l.abs() + r.abs() > 1e-6
@@ -2664,6 +2785,7 @@ mod tests {
                 octave: 4,
             },
             DEFAULT_NOTE_DURATION,
+            48_000.0,
         );
 
         let mut heard_note = false;

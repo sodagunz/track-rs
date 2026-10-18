@@ -134,3 +134,29 @@ A longer probe also found Pluck producing NaNs at 8 kHz after about 579 ms in
 both held and unchanged timed gates. That oscillator/filter issue is not fixed
 here; held one-shot coverage uses Kick instead. Do not interpret this checkpoint
 as all-preset long-hold validation. Real MIDI hardware remains unchecked.
+
+## Low-rate DSP follow-up
+
+Fixed the Pluck issue above. A seeded C4 offline gate reproduced the first NaN
+at frame 4,633 (579 ms) at 8 kHz, even without chorus. The isolated oscillator
+stayed finite; the swept Moog filter failed at the same frame. FunDSP 0.23's
+`moog.rs` uses the cutoff/sample-rate ratio without clamping. Its SVF filters
+also accept out-of-band cutoffs: an isolated 7 kHz high-pass failed at frame 161
+at 8 kHz, explaining the related hat failure.
+
+Voice construction now receives the output device's rate in both gated and
+legacy sequencer paths. Preset cutoffs, including every value of Pluck's sweep,
+are capped at 45% of that rate, leaving a margin below Nyquist. The same rule
+covers the hats and Snare's filters; pitches, Q, chorus, envelopes and callback
+ownership are unchanged. Graph construction/allocation stays on the control
+thread. This does not extend the plucked-string oscillator's high-note range.
+
+Two new offline regressions cover all presets at 8/12/48/96 kHz: held/timed
+release, dry/chorused output, legacy timed scheduling, finite audible samples
+and retirement. Held Pluck spans its full ten-second sweep. A differential test
+checks bit-exact unchanged-cutoff output at 48/96 kHz; temporary before/after
+all-preset gated sample fingerprints also matched at both rates. The full
+checkpoint is 332 passing tests (330 inherited, two new). Formatting, strict
+Clippy, docs/doc-tests, dependency policy, actionlint and the ALSA-null example
+pass; dependency policy retains duplicate-version warnings. No physical
+listening or MIDI-device validation was performed.
