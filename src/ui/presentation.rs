@@ -85,6 +85,17 @@ impl Presentation<'_> {
         match app.view {
             crate::state::View::Arrangement => return format!("O{}", app.selected_order),
             crate::state::View::Instrument => {
+                if app.synth_editor() {
+                    let control =
+                        crate::synth_controls::CONTROLS[app.cursor_row.min(crate::synth_controls::CONTROLS.len() - 1)];
+                    return format!(
+                        "T{} {} {} {}",
+                        track_number(app.cursor_track),
+                        control.group(),
+                        control.label(),
+                        control.value(app.project.synth_patch(app.cursor_track))
+                    );
+                }
                 return format!("T{}", track_number(app.cursor_track));
             }
             crate::state::View::Mixer => {
@@ -158,6 +169,15 @@ impl Presentation<'_> {
             return match app.view {
                 crate::state::View::Arrangement => format!("Order {}", app.selected_order),
                 crate::state::View::Mixer => "Stereo balance | boosts can clip".into(),
+                _ if app.synth_editor() => {
+                    let control =
+                        crate::synth_controls::CONTROLS[app.cursor_row.min(crate::synth_controls::CONTROLS.len() - 1)];
+                    format!(
+                        "{} | i adjust, Enter audition (Normal) | Esc Normal | {}",
+                        control.policy(),
+                        control.hint()
+                    )
+                }
                 _ => format!("Voice: {}", app.project.instrument(app.cursor_track).label()),
             };
         }

@@ -237,6 +237,8 @@ impl App {
         self.status.clear();
         let result = if self.view == View::Mixer && self.mode == Mode::Insert {
             self.enter_mixer_value(text)
+        } else if self.view == View::Instrument && self.mode == Mode::Insert {
+            self.enter_synth_value(text)
         } else {
             self.execute_file_command(text)
         };
@@ -669,11 +671,7 @@ impl App {
         };
         let saved = self.view_states[self.view as usize];
         self.mode = saved.mode;
-        self.cursor_row = saved.row.min(if self.view == View::Mixer {
-            crate::project::CHANNEL_ROWS - 1
-        } else {
-            self.project.patterns[self.selected_pattern].view_rows() - 1
-        });
+        self.cursor_row = saved.row.min(self.rows_in_view(self.view).saturating_sub(1));
         self.cursor_track = saved.track.min(self.project.instruments().len() - 1);
         self.selection_anchor = saved.anchor;
         self.pending_count = None;
@@ -704,7 +702,10 @@ impl App {
             }
             _ if !command.available_in_view(self.view) => {}
             _ if self.view == View::Mixer && self.handle_mixer(command) => {}
-            Command::MixerValue
+            _ if self.view == View::Instrument && self.handle_instrument(command) => {}
+            Command::SynthValue
+            | Command::SynthReset
+            | Command::MixerValue
             | Command::MixerReset
             | Command::MixerAdjust(_)
             | Command::MixerMute
@@ -756,17 +757,8 @@ impl App {
             Command::CycleEditStep => self.cycle_edit_step(),
             Command::Copy | Command::Cut => self.copy_or_cut(command == Command::Cut),
             Command::Paste => self.paste(),
-            Command::SetInstrument(instrument) => {
-                let track = self.cursor_track;
-                self.edit(|edit| edit.set_instrument(track, instrument));
-            }
-            Command::PreviousInstrument | Command::NextInstrument => {
-                let instrument = self
-                    .project
-                    .instrument(self.cursor_track)
-                    .cycle(command == Command::NextInstrument);
-                let track = self.cursor_track;
-                self.edit(|edit| edit.set_instrument(track, instrument));
+            Command::SetInstrument(_) | Command::PreviousInstrument | Command::NextInstrument => {
+                self.choose_instrument(command);
             }
             Command::DecreaseTempo | Command::IncreaseTempo => {
                 let bpm =
@@ -783,7 +775,77 @@ impl App {
             Command::DecreaseOctave => self.octave = self.octave.saturating_sub(1).min(9),
             Command::IncreaseOctave => self.octave = self.octave.saturating_add(1).min(9),
         }
+        if self.view == View::Instrument && self.mode == Mode::Insert && !self.synth_editor() {
+            self.mode = Mode::Normal;
+        }
         self.reconcile_recording();
+    }
+
+    fn choose_instrument(&mut self, command: Command) {
+        let track = self.cursor_track;
+        let instrument = if let Command::SetInstrument(instrument) = command {
+            instrument
+        } else {
+            self.project.instrument(track).cycle(command == Command::NextInstrument)
+        };
+        self.edit(|edit| edit.set_instrument(track, instrument));
+    }
+
+    /// True only for the selected track's visible patch, not a retained hidden patch.
+    #[must_use]
+    pub(crate) fn synth_editor(&self) -> bool {
+        self.view == View::Instrument && self.project.instrument(self.cursor_track) == crate::tracker::Instrument::Synth
+    }
+
+    fn handle_instrument(&mut self, command: Command) -> bool {
+        match command {
+            Command::EnterInsert => {
+                if self.synth_editor() {
+                    self.enter_insert();
+                } else {
+                    self.status = "Select Synth with [/] to edit its patch".into();
+                }
+            }
+            Command::SynthValue if self.synth_editor() && self.mode == Mode::Insert => {
+                self.prompt = Some(String::new());
+            }
+            Command::SynthReset if self.synth_editor() => {
+                let track = self.cursor_track;
+                let patch = crate::synth_controls::CONTROLS[self.cursor_row].reset(self.project.synth_patch(track));
+                self.edit(|edit| edit.set_synth_patch(track, patch));
+            }
+            Command::MoveCursor { rows, tracks } if self.mode == Mode::Insert => {
+                if self.synth_editor() {
+                    let track = self.cursor_track;
+                    let patch = crate::synth_controls::CONTROLS[self.cursor_row]
+                        .adjusted(self.project.synth_patch(track), tracks);
+                    if tracks != 0 {
+                        self.edit(|edit| edit.set_synth_patch(track, patch));
+                    }
+                    self.offset_cursor(&CursorOffset::from_delta(rows), &CursorOffset::None);
+                }
+            }
+            Command::MoveCursorLeft | Command::MoveCursorRight if self.mode == Mode::Insert => {
+                return self.handle_instrument(Command::MoveCursor {
+                    rows: 0,
+                    tracks: if command == Command::MoveCursorLeft { -1 } else { 1 },
+                });
+            }
+            Command::MoveCursor { rows, .. } if rows != 0 && !self.synth_editor() => {}
+            Command::MoveCursorUp | Command::MoveCursorDown | Command::FirstRow | Command::LastRow
+                if !self.synth_editor() => {}
+            Command::SynthValue | Command::SynthReset => {}
+            _ => return false,
+        }
+        true
+    }
+
+    fn enter_synth_value(&mut self, text: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(self.synth_editor(), "Select Synth to edit its patch");
+        let track = self.cursor_track;
+        let patch = crate::synth_controls::CONTROLS[self.cursor_row].entered(self.project.synth_patch(track), text)?;
+        self.edit(|edit| edit.set_synth_patch(track, patch));
+        Ok(())
     }
 
     fn handle_mixer(&mut self, command: Command) -> bool {
@@ -913,11 +975,7 @@ impl App {
             Command::FirstTrack => self.cursor_track = 0,
             Command::FirstRow => self.cursor_row = 0,
             Command::LastRow => {
-                self.cursor_row = if self.view == View::Mixer {
-                    crate::project::CHANNEL_ROWS - 1
-                } else {
-                    pattern.view_rows().saturating_sub(1)
-                }
+                self.cursor_row = self.rows_in_view(self.view).saturating_sub(1);
             }
             Command::LastTrack => self.cursor_track = pattern.tracks.len().saturating_sub(1),
             _ => unreachable!(),
@@ -1313,6 +1371,8 @@ impl App {
         for (index, saved) in self.view_states.iter_mut().enumerate() {
             saved.row = saved.row.min(if index == View::Mixer as usize {
                 crate::project::CHANNEL_ROWS - 1
+            } else if index == View::Instrument as usize {
+                crate::synth_controls::CONTROLS.len() - 1
             } else {
                 pattern.view_rows() - 1
             });
@@ -1372,17 +1432,21 @@ impl App {
         }
     }
 
+    fn rows_in_view(&self, view: View) -> usize {
+        match view {
+            View::Mixer => crate::project::CHANNEL_ROWS,
+            View::Instrument => crate::synth_controls::CONTROLS.len(),
+            _ => self.project.patterns[self.selected_pattern].view_rows(),
+        }
+    }
+
     pub fn offset_cursor(&mut self, dr: &CursorOffset, dt: &CursorOffset) {
         if !matches!(dr, CursorOffset::None | CursorOffset::Pos(0) | CursorOffset::Neg(0))
             || !matches!(dt, CursorOffset::None | CursorOffset::Pos(0) | CursorOffset::Neg(0))
         {
             self.inspected_tick = None;
         }
-        let max_rows = if self.view == View::Mixer {
-            crate::project::CHANNEL_ROWS
-        } else {
-            self.project.patterns[self.selected_pattern].view_rows()
-        };
+        let max_rows = self.rows_in_view(self.view);
         let max_tracks = self.project.patterns[self.selected_pattern].tracks.len();
 
         self.cursor_row = dr.apply_to(self.cursor_row).clamp(0, max_rows.saturating_sub(1));

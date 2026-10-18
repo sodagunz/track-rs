@@ -18,6 +18,9 @@ pub mod midi;
 mod playback_tests;
 pub mod state;
 pub mod synth;
+pub(crate) mod synth_controls;
+#[cfg(test)]
+mod synth_editor_tests;
 #[cfg(test)]
 mod synth_tracker_tests;
 pub mod theme;

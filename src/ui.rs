@@ -19,6 +19,9 @@ use crate::{
 };
 
 mod presentation;
+mod synth_editor;
+#[cfg(test)]
+mod synth_editor_tests;
 
 use presentation::{pattern_label, row_label, track_number, Presentation};
 
@@ -121,6 +124,16 @@ fn render(f: &mut Frame, state: &App) {
                         }
                     );
                     &labeled
+                } else if state.synth_editor() && state.mode == Mode::Insert {
+                    let control = crate::synth_controls::CONTROLS[state.cursor_row];
+                    labeled = format!(
+                        "{} {} [{}; {}]: {text}",
+                        control.group(),
+                        control.label(),
+                        control.policy(),
+                        control.hint()
+                    );
+                    &labeled
                 } else {
                     text
                 };
@@ -146,6 +159,10 @@ fn render(f: &mut Frame, state: &App) {
 
 fn draw_instrument(f: &mut Frame, area: Rect, state: &App) {
     use crate::tracker::Instrument;
+    if state.synth_editor() {
+        synth_editor::draw(f, area, state);
+        return;
+    }
     let current = state.project.instrument(state.cursor_track);
     let block = Block::default().borders(Borders::ALL).title(format!(
         "Instrument | Track {} | {} | [/] voice | h/l track | Enter audition",

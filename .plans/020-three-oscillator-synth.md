@@ -1,6 +1,6 @@
 # 020 — Three-oscillator subtractive synth
 
-Status: in progress, 2026-10-18. The independently renderable DSP core and track-owned persistence/history/audio routing are implemented. F4 selects/auditions Synth; numeric patch editing and listening acceptance remain pending. Plans 021/022 remain unapproved.
+Status: implementation complete, 2026-10-18. Standalone DSP, track-owned persistence/history/audio routing and F4 numeric/choice editing/reset/audition are implemented. Physical listening acceptance remains pending; this isn't sound-quality certification. Plans 021/022 remain unapproved.
 
 ## Outcome
 
@@ -139,6 +139,48 @@ nextest. Formatting, strict all-target/all-feature Clippy, doc-tests and
 warning-denied documentation pass. Dependency policy passes with existing
 duplicate-version warnings; no dependency changes. All three examples pass,
 including both output-device examples with null ALSA. No physical listening.
+
+## F4 editor checkpoint — 2026-10-18
+
+F4 shows the synth patch only when the selected track uses Synth. Built-ins keep
+the existing instrument list. All 18 controls are grouped vertically as OSC 1–3,
+FILTER and AMP; scrolling retains group names, units and a text selection marker.
+The parameter cursor is independent of Pattern row count and saved per view.
+
+- Normal: h/l selects tracks, j/k selects parameters, [/] selects instruments,
+  Enter auditions while stopped (NO WRITE), i enters adjustment mode.
+- Insert: h/l adjusts, j/k moves, Enter opens exact numeric/choice entry; Esc
+  cancels entry, then Esc returns to Normal. Voice cycling is Normal-only in F4.
+- Counts apply to movement/adjustment; gk/gj jumps to first/last control.
+- Normal d/x and Insert Backspace reset only the selected control to its patch
+  default. Normal u/Ctrl-R uses existing undo/redo. Clamped/no-op actions don't
+  create revisions; repeated adjustments use the mixer's bounded gesture timing.
+- Numeric entry rejects non-finite, out-of-range and wrong-unit values atomically.
+  Plain envelope values are seconds, with s/ms suffixes; cutoff accepts Hz/kHz;
+  coarse/fine accept st/ct. Gain/sustain are linear 0..1. Waveform accepts the four
+  displayed names, case-insensitively. No value prompt falls through to commands.
+- Keyboard steps: coarse 1 st, fine 1 ct, gain/sustain 0.01, cutoff 100 Hz, Q 0.05,
+  envelope times 0.01 s. Waveforms cycle deterministically. Requested cutoff is
+  displayed/stored; effective DSP cutoff still clamps by sample rate.
+
+Rows and prompt/status text explicitly label waveform/ADSR as next-note settings
+and gain/tuning/cutoff/Q as live 10 ms-smoothed settings. Editing doesn't stop
+playback or disarm recording; undo while armed retains the existing transport-stop
+policy. MIDI note input remains suppressed in F4, with existing focus/ownership
+rules unchanged. Help, browser and prompt precedence prevent hidden note edits.
+
+Nine new tests exercise real key events for every control, units/validation,
+reset/undo/no-op/count/repeat behavior, track isolation, persistence, view-local
+navigation, arm/playback policy, overlay guards, no-write audition, registry help,
+Unicode prompts and scrolling through zero/narrow/full viewports. DSP and audio
+routing are unchanged in this checkpoint. Physical listening for filter character,
+clicks, tuning, short gates and clipping remains a separate acceptance step.
+
+Validation: 375 tests pass (366 inherited, nine new) with nextest; strict
+all-target/all-feature Clippy, formatting, doc-tests and warning-denied docs pass.
+Dependency policy passes with existing duplicate-version warnings; no dependencies
+added. All three examples pass, with output-device examples using null ALSA.
+No physical listening or manual terminal acceptance is claimed.
 
 ## Delivery and acceptance
 
