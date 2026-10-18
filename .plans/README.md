@@ -45,7 +45,10 @@ timestamps, local-grid quantization and undo per pass. Stopped Insert step-edits
 playing Insert previews when unarmed and records only when armed and eligible.
 Audition always means no note writes; Song capture is explicitly unavailable.
 Automated acceptance is recorded in 016/017; physical listening remains pending.
-MIDI in 018 is still planned. No 020 implementation is implied.
+018 now implements optional MIDI input, held-gate monitoring and explicitly
+user-approved held-duration live capture. Terminal capture and stopped MIDI step
+entry retain fixed New length. See 018 for lifecycle/history limits and validation;
+physical MIDI checks remain pending. No 020 implementation is implied.
 
 Musical-time scope is resolved in favor of 019's proposed sparse event timeline and fixed 960 PPQ, separating meter, pattern length, grid, edit step and duration. Per-bar grid changes must not retime music. Pattern-local meter first; arbitrary tuplets and continuous song meter automation remain deferred. The user approved starting implementation in this order. Approval is not an implemented-status label.
 
@@ -69,7 +72,7 @@ plugin musical context and timeline automation, not standalone synth DSP.
   focused improvement; don't invent a redesign from “clunky”. Existing research
   is [terminal tracker workflows](../.ideas/tui-trackers.md), not user testing.
 - Extend live capture only after the Pattern workflow lands: Song/shared-pattern
-  policy, swing, latency calibration, held durations,
+  policy, swing, latency calibration,
   velocity, chord allocation and MIDI expression/sync/output remain deferred.
 - Sample loading, general effects/routing and track removal have no scheduled
   implementation here. Custom synthesis now has the bounded proposal in 020;

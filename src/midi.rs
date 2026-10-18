@@ -359,6 +359,8 @@ impl Session {
     }
 
     fn reset(&mut self, app: &mut crate::state::App, audio: &mut impl Output, now: Instant) {
+        // Resets discard ambiguous ownership; already committed onsets remain provisional.
+        app.recording.discard_held();
         app.recording.close_take();
         self.invalidate_at(audio, now);
     }
@@ -454,6 +456,7 @@ impl Session {
         }
         crate::bindings::handle_key_at(key, app, at);
         if focus != midi_focus(app) {
+            app.finish_midi_holds();
             app.recording.close_take();
             self.invalidate_at(audio, processed_at);
         } else if revision != app.revision() {
@@ -471,6 +474,7 @@ impl Session {
         use crate::state::{Mode, PlaybackState, View};
         let key = (event.message.channel, event.message.pitch);
         self.held.retain(|held| *held != key);
+        app.finish_midi_note(key, event.received_at);
         if !event.message.on {
             return None;
         }
@@ -488,6 +492,7 @@ impl Session {
         // Preserve any pending terminal preview; only transfer this input's request.
         let terminal = app.audition.take();
         app.recording.input_time = Some(event.received_at);
+        app.recording.midi_key = Some(key);
         if app.mode == Mode::Audition {
             app.preview_note_on(note, app.cursor_track);
         } else if matches!(app.playback_state, PlaybackState::Playing) {
@@ -496,6 +501,7 @@ impl Session {
             app.enter_note(note);
         }
         app.recording.input_time = None;
+        app.recording.midi_key = None;
         let preview = app.audition.take();
         app.audition = terminal;
         preview
@@ -554,7 +560,7 @@ mod tests {
     }
 
     #[test]
-    fn loop_routes_matching_releases_and_preserves_fixed_recorded_length() {
+    fn loop_routes_matching_releases_and_records_held_length() {
         let (mut session, mut app, mut transport, now) = recording_loop();
         let (sender, queue) = InputQueue::new(now);
         session.queue = Some(queue);
@@ -574,9 +580,17 @@ mod tests {
         session.poll(&mut app, &mut audio, &mut transport, later);
         assert_eq!(audio.releases, [audio.starts[1].1]);
         assert_eq!(audio.starts[0].0.duration, crate::audio::DEFAULT_NOTE_DURATION);
-        assert_eq!(
+        assert_ne!(
             app.project.patterns[0].event_at(0, crate::musical_time::Tick(0)),
             recorded.patterns[0].event_at(0, crate::musical_time::Tick(0))
+        );
+        assert_eq!(
+            app.project.patterns[0]
+                .event_at(0, crate::musical_time::Tick(0))
+                .unwrap()
+                .duration_ticks
+                .ticks(),
+            1920
         );
     }
 
@@ -1072,6 +1086,339 @@ mod tests {
         app.mode = Mode::Normal;
         app.handle_command(Command::Undo);
         assert_eq!(app.project, before);
+    }
+
+    #[test]
+    fn held_capture_quantizes_both_boundaries_ties_forward_and_minimum_one_tick() {
+        use crate::musical_time::Tick;
+        for (on, off, start, duration) in [(0, 0, 0, 1), (0, 120, 0, 240), (120, 360, 240, 240), (119, 359, 0, 240)] {
+            let (mut session, mut app, mut transport, now) = recording_loop();
+            let (sender, queue) = InputQueue::new(now);
+            session.queue = Some(queue);
+            let mut audio = Monitor::default();
+            for (bytes, tick) in [([0x90, 60, 80], on), ([0x80, 60, 0], off)] {
+                let at = now + Duration::from_nanos(tick * 1_000_000_000 / 1920);
+                sender.receive_at(&bytes, at);
+                session.poll(&mut app, &mut audio, &mut transport, at);
+            }
+            assert_eq!(
+                app.project.patterns[0]
+                    .event_at(0, Tick(start))
+                    .unwrap()
+                    .duration_ticks
+                    .ticks(),
+                duration
+            );
+            assert_eq!(audio.starts.len(), 1);
+        }
+    }
+
+    #[test]
+    fn held_capture_uses_transport_tempo_segments_not_release_bpm() {
+        let (mut session, mut app, mut transport, now) = recording_loop();
+        let (sender, queue) = InputQueue::new(now);
+        session.queue = Some(queue);
+        let mut audio = Monitor::default();
+        sender.receive_at(&[0x90, 60, 80], now);
+        session.poll(&mut app, &mut audio, &mut transport, now);
+        app.project.bpm = 60.0;
+        let at = now + Duration::from_millis(375);
+        sender.receive_at(&[0x80, 60, 0], at);
+        session.poll(&mut app, &mut audio, &mut transport, at);
+        // Old tempo through committed tick 240 (125ms), then 240 ticks at 60 BPM.
+        assert_eq!(
+            app.project.patterns[0]
+                .event_at(0, crate::musical_time::Tick(0))
+                .unwrap()
+                .duration_ticks
+                .ticks(),
+            480
+        );
+    }
+
+    #[test]
+    fn held_capture_crosses_loop_without_joining_the_next_pass() {
+        use crate::{command::Command, musical_time::Tick, state::Mode};
+        let (mut session, mut app, mut transport, now) = recording_loop();
+        let length = app.project.patterns[0].length_ticks().0;
+        let (sender, queue) = InputQueue::new(now);
+        session.queue = Some(queue);
+        let mut audio = Monitor::default();
+        for (bytes, tick) in [
+            ([0x90, 60, 80], length - 240),
+            ([0x90, 64, 80], length),
+            ([0x80, 60, 0], length + 240),
+        ] {
+            let at = now + Duration::from_nanos(tick * 1_000_000_000 / 1920);
+            sender.receive_at(&bytes, at);
+            session.poll(&mut app, &mut audio, &mut transport, at);
+        }
+        assert_eq!(
+            app.project.patterns[0]
+                .event_at(0, Tick(length - 240))
+                .unwrap()
+                .duration_ticks
+                .ticks(),
+            480
+        );
+        app.mode = Mode::Normal;
+        app.handle_command(Command::Undo);
+        assert!(app.project.patterns[0].event_at(0, Tick(length - 240)).is_some());
+        // Undo before Note Off never restores an absent onset.
+        app.handle_command(Command::Undo);
+        let before = app.project.clone();
+        let at = now + Duration::from_secs(20);
+        sender.receive_at(&[0x80, 64, 0], at);
+        session.poll(&mut app, &mut audio, &mut transport, at);
+        assert_eq!(app.project, before);
+    }
+
+    #[test]
+    fn held_capture_stop_and_disarm_finalize_at_last_transport_position() {
+        use crate::{command::Command, musical_time::Tick, state::Mode};
+        for stop in [true, false] {
+            let (mut session, mut app, mut transport, now) = recording_loop();
+            let (sender, queue) = InputQueue::new(now);
+            session.queue = Some(queue);
+            let mut audio = Monitor::default();
+            sender.receive_at(&[0x90, 60, 80], now);
+            session.poll(&mut app, &mut audio, &mut transport, now);
+            transport.update_app(now + Duration::from_millis(500), &mut app, || {});
+            if stop {
+                app.handle_command(Command::TogglePlayback);
+            } else {
+                app.mode = Mode::Normal;
+                app.execute_prompt("record off");
+            }
+            assert_eq!(
+                app.project.patterns[0]
+                    .event_at(0, Tick(0))
+                    .unwrap()
+                    .duration_ticks
+                    .ticks(),
+                960
+            );
+        }
+    }
+
+    #[test]
+    fn held_capture_does_not_overwrite_an_identity_preserving_edit() {
+        use crate::musical_time::{DurationTicks, Tick};
+        let (mut session, mut app, mut transport, now) = recording_loop();
+        let (sender, queue) = InputQueue::new(now);
+        session.queue = Some(queue);
+        let mut audio = Monitor::default();
+        sender.receive_at(&[0x90, 60, 80], now);
+        session.poll(&mut app, &mut audio, &mut transport, now);
+        let id = app.project.patterns[0].tracks[0].event_id(Tick(0)).unwrap();
+        let mut event = app.project.patterns[0].event_at(0, Tick(0)).unwrap();
+        event.duration_ticks = DurationTicks::new(17).unwrap();
+        app.edit(|edit| edit.set_event(0, 0, Tick(0), Some(event)));
+        app.project.patterns[0].tracks[0].restore_id(Tick(0), id);
+        let at = now + Duration::from_secs(1);
+        sender.receive_at(&[0x80, 60, 0], at);
+        session.poll(&mut app, &mut audio, &mut transport, at);
+        assert_eq!(app.project.patterns[0].event_at(0, Tick(0)), Some(event));
+    }
+
+    #[test]
+    fn held_capture_retrigger_and_old_channel_release_have_distinct_ownership() {
+        use crate::musical_time::Tick;
+        let (mut session, mut app, mut transport, now) = recording_loop();
+        let (sender, queue) = InputQueue::new(now);
+        session.queue = Some(queue);
+        let mut audio = Monitor::default();
+        for (bytes, millis) in [
+            ([0x90, 60, 80], 0),
+            ([0x90, 60, 80], 250),
+            ([0x81, 60, 0], 375),
+            ([0x90, 60, 0], 750),
+        ] {
+            let at = now + Duration::from_millis(millis);
+            sender.receive_at(&bytes, at);
+            session.poll(&mut app, &mut audio, &mut transport, at);
+        }
+        assert_eq!(
+            app.project.patterns[0]
+                .event_at(0, Tick(0))
+                .unwrap()
+                .duration_ticks
+                .ticks(),
+            480
+        );
+        assert_eq!(
+            app.project.patterns[0]
+                .event_at(0, Tick(480))
+                .unwrap()
+                .duration_ticks
+                .ticks(),
+            960
+        );
+        assert_eq!(audio.releases, [audio.starts[1].1]);
+    }
+
+    #[test]
+    fn held_capture_load_and_source_reset_discard_pending_finalization() {
+        use crate::musical_time::Tick;
+        for action in ["load", "disconnect", "overflow"] {
+            let (mut session, mut app, mut transport, now) = recording_loop();
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("held.json");
+            crate::project_file::save(&app.project, &path).unwrap();
+            let (sender, queue) = InputQueue::new(now);
+            session.queue = Some(queue);
+            let mut audio = Monitor::default();
+            sender.receive_at(&[0x90, 60, 80], now);
+            session.poll(&mut app, &mut audio, &mut transport, now);
+            match action {
+                "load" => app.execute_prompt(&format!("e! {}", path.display())),
+                "disconnect" => session.disconnect(&mut app, &mut audio),
+                _ => {
+                    for _ in 0..=CAPACITY {
+                        sender.receive_at(&[0x80, 60, 0], now);
+                    }
+                    session.poll(&mut app, &mut audio, &mut transport, now);
+                }
+            }
+            let before = app.project.clone();
+            let at = now + Duration::from_secs(1);
+            sender.receive_at(&[0x80, 60, 0], at);
+            session.poll(&mut app, &mut audio, &mut transport, at);
+            assert_eq!(app.project, before);
+            if action == "load" {
+                assert!(app.project.patterns[0].event_at(0, Tick(0)).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn held_capture_clamps_long_gate_visibly_without_adding_events() {
+        use crate::musical_time::{Tick, MAX_DURATION_TICKS};
+        let (mut session, mut app, mut transport, now) = recording_loop();
+        let (sender, queue) = InputQueue::new(now);
+        session.queue = Some(queue);
+        let mut audio = Monitor::default();
+        sender.receive_at(&[0x90, 60, 80], now);
+        session.poll(&mut app, &mut audio, &mut transport, now);
+        let at = now + Duration::from_secs(40);
+        sender.receive_at(&[0x80, 60, 0], at);
+        session.poll(&mut app, &mut audio, &mut transport, at);
+        assert_eq!(
+            app.project.patterns[0]
+                .event_at(0, Tick(0))
+                .unwrap()
+                .duration_ticks
+                .ticks(),
+            MAX_DURATION_TICKS
+        );
+        assert_eq!(app.project.patterns[0].tracks[0].events().len(), 1);
+        assert!(app.status.contains("clamped"));
+    }
+
+    #[test]
+    fn held_capture_uses_active_triplet_grid_and_pins_midbar_grid_edits() {
+        use crate::{musical_time::Tick, state::Mode};
+        let (mut session, mut app, mut transport, now) = recording_loop();
+        let (sender, queue) = InputQueue::new(now);
+        session.queue = Some(queue);
+        let mut audio = Monitor::default();
+        sender.receive_at(&[0x90, 60, 80], now);
+        session.poll(&mut app, &mut audio, &mut transport, now);
+        app.mode = Mode::Normal;
+        app.execute_prompt("grid 3");
+        app.mode = Mode::Insert;
+        // Current bar retains sixteenths despite the document grid edit.
+        let at = now + Duration::from_millis(250);
+        sender.receive_at(&[0x80, 60, 0], at);
+        session.poll(&mut app, &mut audio, &mut transport, at);
+        assert_eq!(
+            app.project.patterns[0]
+                .event_at(0, Tick(0))
+                .unwrap()
+                .duration_ticks
+                .ticks(),
+            480
+        );
+        // Next bar uses triplets; 400 ticks rounds down to 320, not 480.
+        let next = now + Duration::from_secs(2);
+        sender.receive_at(&[0x90, 64, 80], next);
+        session.poll(&mut app, &mut audio, &mut transport, next);
+        let at = next + Duration::from_nanos(208_333_333);
+        sender.receive_at(&[0x80, 64, 0], at);
+        session.poll(&mut app, &mut audio, &mut transport, at);
+        assert_eq!(
+            app.project.patterns[0]
+                .event_at(0, Tick(3840))
+                .unwrap()
+                .duration_ticks
+                .ticks(),
+            320
+        );
+    }
+
+    #[test]
+    fn held_capture_32nd_grid_and_precount_hold_do_not_create_zero_or_phantom_notes() {
+        use crate::{
+            musical_time::Tick,
+            state::{App, Mode},
+            transport::Transport,
+        };
+        for count_in in [false, true] {
+            let now = Instant::now();
+            let mut app = App::default();
+            app.execute_prompt("grid 8"); // eight divisions per quarter: 32nd notes
+            app.recording.armed = true;
+            app.recording.count_in = count_in;
+            app.toggle_playback();
+            app.mode = Mode::Insert;
+            let mut transport = Transport::default();
+            transport.update_app(now, &mut app, || {});
+            let mut session = Session::default();
+            let (sender, queue) = InputQueue::new(now);
+            session.queue = Some(queue);
+            let mut audio = Monitor::default();
+            sender.receive_at(&[0x90, 60, 80], now);
+            session.poll(&mut app, &mut audio, &mut transport, now);
+            let at = now
+                + if count_in {
+                    Duration::from_secs(3)
+                } else {
+                    Duration::from_micros(31_250)
+                };
+            sender.receive_at(&[0x80, 60, 0], at);
+            session.poll(&mut app, &mut audio, &mut transport, at);
+            if count_in {
+                assert_eq!(app.project.patterns[0].tracks[0].events(), []);
+            } else {
+                assert_eq!(
+                    app.project.patterns[0]
+                        .event_at(0, Tick(0))
+                        .unwrap()
+                        .duration_ticks
+                        .ticks(),
+                    120
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn held_capture_noop_onset_does_not_join_an_unrelated_existing_edit() {
+        use crate::{command::Command, musical_time::Tick, state::Mode, tracker::PatternEvent};
+        let (mut session, mut app, mut transport, now) = recording_loop();
+        let event = PatternEvent::from_note(Tick(0), note(60, app.entry_length).unwrap());
+        app.edit(|edit| edit.set_event(0, 0, Tick(0), Some(event)));
+        let (sender, queue) = InputQueue::new(now);
+        session.queue = Some(queue);
+        let mut audio = Monitor::default();
+        sender.receive_at(&[0x90, 60, 80], now);
+        session.poll(&mut app, &mut audio, &mut transport, now);
+        let at = now + Duration::from_millis(500);
+        sender.receive_at(&[0x80, 60, 0], at);
+        session.poll(&mut app, &mut audio, &mut transport, at);
+        app.mode = Mode::Normal;
+        app.handle_command(Command::Undo);
+        assert_eq!(app.project.patterns[0].event_at(0, Tick(0)), Some(event));
     }
 
     #[test]

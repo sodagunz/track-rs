@@ -1064,6 +1064,7 @@ impl App {
     }
 
     pub(crate) fn stop_playback(&mut self) {
+        self.finish_midi_holds();
         self.recording.stop();
         self.audition = None;
         self.audition_active = false;
