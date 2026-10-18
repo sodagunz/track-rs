@@ -111,8 +111,8 @@ ownership, identity-preserving edits, load/source reset, duration clamping and
 no-op onset history isolation. Existing offline held-monitor tests remain intact.
 Formatting, strict Clippy, docs/doc-tests, dependency policy, actionlint and the
 ALSA-null example pass; dependency policy retains duplicate-version warnings.
-No physical MIDI validation was performed. The Pluck 8 kHz NaN issue below is
-unchanged and remains outside this slice.
+No physical MIDI validation was performed. The Pluck 8 kHz NaN issue was
+fixed in the later low-rate DSP follow-up below.
 
 ## Regression hardening
 
@@ -160,3 +160,25 @@ checkpoint is 332 passing tests (330 inherited, two new). Formatting, strict
 Clippy, docs/doc-tests, dependency policy, actionlint and the ALSA-null example
 pass; dependency policy retains duplicate-version warnings. No physical
 listening or MIDI-device validation was performed.
+
+## Observable input-source closure
+
+The receiver owns no producer; Session moves the sole InputSender into midir
+callback data. Dropping that producer latches SourceClosed in the existing shared
+queue allocation. This distinguishes healthy idle input from closure without
+scanning beyond the 64-packet budget or waiting for a retained future packet.
+Closure discards ambiguous input, cancels only MIDI previews, discards pending
+durations, retains provisional onsets/history, closes the take and disarms.
+Transport, terminal previews and song voices are not stopped. Reconnect creates
+a fresh generation; old queued input is never replayed.
+
+This is observable producer/channel closure, not physical-unplug detection.
+Midir may retain callback data after unplug; hardware behavior remains unchecked.
+Regression tests first failed for queued onsets and a held capture with a retained
+future release. Device-free session and offline-output tests cover the fix.
+
+Checkpoint: 336 tests pass (332 inherited, four new), including bit-exact
+surviving song/terminal samples through the offline session-closure path.
+Formatting, strict all-target/all-feature Clippy, warning-denied docs and
+doc-tests pass. ALSA-null hardware setup was not rerun: no production audio
+code changed. Physical MIDI unplug/reconnect remains untested.

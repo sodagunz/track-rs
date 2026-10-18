@@ -50,7 +50,10 @@ user-approved held-duration live capture. Terminal capture and stopped MIDI step
 entry retain fixed New length. See 018 for lifecycle/history limits and validation;
 physical MIDI checks remain pending. The known provisional-note/monitor overlap
 on later loops is fixed with owned-event suppression; shared-loop and exact-sample
-offline proof is recorded in 018. The separate Pluck 8 kHz NaN issue remains open.
+offline proof is recorded in 018. The Pluck 8 kHz NaN issue is fixed at
+`9e29294` (PR #70), with low-rate preset cutoff regression coverage. Observable
+MIDI producer closure now performs MIDI-only disconnect cleanup; this is not
+physical-unplug detection. See 018 for the limited guarantee.
 No 020 implementation is implied.
 
 Musical-time scope is resolved in favor of 019's proposed sparse event timeline and fixed 960 PPQ, separating meter, pattern length, grid, edit step and duration. Per-bar grid changes must not retime music. Pattern-local meter first; arbitrary tuplets and continuous song meter automation remain deferred. The user approved starting implementation in this order. Approval is not an implemented-status label.

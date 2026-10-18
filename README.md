@@ -33,7 +33,9 @@ Normal/Visual, other views, help and prompts suppress new note-ons. MIDI 60 is C
 pitches below MIDI 12 are rejected. Capture uses callback receipt time, not the
 backend's microsecond clock, and the same quantizer, pinned target and grouped
 undo as terminal recording. At most 64 packets are drained per loop (128 queued).
-Overflow disconnects and disarms with a warning; reconnect explicitly.
+Overflow or observable callback-producer closure discards queued input, cancels
+MIDI previews, closes the take and disarms with a warning; reconnect explicitly.
+Song playback and terminal previews are not stopped.
 
 Notes use fixed dynamics (velocity magnitude is ignored). Armed live MIDI capture
 starts with provisional New length, then replaces its gate on release. Onset and
@@ -58,7 +60,9 @@ previews and discard pending old input.
 Monitoring uses bounded main-loop input batches, not sample-accurate scheduling.
 Sustain pedal, CC (including all-notes-off), pitch bend, MIDI clock/output and
 auto-reconnect aren't implemented. There is no reliable backend hot-unplug
-notification: if a release is lost, a held tone can keep ringing. Use
+notification: midir may retain the callback producer after physical unplug,
+so channel-closure cleanup does not guarantee unplug detection. If a release
+is lost while that producer remains alive, a held tone can keep ringing. Use
 `:midi disconnect` before reconnecting; it cancels all MIDI-owned voices.
 
 Linux builds use `midir 0.11.1` with ALSA; install `libasound2-dev`, `libudev-dev`
