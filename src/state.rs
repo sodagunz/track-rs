@@ -1017,6 +1017,7 @@ impl App {
                 if self.recording.armed && matches!(self.playback_state, PlaybackState::Playing) {
                     self.stop_playback();
                 }
+                self.recording.discard_held();
                 self.recording.close_take();
                 let structural = self.history.structural_next(redo);
                 if structural {

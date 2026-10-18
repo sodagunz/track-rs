@@ -1156,6 +1156,79 @@ mod tests {
     }
 
     #[test]
+    fn held_recording_loop_matches_offline_monitor_only_mix() {
+        struct Offline {
+            output: Output,
+            sender: Sender<OutputCommand>,
+        }
+        impl crate::midi::Output for Offline {
+            fn stop(&mut self) {}
+            fn play_event(&mut self, event: NoteEvent) {
+                self.sender
+                    .send(OutputCommand::Trigger {
+                        track: event.track,
+                        voice: GatedVoice::new(event, 8_000.0, true, 42),
+                    })
+                    .unwrap();
+            }
+            fn metronome_event(&mut self, _: crate::transport::MetronomeEvent) {}
+            fn midi_preview_event(&mut self, event: NoteEvent, token: u64) {
+                self.sender
+                    .send(OutputCommand::MidiPreview {
+                        track: event.track,
+                        voice: GatedVoice::held(event, token, 8_000.0, true, 42),
+                    })
+                    .unwrap();
+            }
+            fn release_midi_preview(&mut self, token: u64) {
+                self.sender.send(OutputCommand::ReleaseMidiPreview(token)).unwrap();
+            }
+            fn stop_midi_preview(&mut self) {
+                self.sender.send(OutputCommand::StopMidiPreview).unwrap();
+            }
+        }
+        fn output() -> Offline {
+            let (_, renderer) = prepare(8_000.0);
+            let (sender, receiver) = mpsc::channel();
+            let (retired, _) = mpsc::channel();
+            Offline {
+                output: Output::new(renderer, receiver, retired),
+                sender,
+            }
+        }
+        let now = std::time::Instant::now();
+        let (mut session, input) = crate::midi::Session::test_input(now);
+        let mut app = crate::state::App::default();
+        app.project.set_instrument(0, Instrument::Sine);
+        app.recording.armed = true;
+        app.toggle_playback();
+        app.mode = crate::state::Mode::Insert;
+        let mut transport = crate::transport::Transport::default();
+        transport.update_app(now, &mut app, || {});
+        let mut audio = output();
+        let mut reference = output();
+        input.receive_at(&[0x90, 60, 80], now);
+        session.poll(&mut app, &mut audio, &mut transport, now);
+        assert!(app.audition.is_none());
+        // Use the same monitor request and seed without any recorded song events.
+        let note = crate::midi::note(60, app.entry_length).unwrap();
+        app.preview_note_on(note, 0);
+        crate::midi::Output::midi_preview_event(&mut reference, app.audition.take().unwrap(), 1);
+        let length = app.project.patterns[0].length_ticks().0;
+        for sample in 0..=128_000 {
+            let at = now + Duration::from_secs_f64(f64::from(sample) / 8_000.0);
+            for event in transport.update_app(at, &mut app, || {}) {
+                crate::midi::Output::play_event(&mut audio, event);
+            }
+            assert_eq!(
+                audio.output.sample(),
+                reference.output.sample(),
+                "mix differs at sample {sample}, loop length {length}"
+            );
+        }
+    }
+
+    #[test]
     fn fake_midi_input_reaches_offline_audio_and_overflow_clears_held_gate() {
         struct Offline {
             output: Output,
