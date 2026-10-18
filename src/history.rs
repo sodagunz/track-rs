@@ -591,6 +591,14 @@ impl History {
     /// Join adjacent channel-only edits, retaining the first before-values and
     /// the newest revision. The revision guard prevents crossing unrelated edits.
     pub(crate) fn join_channel_edits(&mut self, previous: Revision) {
+        self.join_control_edits(previous, false);
+    }
+
+    pub(crate) fn join_synth_edits(&mut self, previous: Revision) {
+        self.join_control_edits(previous, true);
+    }
+
+    fn join_control_edits(&mut self, previous: Revision, synth: bool) {
         if self.position != self.entries.len() || self.position < 2 {
             return;
         }
@@ -598,11 +606,13 @@ impl History {
         let prior = &self.entries[self.position - 2];
         if last.before != previous
             || prior.after != previous
-            || !last
-                .changes
-                .iter()
-                .chain(prior.changes.iter())
-                .all(|m| matches!(m, Mutation::Channel { .. }))
+            || !last.changes.iter().chain(prior.changes.iter()).all(|m| {
+                if synth {
+                    matches!(m, Mutation::SynthPatch { .. })
+                } else {
+                    matches!(m, Mutation::Channel { .. })
+                }
+            })
         {
             return;
         }

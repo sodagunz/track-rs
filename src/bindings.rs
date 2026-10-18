@@ -31,7 +31,10 @@ impl Binding {
                 self.command,
                 Command::MoveCursorLeft | Command::MoveCursorRight | Command::MoveCursorUp | Command::MoveCursorDown
             ))
-            || matches!(view, crate::state::View::Mixer | crate::state::View::Pattern))
+            || matches!(
+                view,
+                crate::state::View::Mixer | crate::state::View::Pattern | crate::state::View::Instrument
+            ))
             && self.command.available_in_view(view)
             && (!matches!(self.command, Command::MixerValue | Command::MixerReset)
                 || matches!(view, crate::state::View::Mixer))
@@ -44,6 +47,18 @@ impl Binding {
                 Command::MoveCursorRight => return "Next track",
                 Command::MoveCursorUp => return "Previous row",
                 Command::MoveCursorDown => return "Next row",
+                _ => {}
+            }
+        }
+        if matches!(view, crate::state::View::Instrument) {
+            match self.command {
+                Command::MoveCursorLeft => return "Previous track / decrease in Synth Insert",
+                Command::MoveCursorRight => return "Next track / increase in Synth Insert",
+                Command::MoveCursorUp => return "Previous Synth parameter",
+                Command::MoveCursorDown => return "Next Synth parameter",
+                Command::FirstRow => return "First Synth parameter",
+                Command::LastRow => return "Last Synth parameter",
+                Command::EnterInsert => return "Adjust Synth patch (Synth only)",
                 _ => {}
             }
         }
@@ -76,6 +91,12 @@ impl Binding {
             )
             && matches!(self.key, KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down)
             && !matches!(mode, Mode::Insert | Mode::Audition)
+        {
+            return false;
+        }
+        if view == crate::state::View::Instrument
+            && mode != Mode::Normal
+            && matches!(self.command, Command::PreviousInstrument | Command::NextInstrument)
         {
             return false;
         }
@@ -157,6 +178,42 @@ impl Binding {
 
 /// The single source of truth for default controls and their descriptions.
 pub const DEFAULT_BINDINGS: &[Binding] = &[
+    Binding {
+        modes: &[Mode::Insert],
+        ..Binding::new(
+            KeyCode::Enter,
+            Command::SynthValue,
+            "Enter Synth value / waveform name",
+            "Synth",
+        )
+    },
+    Binding {
+        modes: &[Mode::Normal],
+        ..Binding::new(
+            KeyCode::Char('d'),
+            Command::SynthReset,
+            "Reset selected Synth control to default",
+            "Synth",
+        )
+    },
+    Binding {
+        modes: &[Mode::Normal],
+        ..Binding::new(
+            KeyCode::Char('x'),
+            Command::SynthReset,
+            "Reset selected Synth control to default",
+            "Synth",
+        )
+    },
+    Binding {
+        modes: &[Mode::Insert],
+        ..Binding::new(
+            KeyCode::Backspace,
+            Command::SynthReset,
+            "Reset selected Synth control to default",
+            "Synth",
+        )
+    },
     Binding {
         modes: &[Mode::Normal],
         ..Binding::new(
@@ -998,7 +1055,7 @@ pub fn handle_key_at(key: KeyEvent, state: &mut App, now: Instant) {
     }
     state.recording.input_time = Some(now);
     let previous = state.mixer_gesture.take();
-    let eligible = state.view == crate::state::View::Mixer
+    let eligible = (state.view == crate::state::View::Mixer || state.synth_editor())
         && !state.help_visible
         && state.prompt.is_none()
         && state.pending_count.is_none()
@@ -1020,7 +1077,11 @@ pub fn handle_key_at(key: KeyEvent, state: &mut App, now: Instant) {
                 && now.duration_since(gesture.started) < Duration::from_secs(2)
         });
         if prior.is_some() {
-            state.history.join_channel_edits(before);
+            if state.synth_editor() {
+                state.history.join_synth_edits(before);
+            } else {
+                state.history.join_channel_edits(before);
+            }
         }
         state.mixer_gesture = Some(MixerGesture {
             key: (key.code, key.modifiers),

@@ -14,10 +14,27 @@ arming, fixed-gate Pattern recording and optional MIDI input are implemented.
 
 ### Three-oscillator synth
 
-In F4, use `[`/`]` to select **Synth**, then Enter to audition without note writes.
+In F4, use `[`/`]` in Normal mode to select **Synth**.
+
+- Normal: `h`/`l` selects a track; `j`/`k` selects a control; Enter auditions
+  without note writes (stopped only).
+- `i` enters adjustment mode: `h`/`l` changes the control, `j`/`k` moves between
+  controls, and Enter opens exact value/choice entry. Esc cancels the prompt;
+  another Esc returns to Normal.
+- Counts work for movement/adjustment (`3l`); `gk`/`gj` jumps to the first/last
+  control. `d`/`x` in Normal or Backspace in Insert resets the selected control.
+  Normal `u`/Ctrl-R undoes/redoes edits, like the mixer.
+
+The panel groups all three oscillators, filter and amplitude envelope vertically.
+Gain/sustain use linear 0..1 values, not dB or percent. Envelope times are seconds
+(`ms` accepted); cutoff is Hz (`kHz` accepted). Waveform entry accepts `sine`,
+`saw`, `square` or `triangle`. Ranges and live/next-note policy appear on screen.
+Gain/tuning/filter changes reach playing notes with 10 ms smoothing; waveform and
+ADSR changes apply to the next note. Armed undo retains the existing stop policy.
+
 Pattern/Song playback, entry previews and held MIDI monitoring use the selected
-track's patch, followed by its normal tone/gain/pan processing. Numeric patch
-editing in F4 is still pending; the default patch is playable now.
+track's patch, followed by its normal tone/gain/pan processing. F4 itself doesn't
+enable MIDI note entry or recording.
 
 Patches belong to tracks, survive switching instruments, and save in v4 projects.
 Missing patches in older files get the default without changing built-in voices.
