@@ -53,7 +53,9 @@ on later loops is fixed with owned-event suppression; shared-loop and exact-samp
 offline proof is recorded in 018. The Pluck 8 kHz NaN issue is fixed at
 `9e29294` (PR #70), with low-rate preset cutoff regression coverage. Observable
 MIDI producer closure now performs MIDI-only disconnect cleanup; this is not
-physical-unplug detection. See 018 for the limited guarantee.
+physical-unplug detection. MIDI discovery now uses a read-only, wrapped snapshot
+browser instead of clipped status-line output; connect remains explicit. See 018
+for controls, bounds and the limited closure guarantee.
 No 020 implementation is implied.
 
 Musical-time scope is resolved in favor of 019's proposed sparse event timeline and fixed 960 PPQ, separating meter, pattern length, grid, edit step and duration. Per-bar grid changes must not retime music. Pattern-local meter first; arbitrary tuplets and continuous song meter automation remain deferred. The user approved starting implementation in this order. Approval is not an implemented-status label.

@@ -65,6 +65,7 @@ pub enum PlaybackState {
 )]
 pub struct App {
     pub midi_command: Option<String>,
+    pub midi_browser: Option<crate::midi::DeviceBrowser>,
     pub theme: crate::theme::Theme,
     pub meters: crate::meter::MeterDisplay,
     pub view: View,
@@ -143,6 +144,7 @@ impl Default for App {
         let default_tracks = 4;
         Self {
             midi_command: None,
+            midi_browser: None,
             theme: crate::theme::Theme::default(),
             meters: crate::meter::MeterDisplay::default(),
             view: View::Pattern,

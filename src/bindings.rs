@@ -976,6 +976,26 @@ pub fn handle_key(key: KeyEvent, state: &mut App) {
 }
 
 pub fn handle_key_at(key: KeyEvent, state: &mut App, now: Instant) {
+    if let Some(browser) = &mut state.midi_browser {
+        if key.kind == KeyEventKind::Release || !key.modifiers.is_empty() {
+            return;
+        }
+        match key.code {
+            KeyCode::Esc => state.midi_browser = None,
+            KeyCode::Left | KeyCode::Char('h') => browser.select(false),
+            KeyCode::Right | KeyCode::Char('l') => browser.select(true),
+            KeyCode::Up | KeyCode::Char('k') => browser.scroll.set(browser.scroll.get().saturating_sub(1)),
+            KeyCode::Down | KeyCode::Char('j') => browser
+                .scroll
+                .set(browser.scroll.get().saturating_add(1).min(browser.scroll_max.get())),
+            KeyCode::PageUp => browser.scroll.set(browser.scroll.get().saturating_sub(10)),
+            KeyCode::PageDown => browser
+                .scroll
+                .set(browser.scroll.get().saturating_add(10).min(browser.scroll_max.get())),
+            _ => {}
+        }
+        return;
+    }
     state.recording.input_time = Some(now);
     let previous = state.mixer_gesture.take();
     let eligible = state.view == crate::state::View::Mixer

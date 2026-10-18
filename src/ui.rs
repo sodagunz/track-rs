@@ -139,6 +139,9 @@ fn render(f: &mut Frame, state: &App) {
     if state.help_visible {
         draw_help(f, state);
     }
+    if let Some(browser) = &state.midi_browser {
+        draw_device_browser(f, state, browser);
+    }
 }
 
 fn draw_instrument(f: &mut Frame, area: Rect, state: &App) {
@@ -424,6 +427,9 @@ fn help_lines(view: View, mode: Mode, width: u16) -> Vec<Line<'static>> {
             ":record on/off/toggle; :countin 0/1 bars in Normal. Count input previews only; Song capture unavailable.",
         ));
         lines.push(Line::from(
+            ":midi list opens input browser: h/l ports, j/k scroll, Esc close. Then :midi connect N (zero-based).",
+        ));
+        lines.push(Line::from(
             "REC pins playing Pattern/track; F1 Insert must display it. Cursor movement never retargets capture.",
         ));
         lines.push(Line::from(
@@ -476,6 +482,174 @@ fn help_lines(view: View, mode: Mode, width: u16) -> Vec<Line<'static>> {
         }
     }
     lines
+}
+
+fn draw_device_browser(f: &mut Frame, state: &App, browser: &crate::midi::DeviceBrowser) {
+    let screen = f.area();
+    let area = Rect::new(screen.x, screen.y, screen.width.min(64), screen.height.min(24));
+    f.render_widget(Clear, area);
+    f.render_widget(Block::default().style(state.theme.base()), area);
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    // Include metadata and controls in the scrollable text: even a one-row
+    // viewport can expose the entire entry rather than losing it to chrome.
+    let text = browser.names.get(browser.selected).map_or_else(
+        || "MIDI: no input ports\nEsc: close. Run :midi list again to refresh.".into(),
+        |name| {
+            format!(
+                "MIDI input {} / {} (index {}){}\nh/l ports; j/k scroll; Esc close\n{}\nRead-only. Close, then :midi \
+                 connect {}\nLeft/Right: port; Up/Down: scroll; PgUp/PgDn: 10 lines",
+                browser.selected + 1,
+                browser.names.len(),
+                browser.selected,
+                if browser.active == Some(browser.selected) {
+                    " [connected]"
+                } else {
+                    ""
+                },
+                name,
+                browser.selected
+            )
+        },
+    );
+    let lines = device_lines(&text, usize::from(area.width));
+    let max = lines.len().saturating_sub(usize::from(area.height));
+    browser.scroll_max.set(max);
+    let scroll = browser.scroll.get().min(max);
+    browser.scroll.set(scroll);
+    let visible = lines
+        .into_iter()
+        .skip(scroll)
+        .take(usize::from(area.height))
+        .map(Line::from)
+        .collect::<Vec<_>>();
+    f.render_widget(Paragraph::new(visible).style(state.theme.base()), area);
+}
+
+// Wrap at grapheme boundaries, then window with usize offsets rather than the
+// Paragraph u16 scroll limit. Whitespace in device names remains visible.
+fn device_lines(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return Vec::new();
+    }
+    let mut lines = Vec::new();
+    for source in text.split('\n') {
+        let line = Line::from(source);
+        let mut current = String::new();
+        let mut used = 0;
+        for grapheme in line.styled_graphemes(Style::default()) {
+            let size = Span::raw(grapheme.symbol).width();
+            if size > width {
+                if !current.is_empty() {
+                    lines.push(std::mem::take(&mut current));
+                    used = 0;
+                }
+                for ch in grapheme.symbol.chars().flat_map(char::escape_unicode) {
+                    lines.push(ch.to_string());
+                }
+                continue;
+            }
+            if used + size > width && !current.is_empty() {
+                lines.push(std::mem::take(&mut current));
+                used = 0;
+            }
+            current.push_str(grapheme.symbol);
+            used += size;
+        }
+        lines.push(current);
+    }
+    lines
+}
+
+#[cfg(test)]
+mod device_browser_tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+
+    fn visible_symbols(buffer: &ratatui::buffer::Buffer, row: u16, width: u16) -> Vec<String> {
+        let mut symbols = Vec::new();
+        let mut col = 0;
+        while col < width {
+            let symbol = buffer[(col, row)].symbol();
+            symbols.push(symbol.to_owned());
+            // A wide glyph hides its continuation cell, whose old backend
+            // symbol is not part of the visible terminal output.
+            col += u16::try_from(Span::raw(symbol).width().max(1)).unwrap();
+        }
+        symbols
+    }
+
+    #[test]
+    fn names_wrap_without_losing_graphemes_whitespace_or_scroll_range() {
+        let name = "  日本語 e\u{301} 🎹  end";
+        for width in [2, 3, 7, 24, 64] {
+            let lines = device_lines(name, width);
+            assert_eq!(lines.concat(), name);
+            assert!(lines.iter().all(|line| Span::raw(line).width() <= width));
+        }
+        assert_eq!(device_lines("🎹", 1).concat(), "\\u{1f3b9}");
+        assert_eq!(device_lines(name, 0), Vec::<String>::new());
+        assert!(device_lines(&"x".repeat(70_000), 1).len() > usize::from(u16::MAX));
+    }
+
+    #[test]
+    fn actual_browser_buffer_exposes_every_name_line_and_connected_index() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        for (width, height) in [(2, 1), (7, 3), (24, 6), (80, 30)] {
+            let name = "日本語 e\u{301} 🎹 ".repeat(20) + "END";
+            let name_lines = device_lines(&name, usize::from(width.min(64)));
+            let mut app = App {
+                midi_browser: Some(crate::midi::DeviceBrowser {
+                    names: vec![name],
+                    active: Some(0),
+                    ..Default::default()
+                }),
+                ..App::default()
+            };
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            let mut seen = String::new();
+            let mut seen_rows = std::collections::HashSet::new();
+            let max = app.midi_browser.as_ref().unwrap().scroll_max.get();
+            for offset in 0..=max {
+                let frame = terminal.draw(|frame| render(frame, &app)).unwrap();
+                assert_eq!(app.midi_browser.as_ref().unwrap().scroll.get(), offset);
+                for row in 0..height.min(24) {
+                    let symbols = visible_symbols(frame.buffer, row, width.min(64));
+                    seen.push_str(&symbols.concat());
+                    seen_rows.insert(symbols);
+                }
+                crate::bindings::handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &mut app);
+            }
+            for line in name_lines {
+                use ratatui::widgets::Widget;
+                let area = Rect::new(0, 0, width.min(64), 1);
+                let mut expected = ratatui::buffer::Buffer::empty(area);
+                Paragraph::new(line).render(area, &mut expected);
+                let symbols = visible_symbols(&expected, 0, area.width);
+                assert!(
+                    seen_rows.contains(&symbols),
+                    "unreachable name line at {width}x{height}: {symbols:?}"
+                );
+            }
+            assert!(seen.contains("END") || width < 3);
+            assert!(seen.contains("🎹"));
+            if width >= 24 {
+                assert!(seen.contains("[connected]"));
+                assert!(seen.contains("index 0"));
+            }
+            assert_eq!(app.midi_browser.as_ref().unwrap().scroll.get(), max);
+        }
+        for (width, height) in [(0, 0), (0, 3), (3, 0), (1, 1)] {
+            let app = App {
+                midi_browser: Some(crate::midi::DeviceBrowser::default()),
+                ..App::default()
+            };
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+        }
+    }
 }
 
 fn draw_help(f: &mut Frame, state: &App) {
