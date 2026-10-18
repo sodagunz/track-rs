@@ -21,6 +21,8 @@ pub struct Recording {
     now: Option<Instant>,
     pub(crate) midi_key: Option<(u8, u8)>,
     held: BTreeMap<(u8, u8), HeldCapture>,
+    // The current monophonic preview can outlive duration finalization on disarm.
+    monitor: Option<((u8, u8), HeldCapture)>,
     take: Option<(u64, Revision)>,
     grid: Option<(u64, GridMap)>,
     monitored: BTreeMap<(usize, u64), u64>,
@@ -40,7 +42,19 @@ struct HeldCapture {
 impl Recording {
     pub(crate) fn discard_held(&mut self) {
         self.held.clear();
+        self.monitor = None;
     }
+
+    pub(crate) fn release_monitor(&mut self, key: (u8, u8)) {
+        if self.monitor.as_ref().is_some_and(|(owner, _)| *owner == key) {
+            self.monitor = None;
+        }
+    }
+
+    pub(crate) const fn clear_monitor(&mut self) {
+        self.monitor = None;
+    }
+
     pub(crate) fn owns_revision(&self, revision: Revision) -> bool {
         self.take.is_some_and(|(_, take_revision)| take_revision == revision)
     }
@@ -50,7 +64,7 @@ impl Recording {
     }
 
     pub(crate) fn stop(&mut self) {
-        self.held.clear();
+        self.discard_held();
         self.target = None;
         self.clock = None;
         self.phase = TransportPhase::Stopped;
@@ -60,7 +74,29 @@ impl Recording {
         self.monitored.clear();
     }
 
-    pub(crate) fn audible(&mut self, track: usize, local: Tick, absolute: u64) -> bool {
+    pub(crate) fn audible(
+        &mut self,
+        project: &crate::project::Project,
+        pattern: usize,
+        track: usize,
+        local: Tick,
+        absolute: u64,
+    ) -> bool {
+        if self.monitor.as_ref().is_some_and(|(_, held)| {
+            project
+                .patterns
+                .get(held.pattern)
+                .and_then(|pattern| pattern.tracks.get(held.track))
+                .and_then(|track| track.event_by_id(held.id))
+                != Some(&held.baseline)
+        }) {
+            self.monitor = None;
+        }
+        if self.monitor.as_ref().is_some_and(|(_, held)| {
+            held.pattern == pattern && held.track == track && held.baseline.start_tick == local
+        }) {
+            return false;
+        }
         self.monitored.retain(|_, at| *at >= absolute);
         self.monitored.get(&(track, local.0)) != Some(&absolute)
     }
@@ -232,6 +268,7 @@ impl App {
         if self.recording.take.is_some_and(|(previous, _)| previous != pass) {
             self.recording.close_take();
         }
+        let new_event = self.project.patterns[pattern].tracks[track].event_id(start).is_none();
         let before = self.revision();
         let mut event = PatternEvent::from_note(start, note);
         if let Some(duration) = self.entry_duration {
@@ -280,6 +317,9 @@ impl App {
                         .filter(|revision| *revision == self.revision()),
                 },
             );
+            if new_event {
+                self.recording.monitor = Some((key, self.recording.held[&key].clone()));
+            }
         }
         // Monitor now; don't also dispatch this newly stored occurrence as a song voice.
         if destination > clock.previous_tick() {
@@ -352,6 +392,15 @@ impl App {
         self.history.edit(&mut self.project, |edit| {
             edit.set_event(held.pattern, held.track, event.start_tick, Some(event));
         });
+        if let Some((_, monitor)) = &mut self.recording.monitor {
+            if monitor.pattern == held.pattern
+                && monitor.track == held.track
+                && monitor.id == held.id
+                && monitor.baseline == held.baseline
+            {
+                monitor.baseline = event;
+            }
+        }
         if before != self.revision() {
             if held.group == Some(before) {
                 self.history.join_record_edits(before, held.pattern, held.track);

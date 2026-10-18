@@ -457,9 +457,11 @@ impl Session {
         crate::bindings::handle_key_at(key, app, at);
         if focus != midi_focus(app) {
             app.finish_midi_holds();
+            app.recording.clear_monitor();
             app.recording.close_take();
             self.invalidate_at(audio, processed_at);
         } else if revision != app.revision() {
+            app.recording.clear_monitor();
             if app.recording.owns_revision(app.revision()) {
                 self.invalidate_at(audio, at);
             } else {
@@ -476,6 +478,7 @@ impl Session {
         self.held.retain(|held| *held != key);
         app.finish_midi_note(key, event.received_at);
         if !event.message.on {
+            app.recording.release_monitor(key);
             return None;
         }
         if app.view != View::Pattern
@@ -486,6 +489,7 @@ impl Session {
         {
             return None;
         }
+        app.recording.clear_monitor();
         self.held.push(key);
         self.current = Some(key);
         let note = note(event.message.pitch, app.entry_length)?;
@@ -541,12 +545,15 @@ mod tests {
     #[derive(Default)]
     struct Monitor {
         starts: Vec<(crate::transport::NoteEvent, u64)>,
+        songs: Vec<crate::transport::NoteEvent>,
         releases: Vec<u64>,
         resets: usize,
     }
     impl Output for Monitor {
         fn stop(&mut self) {}
-        fn play_event(&mut self, _: crate::transport::NoteEvent) {}
+        fn play_event(&mut self, event: crate::transport::NoteEvent) {
+            self.songs.push(event);
+        }
         fn metronome_event(&mut self, _: crate::transport::MetronomeEvent) {}
         fn midi_preview_event(&mut self, event: crate::transport::NoteEvent, token: u64) {
             self.starts.push((event, token));
@@ -629,6 +636,154 @@ mod tests {
         session.disconnect(&mut app, &mut audio);
         assert!(session.current.is_none());
         assert_eq!(session.held, [] as [(u8, u8); 0]);
+    }
+
+    #[test]
+    fn held_monitor_suppresses_owned_song_on_later_loops() {
+        let (mut session, mut app, mut transport, now) = recording_loop();
+        let (sender, queue) = InputQueue::new(now);
+        session.queue = Some(queue);
+        let mut audio = Monitor::default();
+        sender.receive_at(&[0x90, 60, 80], now);
+        session.poll(&mut app, &mut audio, &mut transport, now);
+        let length = app.project.patterns[0].length_ticks().0;
+        for cycle in 1..=2 {
+            let at = now + Duration::from_nanos(length * cycle * 1_000_000_000 / 1920);
+            for event in transport.update_app(at, &mut app, || {}) {
+                audio.play_event(event);
+            }
+            assert!(audio.songs.is_empty(), "owned note replayed on loop {cycle}");
+        }
+        let off = now + Duration::from_nanos((length * 2 + 240) * 1_000_000_000 / 1920);
+        sender.receive_at(&[0x80, 60, 0], off);
+        session.poll(&mut app, &mut audio, &mut transport, off);
+        assert!(audio.songs.is_empty());
+        let at = now + Duration::from_nanos(length * 3 * 1_000_000_000 / 1920);
+        assert_eq!(transport.update_app(at, &mut app, || {}).len(), 1);
+    }
+
+    #[test]
+    fn held_monitor_disarm_keeps_ownership_until_matching_release() {
+        let (mut session, mut app, mut transport, now) = recording_loop();
+        let (sender, queue) = InputQueue::new(now);
+        session.queue = Some(queue);
+        let mut audio = Monitor::default();
+        sender.receive_at(&[0x90, 60, 80], now);
+        session.poll(&mut app, &mut audio, &mut transport, now);
+        transport.update_app(now + Duration::from_millis(250), &mut app, || {});
+        app.mode = crate::state::Mode::Normal;
+        app.execute_prompt("record off");
+        app.mode = crate::state::Mode::Insert;
+        let at = now + Duration::from_secs(8);
+        assert!(transport.update_app(at, &mut app, || {}).is_empty());
+        sender.receive_at(&[0x81, 60, 0], at);
+        session.poll(&mut app, &mut audio, &mut transport, at);
+        assert!(transport
+            .update_app(now + Duration::from_secs(16), &mut app, || {})
+            .is_empty());
+        sender.receive_at(&[0x80, 60, 0], now + Duration::from_millis(16250));
+        session.poll(&mut app, &mut audio, &mut transport, now + Duration::from_millis(16250));
+        assert_eq!(
+            transport
+                .update_app(now + Duration::from_secs(24), &mut app, || {})
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn held_monitor_never_suppresses_unrelated_or_preexisting_notes() {
+        use crate::{musical_time::Tick, tracker::PatternEvent};
+        for existing in [false, true] {
+            let (mut session, mut app, mut transport, now) = recording_loop();
+            let event = PatternEvent::from_note(Tick(0), note(60, app.entry_length).unwrap());
+            app.edit(|edit| {
+                edit.set_event(0, 1, Tick(0), Some(event));
+                if existing {
+                    edit.set_event(0, 0, Tick(0), Some(event));
+                }
+            });
+            let (sender, queue) = InputQueue::new(now);
+            session.queue = Some(queue);
+            sender.receive_at(&[0x90, 60, 80], now);
+            session.poll(&mut app, &mut Monitor::default(), &mut transport, now);
+            let events = transport.update_app(now + Duration::from_secs(8), &mut app, || {});
+            assert_eq!(events.len(), if existing { 2 } else { 1 });
+            assert!(events.iter().any(|event| event.track == 1));
+        }
+    }
+
+    #[test]
+    fn held_monitor_old_release_cannot_clear_replacement_or_cross_patterns() {
+        use crate::musical_time::Tick;
+        let (mut session, mut app, mut transport, now) = recording_loop();
+        let (sender, queue) = InputQueue::new(now);
+        session.queue = Some(queue);
+        let mut audio = Monitor::default();
+        for (bytes, milliseconds) in [([0x90, 60, 80], 0), ([0x90, 64, 80], 125), ([0x80, 60, 0], 250)] {
+            let at = now + Duration::from_millis(milliseconds);
+            sender.receive_at(&bytes, at);
+            session.poll(&mut app, &mut audio, &mut transport, at);
+        }
+        let mut cloned = app.project.clone();
+        cloned.patterns.push(cloned.patterns[0].clone());
+        assert!(app.recording.audible(&cloned, 1, 0, Tick(240), 240));
+        let events = transport.update_app(now + Duration::from_secs(8), &mut app, || {});
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].note.pitch, crate::tracker::NotePitch::C);
+        assert!(transport
+            .update_app(now + Duration::from_millis(8125), &mut app, || {})
+            .is_empty());
+        assert_eq!(audio.releases, [] as [u64; 0]);
+    }
+
+    #[test]
+    fn held_monitor_edits_and_resets_revoke_suppression() {
+        use crate::musical_time::{DurationTicks, Tick};
+        for action in ["edit", "undo", "disconnect", "overflow", "replace"] {
+            let (mut session, mut app, mut transport, now) = recording_loop();
+            let (sender, queue) = InputQueue::new(now);
+            session.queue = Some(queue);
+            let mut audio = Monitor::default();
+            sender.receive_at(&[0x90, 60, 80], now);
+            session.poll(&mut app, &mut audio, &mut transport, now);
+            match action {
+                "edit" => {
+                    let mut event = app.project.patterns[0].event_at(0, Tick(0)).unwrap();
+                    event.duration_ticks = DurationTicks::new(17).unwrap();
+                    app.edit(|edit| edit.set_event(0, 0, Tick(0), Some(event)));
+                }
+                "undo" => {
+                    app.recording.armed = false;
+                    app.mode = crate::state::Mode::Normal;
+                    app.handle_command(crate::command::Command::Undo);
+                    app.handle_command(crate::command::Command::Redo);
+                }
+                "disconnect" => session.disconnect(&mut app, &mut audio),
+                "overflow" => {
+                    for _ in 0..=CAPACITY {
+                        sender.receive_at(&[0x90, 64, 80], now);
+                    }
+                    session.poll(&mut app, &mut audio, &mut transport, now);
+                }
+                "replace" => {
+                    app.recording.armed = false;
+                    sender.receive_at(&[0x90, 64, 80], now + Duration::from_millis(250));
+                    session.poll(&mut app, &mut audio, &mut transport, now + Duration::from_millis(250));
+                    sender.receive_at(&[0x80, 60, 0], now + Duration::from_millis(500));
+                    session.poll(&mut app, &mut audio, &mut transport, now + Duration::from_millis(500));
+                    assert_eq!(audio.releases, [] as [u64; 0]);
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                transport
+                    .update_app(now + Duration::from_secs(8), &mut app, || {})
+                    .len(),
+                1,
+                "{action}"
+            );
+        }
     }
 
     fn recording_loop() -> (Session, crate::state::App, crate::transport::Transport, Instant) {

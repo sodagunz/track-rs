@@ -48,7 +48,10 @@ Automated acceptance is recorded in 016/017; physical listening remains pending.
 018 now implements optional MIDI input, held-gate monitoring and explicitly
 user-approved held-duration live capture. Terminal capture and stopped MIDI step
 entry retain fixed New length. See 018 for lifecycle/history limits and validation;
-physical MIDI checks remain pending. No 020 implementation is implied.
+physical MIDI checks remain pending. The known provisional-note/monitor overlap
+on later loops is fixed with owned-event suppression; shared-loop and exact-sample
+offline proof is recorded in 018. The separate Pluck 8 kHz NaN issue remains open.
+No 020 implementation is implied.
 
 Musical-time scope is resolved in favor of 019's proposed sparse event timeline and fixed 960 PPQ, separating meter, pattern length, grid, edit step and duration. Per-bar grid changes must not retime music. Pattern-local meter first; arbitrary tuplets and continuous song meter automation remain deferred. The user approved starting implementation in this order. Approval is not an implemented-status label.
 

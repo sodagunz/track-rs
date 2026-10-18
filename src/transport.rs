@@ -245,7 +245,10 @@ impl Transport {
             notes.extend(
                 collect_tick(&app.project.patterns[event.pattern], app.project.instruments(), event)
                     .into_iter()
-                    .filter(|note| app.recording.audible(note.track, event.tick, event.absolute_tick)),
+                    .filter(|note| {
+                        app.recording
+                            .audible(&app.project, event.pattern, note.track, event.tick, event.absolute_tick)
+                    }),
             );
             if self.deadline.is_none_or(|deadline| deadline > now) {
                 break;

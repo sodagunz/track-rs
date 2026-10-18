@@ -86,9 +86,23 @@ a late release after another pass/edit is a separate transaction, never merged
 into that newer take. Undo clears pending ownership before late releases.
 
 Preview remains held independently of stored gate length. No DSP rewrite or song
-retrigger occurs on finalization. A still-held provisional note can play on a later
-loop alongside monitoring; that existing monitor/song overlap isn't solved here.
-Stopped MIDI step entry remains fixed New length. No dependencies or schema change.
+retrigger occurs on finalization. The loop-overlap follow-up suppresses every song
+occurrence of a newly inserted capture while its own MIDI monitor remains held,
+including after disarm finalizes its duration. Ownership includes pattern, track,
+event ID and exact value; existing notes and unrelated events still play. Release
+allows the next scheduled occurrence, never an immediate replay. Replacement,
+editing, undo/redo and lifecycle cancellation revoke ownership without resurrecting
+it. Stopped MIDI step entry remains fixed New length. No dependencies or schema change.
+
+Loop-overlap evidence: the shared-loop regression failed before the fix with
+`owned note replayed on loop 1`. Bypassing only the new held-owner dispatch guard
+made the offline Sine comparison fail at sample 64,001 (8 kHz, eight-second loop).
+With the guard, monitoring matches the reference samples exactly across two loops.
+Tests also cover disarm, unrelated/preexisting notes, old releases, pattern-local
+identity, edits, undo/redo, disconnect and overflow. Checkpoint: 330 tests pass
+(324 inherited, six new), plus formatting, strict Clippy, docs/doc-tests,
+dependency policy, actionlint and the ALSA-null example. Dependency policy retains
+duplicate-version warnings. No physical listening is claimed.
 
 Held-duration checkpoint: 324 tests pass (313 inherited, 11 new). Fake-device
 shared-loop tests cover quantized boundaries/minimum, 32nd/triplet grids, pinned
