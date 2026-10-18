@@ -214,11 +214,15 @@ fn select_port<'a, P: PartialEq>(
 }
 
 /// Audio side effects of the device-free input loop.
+///
+/// Control-thread output seam. Preview tokens identify one gate and must not be
+/// reused across focus, target or connection generations. Cancellation is MIDI-only.
 pub trait Output {
     fn stop(&mut self);
     fn play_event(&mut self, event: crate::transport::NoteEvent);
     fn metronome_event(&mut self, event: crate::transport::MetronomeEvent);
-    fn midi_preview_event(&mut self, event: crate::transport::NoteEvent);
+    fn midi_preview_event(&mut self, event: crate::transport::NoteEvent, token: u64);
+    fn release_midi_preview(&mut self, token: u64);
     fn stop_midi_preview(&mut self);
 }
 
@@ -232,8 +236,11 @@ impl Output for crate::audio::AudioEngine {
     fn metronome_event(&mut self, event: crate::transport::MetronomeEvent) {
         Self::metronome_event(self, event);
     }
-    fn midi_preview_event(&mut self, event: crate::transport::NoteEvent) {
-        Self::midi_preview_event(self, event);
+    fn midi_preview_event(&mut self, event: crate::transport::NoteEvent, token: u64) {
+        Self::midi_preview_event(self, event, token);
+    }
+    fn release_midi_preview(&mut self, token: u64) {
+        Self::release_midi_preview(self, token);
     }
     fn stop_midi_preview(&mut self) {
         Self::stop_midi_preview(self);
@@ -249,10 +256,24 @@ pub struct Session {
     channel: Option<u8>,
     held: Vec<(u8, u8)>,
     current: Option<(u8, u8)>,
+    // Never reset on focus/load/reconnect: queued releases cannot own a later voice.
+    preview_token: u64,
     since: Option<Instant>,
 }
 
 impl Session {
+    #[cfg(test)]
+    pub(crate) fn test_input(now: Instant) -> (Self, InputSender) {
+        let (sender, queue) = InputQueue::new(now);
+        (
+            Self {
+                queue: Some(queue),
+                ..Self::default()
+            },
+            sender,
+        )
+    }
+
     pub fn command(&mut self, text: &str, app: &mut crate::state::App, audio: &mut crate::audio::AudioEngine) {
         let result = self.control(text, app, audio);
         app.status = result.unwrap_or_else(|error| format!("MIDI: {error:#}"));
@@ -398,10 +419,11 @@ impl Session {
                 audio.metronome_event(click);
             }
             if let Some(preview) = self.deliver(event, app) {
-                audio.midi_preview_event(preview);
+                self.preview_token = self.preview_token.checked_add(1).expect("MIDI preview token exhausted");
+                audio.midi_preview_event(preview, self.preview_token);
             } else if !event.message.on && self.current == Some((event.message.channel, event.message.pitch)) {
                 self.current = None;
-                audio.stop_midi_preview();
+                audio.release_midi_preview(self.preview_token);
             }
         }
     }
@@ -506,9 +528,95 @@ mod tests {
         fn stop(&mut self) {}
         fn play_event(&mut self, _: crate::transport::NoteEvent) {}
         fn metronome_event(&mut self, _: crate::transport::MetronomeEvent) {}
-        fn midi_preview_event(&mut self, _: crate::transport::NoteEvent) {}
+        fn midi_preview_event(&mut self, _: crate::transport::NoteEvent, _: u64) {}
+        fn release_midi_preview(&mut self, _: u64) {}
         fn stop_midi_preview(&mut self) {}
     }
+    #[derive(Default)]
+    struct Monitor {
+        starts: Vec<(crate::transport::NoteEvent, u64)>,
+        releases: Vec<u64>,
+        resets: usize,
+    }
+    impl Output for Monitor {
+        fn stop(&mut self) {}
+        fn play_event(&mut self, _: crate::transport::NoteEvent) {}
+        fn metronome_event(&mut self, _: crate::transport::MetronomeEvent) {}
+        fn midi_preview_event(&mut self, event: crate::transport::NoteEvent, token: u64) {
+            self.starts.push((event, token));
+        }
+        fn release_midi_preview(&mut self, token: u64) {
+            self.releases.push(token);
+        }
+        fn stop_midi_preview(&mut self) {
+            self.resets += 1;
+        }
+    }
+
+    #[test]
+    fn loop_routes_matching_releases_and_preserves_fixed_recorded_length() {
+        let (mut session, mut app, mut transport, now) = recording_loop();
+        let (sender, queue) = InputQueue::new(now);
+        session.queue = Some(queue);
+        let mut audio = Monitor::default();
+        sender.receive_at(&[0x90, 60, 80], now);
+        session.poll(&mut app, &mut audio, &mut transport, now);
+        let recorded = app.project.clone();
+        let later = now + Duration::from_secs(1);
+        sender.receive_at(&[0x90, 64, 80], later);
+        sender.receive_at(&[0x80, 60, 0], later);
+        session.poll(&mut app, &mut audio, &mut transport, later);
+        assert_eq!(audio.releases, [] as [u64; 0]);
+        assert_eq!(audio.starts.len(), 2);
+        // Even without focus, releases are delivered, and velocity zero means off.
+        app.help_visible = true;
+        sender.receive_at(&[0x90, 64, 0], later);
+        session.poll(&mut app, &mut audio, &mut transport, later);
+        assert_eq!(audio.releases, [audio.starts[1].1]);
+        assert_eq!(audio.starts[0].0.duration, crate::audio::DEFAULT_NOTE_DURATION);
+        assert_eq!(
+            app.project.patterns[0].event_at(0, crate::musical_time::Tick(0)),
+            recorded.patterns[0].event_at(0, crate::musical_time::Tick(0))
+        );
+    }
+
+    #[test]
+    fn loop_focus_reset_reconnect_and_repeated_pitch_do_not_reuse_tokens() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let (mut session, mut app, mut transport, now) = recording_loop();
+        let (sender, queue) = InputQueue::new(now);
+        session.queue = Some(queue);
+        let mut audio = Monitor::default();
+        for _ in 0..2 {
+            sender.receive_at(&[0x90, 60, 80], now);
+        }
+        sender.receive_at(&[0x80, 60, 0], now);
+        session.poll(&mut app, &mut audio, &mut transport, now);
+        assert_eq!(audio.releases, [audio.starts[1].1]);
+        assert!(audio.starts[1].1 > audio.starts[0].1);
+        session.terminal_key(
+            &mut app,
+            &mut audio,
+            &mut transport,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            now,
+            now,
+        );
+        assert!(audio.resets > 0);
+        assert!(session.current.is_none());
+        app.mode = crate::state::Mode::Audition;
+        let (new_sender, queue) = InputQueue::new(now);
+        session.queue = Some(queue);
+        sender.receive_at(&[0x80, 60, 0], now);
+        new_sender.receive_at(&[0x90, 64, 80], now);
+        session.poll(&mut app, &mut audio, &mut transport, now);
+        assert!(audio.starts[2].1 > audio.starts[1].1);
+        assert_eq!(audio.releases.len(), 1);
+        session.disconnect(&mut app, &mut audio);
+        assert!(session.current.is_none());
+        assert_eq!(session.held, [] as [(u8, u8); 0]);
+    }
+
     fn recording_loop() -> (Session, crate::state::App, crate::transport::Transport, Instant) {
         let now = Instant::now();
         let mut app = crate::state::App::default();

@@ -35,15 +35,20 @@ backend's microsecond clock, and the same quantizer, pinned target and grouped
 undo as terminal recording. At most 64 packets are drained per loop (128 queued).
 Overflow disconnects and disarms with a warning; reconnect explicitly.
 
-Notes use fixed dynamics (velocity magnitude is ignored) and fixed New length,
-not key-held recording duration. Monitoring lasts at most 200 ms plus release;
-Note Off/zero-velocity Note On cancels the current MIDI preview, never an older
-key's replacement, terminal preview or song voice. Chords are last-note-on wins,
-not polyphonic entry; releasing a key doesn't resume an older held note.
+Notes use fixed dynamics (velocity magnitude is ignored) and record fixed New
+length, not key-held duration. MIDI monitoring holds the instrument gate until
+Note Off/zero-velocity Note On, then plays its release tail. One-shot instruments
+can decay naturally while held. Terminal previews still use a 200 ms gate.
+Chords are last-note-on wins, not polyphonic entry; an older key's release never
+stops its replacement or resumes an older note. Repeated Note On for the same
+channel/pitch replaces the gate; the first matching Note Off releases it (MIDI
+has no per-press identity). MIDI release never steals terminal or song voices.
 Focus/target/run changes clear MIDI previews and discard pending old input.
-Sustain, CC, pitch bend, MIDI clock/output and auto-reconnect aren't implemented.
-There is no reliable backend hot-unplug notification: if input goes silent,
-use `:midi disconnect` before reconnecting; fixed preview gates bound ringing.
+Monitoring uses bounded main-loop input batches, not sample-accurate scheduling.
+Sustain pedal, CC (including all-notes-off), pitch bend, MIDI clock/output and
+auto-reconnect aren't implemented. There is no reliable backend hot-unplug
+notification: if a release is lost, a held tone can keep ringing. Use
+`:midi disconnect` before reconnecting; it cancels all MIDI-owned voices.
 
 Linux builds use `midir 0.11.1` with ALSA; install `libasound2-dev`, `libudev-dev`
 and `pkg-config` (the existing CI audio dependencies). Validation uses device-free
