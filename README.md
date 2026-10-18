@@ -10,7 +10,45 @@ audio. Sorry Mario, your blazingly fast modern tracker is in another repo.
 The [canonical backlog](.plans/README.md) records current acceptance and delivery
 order: musical time and grids, metronome/count-in and arming, quantized live
 recording, then MIDI input. Musical time/grid editing, metronome/count-in,
-arming and fixed-gate Pattern recording are implemented. MIDI remains planned.
+arming, fixed-gate Pattern recording and optional MIDI input are implemented.
+
+### MIDI input
+
+Start disconnected; no MIDI device opens automatically. In Normal mode:
+
+- `:midi list` lists input ports in the status line (zero-based indices).
+- `:midi connect 0` connects the listed port; list again if it changes.
+- `:midi channel omni` accepts all channels (default); use `1`–`16` to filter.
+- `:midi disconnect` cancels MIDI previews, closes the take and disarms recording.
+
+These settings are session-only. Duplicate port names are rejected rather than
+silently choosing one. Long lists/names may exceed the terminal's status width.
+Connection failures appear in status and preserve an existing connection.
+Discovery/connect run synchronously on the control thread, never the audio
+callback; backend calls have no guaranteed timeout and can briefly pause the UI.
+
+In F1 Pattern Insert, stopped notes step-enter; playing notes preview unless
+Pattern recording is armed. F1 Audition previews without writes, even if armed.
+Normal/Visual, other views, help and prompts suppress new note-ons. MIDI 60 is C4;
+pitches below MIDI 12 are rejected. Capture uses callback receipt time, not the
+backend's microsecond clock, and the same quantizer, pinned target and grouped
+undo as terminal recording. At most 64 packets are drained per loop (128 queued).
+Overflow disconnects and disarms with a warning; reconnect explicitly.
+
+Notes use fixed dynamics (velocity magnitude is ignored) and fixed New length,
+not key-held recording duration. Monitoring lasts at most 200 ms plus release;
+Note Off/zero-velocity Note On cancels the current MIDI preview, never an older
+key's replacement, terminal preview or song voice. Chords are last-note-on wins,
+not polyphonic entry; releasing a key doesn't resume an older held note.
+Focus/target/run changes clear MIDI previews and discard pending old input.
+Sustain, CC, pitch bend, MIDI clock/output and auto-reconnect aren't implemented.
+There is no reliable backend hot-unplug notification: if input goes silent,
+use `:midi disconnect` before reconnecting; fixed preview gates bound ringing.
+
+Linux builds use `midir 0.11.1` with ALSA; install `libasound2-dev`, `libudev-dev`
+and `pkg-config` (the existing CI audio dependencies). Validation uses device-free
+input tests and offline audio, not a physical MIDI controller. Other operating
+systems and real-device discovery/recording have not been tested here.
 
 ### Themes
 

@@ -64,6 +64,7 @@ pub enum PlaybackState {
     reason = "Input repeat suppression, help, shutdown, and transport stop flags are independent."
 )]
 pub struct App {
+    pub midi_command: Option<String>,
     pub theme: crate::theme::Theme,
     pub meters: crate::meter::MeterDisplay,
     pub view: View,
@@ -141,6 +142,7 @@ impl Default for App {
         let default_rows = 64;
         let default_tracks = 4;
         Self {
+            midi_command: None,
             theme: crate::theme::Theme::default(),
             meters: crate::meter::MeterDisplay::default(),
             view: View::Pattern,
@@ -219,6 +221,11 @@ impl App {
         event
     }
 
+    #[must_use]
+    pub const fn midi_reset_requested(&self) -> bool {
+        self.stop_requested
+    }
+
     /// Consume a stop transition even if a caller restarted playback before the next tick.
     pub fn take_stop_request(&mut self) -> bool {
         std::mem::take(&mut self.stop_requested)
@@ -236,6 +243,12 @@ impl App {
         }
     }
 
+    fn queue_midi_command(&mut self, text: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(self.mode == Mode::Normal, "MIDI controls require Normal mode");
+        self.midi_command = Some(text.to_owned());
+        Ok(())
+    }
+
     fn execute_file_command(&mut self, text: &str) -> anyhow::Result<()> {
         let text = text.trim_start();
         let (command, remainder) = text
@@ -246,6 +259,7 @@ impl App {
             "Visual prompt supports :quantize or :quantize? only"
         );
         match command {
+            "midi" => self.queue_midi_command(remainder.trim())?,
             "quantize" | "quantize?" => self.quantize(command == "quantize?", remainder.trim())?,
             "record" | "countin" => self.recording_command(command, remainder.trim())?,
             "metronome" => {
@@ -1175,7 +1189,7 @@ impl App {
         });
     }
 
-    fn enter_note(&mut self, note: Note) {
+    pub(crate) fn enter_note(&mut self, note: Note) {
         let pattern = self.selected_pattern;
         let track = self.cursor_track;
         let tick = self.cursor_tick();
