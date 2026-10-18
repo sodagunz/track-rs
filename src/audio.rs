@@ -90,6 +90,11 @@ fn smooth_gain(phase: f64) -> f32 {
 }
 
 enum OutputCommand {
+    MidiPreview {
+        track: usize,
+        voice: GatedVoice,
+    },
+    StopMidiPreview,
     Click(Option<click::ClickVoice>),
     ResetMeters(u32),
     Channel {
@@ -217,6 +222,7 @@ struct Output {
     retired: Sender<Renderer>,
     tracks: Vec<TrackVoices>,
     previews: Vec<TrackVoices>,
+    midi_previews: Vec<TrackVoices>,
     meters: Arc<crate::meter::Meters>,
     channel_samples: Vec<(f32, f32)>,
     click: Option<click::ClickVoice>,
@@ -231,6 +237,9 @@ impl Output {
             meters: Arc::default(),
             channel_samples: vec![(0.0, 0.0); crate::project_file::MAX_TRACKS],
             click: None,
+            midi_previews: (0..crate::project_file::MAX_TRACKS)
+                .map(|_| TrackVoices::default())
+                .collect(),
             previews: (0..crate::project_file::MAX_TRACKS)
                 .map(|_| TrackVoices::default())
                 .collect(),
@@ -253,7 +262,7 @@ impl Output {
                     tone,
                     sample_rate,
                 } => {
-                    for slots in [&mut self.tracks, &mut self.previews] {
+                    for slots in [&mut self.tracks, &mut self.previews, &mut self.midi_previews] {
                         if let Some(track) = slots.get_mut(track) {
                             track.mixer.set(gains, sample_rate);
                             track.mixer.tone.set(tone, track.mixer.remaining);
@@ -262,12 +271,29 @@ impl Output {
                 }
                 OutputCommand::Replace(renderer) => {
                     self.click = None;
-                    for track in self.tracks.iter_mut().chain(&mut self.previews) {
+                    for track in self
+                        .tracks
+                        .iter_mut()
+                        .chain(&mut self.previews)
+                        .chain(&mut self.midi_previews)
+                    {
                         track.clear(&self.retired);
                         track.mixer.reset();
                     }
                     let old = std::mem::replace(&mut self.renderer, renderer);
                     let _ = self.retired.send(old);
+                }
+                OutputCommand::StopMidiPreview => {
+                    for track in &mut self.midi_previews {
+                        track.clear(&self.retired);
+                    }
+                }
+                OutputCommand::MidiPreview { track, voice } => {
+                    if let Some(track) = self.midi_previews.get_mut(track) {
+                        track.trigger(voice, &self.retired);
+                    } else {
+                        let _ = self.retired.send(voice.renderer);
+                    }
                 }
                 OutputCommand::Preview { track, voice } => {
                     if let Some(track) = self.previews.get_mut(track) {
@@ -292,7 +318,10 @@ impl Output {
             sample.1 += channel.1;
         }
         for (index, (preview, channel)) in self.previews.iter_mut().zip(&self.channel_samples).enumerate() {
-            let preview = preview.sample(&self.retired);
+            let mut preview = preview.sample(&self.retired);
+            let midi = self.midi_previews[index].sample(&self.retired);
+            preview.0 += midi.0;
+            preview.1 += midi.1;
             self.meters
                 .channel(index, (channel.0 + preview.0, channel.1 + preview.1));
             sample.0 += preview.0;
@@ -468,6 +497,19 @@ impl AudioEngine {
             crate::transport::MetronomeEvent::Stop => None,
         };
         let _ = self.replacements.send(OutputCommand::Click(voice));
+    }
+
+    /// Cancel only MIDI-owned previews, leaving terminal and transport voices intact.
+    pub fn stop_midi_preview(&mut self) {
+        let _ = self.replacements.send(OutputCommand::StopMidiPreview);
+    }
+
+    pub fn midi_preview_event(&mut self, event: NoteEvent) {
+        self.collect_retired();
+        let _ = self.replacements.send(OutputCommand::MidiPreview {
+            track: event.track,
+            voice: GatedVoice::new(event, self.sample_rate, self.dry, rand::random()),
+        });
     }
 
     /// Audition without retriggering a song voice on the same track.
@@ -1053,6 +1095,40 @@ mod tests {
         let (_, renderer) = prepare(rate);
         sender.send(OutputCommand::Replace(renderer)).unwrap();
         assert_eq!(output.sample(), (0.0, 0.0));
+    }
+
+    #[test]
+    fn midi_cancellation_preserves_terminal_and_song_voices() {
+        let (_, renderer) = prepare(8_000.0);
+        let (sender, receiver) = mpsc::channel();
+        let (retired, _rx) = mpsc::channel();
+        let mut output = Output::new(renderer, receiver, retired);
+        let voice = || GatedVoice::new(sine_event(0, DEFAULT_NOTE_DURATION), 8_000.0, true, 42);
+        sender
+            .send(OutputCommand::Trigger {
+                track: 0,
+                voice: voice(),
+            })
+            .unwrap();
+        sender
+            .send(OutputCommand::Preview {
+                track: 0,
+                voice: voice(),
+            })
+            .unwrap();
+        sender
+            .send(OutputCommand::MidiPreview {
+                track: 0,
+                voice: voice(),
+            })
+            .unwrap();
+        output.sample();
+        assert!(output.midi_previews[0].active.is_some());
+        sender.send(OutputCommand::StopMidiPreview).unwrap();
+        output.sample();
+        assert!(output.midi_previews[0].active.is_none());
+        assert!(output.tracks[0].active.is_some());
+        assert!(output.previews[0].active.is_some());
     }
 
     #[test]

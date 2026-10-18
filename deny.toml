@@ -14,6 +14,12 @@ allow = [
     "Zlib",
 ]
 
+# midir 0.11.1 → Android JNI; ISC is a permissive attribution license.
+[[licenses.exceptions]]
+name = "libloading"
+version = "=0.7.4"
+allow = ["ISC"]
+
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"

@@ -13,6 +13,7 @@ pub mod command;
 pub mod history;
 #[cfg(test)]
 mod history_tests;
+pub mod midi;
 #[cfg(test)]
 mod playback_tests;
 pub mod state;
