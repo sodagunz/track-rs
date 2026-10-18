@@ -272,10 +272,72 @@ impl Output for crate::audio::AudioEngine {
     }
 }
 
+/// Read-only session snapshot. Navigation never calls the backend.
+#[derive(Clone, Debug, Default)]
+pub struct DeviceBrowser {
+    pub(crate) names: Vec<String>,
+    pub(crate) selected: usize,
+    pub(crate) active: Option<usize>,
+    pub(crate) scroll: std::cell::Cell<usize>,
+    pub(crate) scroll_max: std::cell::Cell<usize>,
+}
+
+impl DeviceBrowser {
+    fn snapshot<P: PartialEq>(ports: &[(P, String)], active: Option<&P>) -> Self {
+        Self {
+            names: ports.iter().map(|(_, name)| display_name(name)).collect(),
+            active: active.and_then(|active| ports.iter().position(|(port, _)| port == active)),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn select(&mut self, forward: bool) {
+        self.selected = if forward {
+            self.selected.saturating_add(1).min(self.names.len().saturating_sub(1))
+        } else {
+            self.selected.saturating_sub(1)
+        };
+        self.scroll.set(0);
+    }
+}
+
+fn discover_ports<P: PartialEq>(
+    ports: Vec<P>,
+    mut name: impl FnMut(&P) -> anyhow::Result<String>,
+    active: Option<&P>,
+) -> anyhow::Result<(Vec<(P, String)>, DeviceBrowser)> {
+    anyhow::ensure!(
+        ports.len() <= 4096,
+        "More than 4096 MIDI ports; browser snapshot not replaced"
+    );
+    let listed = ports
+        .into_iter()
+        .map(|port| {
+            let name = name(&port)?;
+            Ok((port, name))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let browser = DeviceBrowser::snapshot(&listed, active);
+    Ok((listed, browser))
+}
+
+fn display_name(name: &str) -> String {
+    let mut displayed = String::with_capacity(name.len());
+    for ch in name.chars() {
+        if ch.is_control() {
+            displayed.extend(ch.escape_default());
+        } else {
+            displayed.push(ch);
+        }
+    }
+    displayed
+}
+
 /// Device ownership stays on the control thread. No input is opened at startup.
 #[derive(Default)]
 pub struct Session {
     listed: Vec<(midir::MidiInputPort, String)>,
+    active_port: Option<midir::MidiInputPort>,
     connection: Option<midir::MidiInputConnection<InputSender>>,
     queue: Option<InputQueue>,
     channel: Option<u8>,
@@ -314,26 +376,14 @@ impl Session {
         match args.as_slice() {
             ["list"] => {
                 let input = midir::MidiInput::new("track-rs discovery")?;
-                let listed = input
-                    .ports()
-                    .into_iter()
-                    .map(|port| {
-                        let name = input.port_name(&port)?;
-                        Ok((port, name))
-                    })
-                    .collect::<anyhow::Result<Vec<_>>>()?;
-                let status = if listed.is_empty() {
-                    "MIDI: no input ports".into()
-                } else {
-                    listed
-                        .iter()
-                        .enumerate()
-                        .map(|(i, (_, name))| format!("{i}: {name}"))
-                        .collect::<Vec<_>>()
-                        .join(" | ")
-                };
+                let (listed, browser) = discover_ports(
+                    input.ports(),
+                    |port| Ok(input.port_name(port)?),
+                    self.active_port.as_ref(),
+                )?;
+                self.open_browser(browser, app, audio, Instant::now());
                 self.listed = listed;
-                Ok(status)
+                Ok("MIDI browser: h/l ports, j/k scroll, Esc close; :midi connect N".into())
             }
             ["connect", index] => {
                 let index: usize = index.parse()?;
@@ -354,7 +404,8 @@ impl Session {
                 let connection = input
                     .connect(port, "track-rs notes", |_, bytes, sender| sender.receive(bytes), sender)
                     .map_err(|error| anyhow::anyhow!("{error}"))?;
-                let status = format!("MIDI connected: {name}");
+                let status = format!("MIDI connected: {}", display_name(name));
+                self.active_port = Some(port.clone());
                 self.reset(app, audio, now);
                 self.connection = Some(connection);
                 self.queue = Some(queue);
@@ -383,6 +434,20 @@ impl Session {
         }
     }
 
+    fn open_browser(
+        &mut self,
+        browser: DeviceBrowser,
+        app: &mut crate::state::App,
+        audio: &mut impl Output,
+        now: Instant,
+    ) {
+        app.finish_midi_holds();
+        app.recording.clear_monitor();
+        app.recording.close_take();
+        self.invalidate_at(audio, now);
+        app.midi_browser = Some(browser);
+    }
+
     fn reset(&mut self, app: &mut crate::state::App, audio: &mut impl Output, now: Instant) {
         // Resets discard ambiguous ownership; already committed onsets remain provisional.
         app.recording.discard_held();
@@ -399,6 +464,7 @@ impl Session {
 
     pub fn disconnect(&mut self, app: &mut crate::state::App, audio: &mut impl Output) {
         self.connection = None;
+        self.active_port = None;
         self.queue = None;
         self.reset(app, audio, Instant::now());
         app.recording.armed = false;
@@ -516,6 +582,7 @@ impl Session {
         if app.view != View::Pattern
             || !matches!(app.mode, Mode::Insert | Mode::Audition)
             || app.help_visible
+            || app.midi_browser.is_some()
             || app.prompt.is_some()
             || app.shutdown
         {
@@ -548,7 +615,7 @@ fn midi_focus(app: &crate::state::App) -> impl PartialEq {
     (
         app.view,
         app.mode,
-        app.help_visible,
+        (app.help_visible, app.midi_browser.is_some()),
         app.prompt.is_some(),
         matches!(app.playback_state, crate::state::PlaybackState::Playing),
         app.selected_pattern,
@@ -562,6 +629,169 @@ fn midi_focus(app: &crate::state::App) -> impl PartialEq {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_discovery_is_bounded_and_navigation_keeps_snapshot() {
+        let reads = std::cell::Cell::new(0);
+        let (listed, mut browser) = discover_ports(
+            vec![1, 2, 3],
+            |port| {
+                reads.set(reads.get() + 1);
+                Ok(format!("Port {port}"))
+            },
+            Some(&2),
+        )
+        .unwrap();
+        for _ in 0..100 {
+            browser.select(true);
+            browser.select(false);
+        }
+        assert_eq!(reads.get(), 3);
+        assert_eq!(browser.names, ["Port 1", "Port 2", "Port 3"]);
+        assert_eq!(browser.active, Some(1));
+        assert!(select_port(&listed, &[(1, "Changed".into())], 0).is_err());
+        assert!(discover_ports(
+            vec![0; 4097],
+            |_| { panic!("oversize snapshot must not read names") },
+            None
+        )
+        .is_err());
+        assert!(discover_ports(vec![0], |_| anyhow::bail!("backend name failed"), None).is_err());
+        assert_eq!(browser.names, ["Port 1", "Port 2", "Port 3"]);
+    }
+
+    #[test]
+    fn browser_open_closes_capture_invalidates_queue_but_keeps_transport_and_arm() {
+        let (mut session, mut app, mut transport, now) = recording_loop();
+        let (sender, queue) = InputQueue::new(now);
+        session.queue = Some(queue);
+        let mut audio = Monitor::default();
+        sender.receive_at(&[0x90, 60, 80], now);
+        session.poll(&mut app, &mut audio, &mut transport, now);
+        assert_eq!(audio.starts.len(), 1);
+        let later = now + Duration::from_millis(250);
+        transport.update_app(later, &mut app, || {});
+        sender.receive_at(&[0x90, 64, 80], now + Duration::from_millis(100));
+        session.open_browser(
+            DeviceBrowser::snapshot(&[(0, "Port".into())], None),
+            &mut app,
+            &mut audio,
+            later,
+        );
+        assert!(app.recording.armed);
+        assert!(matches!(app.playback_state, crate::state::PlaybackState::Playing));
+        assert!(session.current.is_none());
+        let revision = app.revision();
+        session.poll(&mut app, &mut audio, &mut transport, later);
+        sender.receive_at(&[0x80, 60, 0], later);
+        session.poll(&mut app, &mut audio, &mut transport, later);
+        assert_eq!(app.revision(), revision);
+        assert_eq!(audio.starts.len(), 1);
+        app.midi_browser = None;
+        session.poll(&mut app, &mut audio, &mut transport, later);
+        assert_eq!(audio.starts.len(), 1);
+    }
+
+    #[test]
+    fn browser_snapshot_reaches_every_index_without_backend_or_identity_changes() {
+        let ports: Vec<_> = (0..4096).map(|i| (i, format!("Port {i} 日本語\0\u{1b}[2J"))).collect();
+        let mut browser = DeviceBrowser::snapshot(&ports, Some(&4000));
+        assert_eq!(browser.active, Some(4000));
+        for (i, (_, original)) in ports.iter().enumerate() {
+            assert_eq!(browser.selected, i);
+            assert_eq!(browser.names[i], display_name(original));
+            assert!(!browser.names[i].chars().any(char::is_control));
+            assert_eq!(select_port(&ports, &ports, i).unwrap().1, *original);
+            browser.select(true);
+        }
+        assert_eq!(browser.selected, 4095);
+        for i in (0..4095).rev() {
+            browser.select(false);
+            assert_eq!(browser.selected, i);
+        }
+        browser.select(false);
+        assert_eq!(browser.selected, 0);
+        assert!(select_port(&ports, &ports, 4096).is_err());
+        let mut empty = DeviceBrowser::snapshot::<usize>(&[], None);
+        empty.select(true);
+        assert_eq!(empty.selected, 0);
+        assert_eq!(empty.names, Vec::<String>::new());
+    }
+
+    #[test]
+    fn browser_owns_keys_preserves_editor_and_suppresses_queued_midi() {
+        use crate::state::{Mode, View};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        for view in [View::Pattern, View::Arrangement, View::Mixer, View::Instrument] {
+            for mode in [Mode::Normal, Mode::Insert, Mode::Audition, Mode::Visual] {
+                let now = Instant::now();
+                let (mut session, sender) = Session::test_input(now);
+                let mut app = crate::state::App {
+                    mode,
+                    view,
+                    selection_anchor: Some((1, 0)),
+                    cursor_row: 3,
+                    ..crate::state::App::default()
+                };
+                let before = (
+                    app.revision(),
+                    app.is_dirty(),
+                    app.mode,
+                    app.cursor_row,
+                    app.cursor_track,
+                    app.selection_anchor,
+                );
+                app.midi_browser = Some(DeviceBrowser::snapshot(&[(1, "Port".into())], Some(&1)));
+                let mut audio = Monitor::default();
+                let mut transport = crate::transport::Transport::default();
+                sender.receive_at(&[0x90, 60, 100], now);
+                assert!(session.poll(&mut app, &mut audio, &mut transport, now));
+                for code in [
+                    KeyCode::Enter,
+                    KeyCode::F(2),
+                    KeyCode::Char('?'),
+                    KeyCode::Char(':'),
+                    KeyCode::Char('i'),
+                    KeyCode::Char(' '),
+                    KeyCode::Down,
+                    KeyCode::Right,
+                ] {
+                    assert!(session.terminal_key(
+                        &mut app,
+                        &mut audio,
+                        &mut transport,
+                        KeyEvent::new(code, KeyModifiers::NONE),
+                        now,
+                        now
+                    ));
+                }
+                assert!(app.midi_browser.is_some());
+                assert!(!app.help_visible && app.prompt.is_none());
+                assert!(audio.starts.is_empty());
+                assert!(session.terminal_key(
+                    &mut app,
+                    &mut audio,
+                    &mut transport,
+                    KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                    now,
+                    now
+                ));
+                assert!(app.midi_browser.is_none());
+                assert_eq!(
+                    (
+                        app.revision(),
+                        app.is_dirty(),
+                        app.mode,
+                        app.cursor_row,
+                        app.cursor_track,
+                        app.selection_anchor
+                    ),
+                    before
+                );
+                assert_eq!(app.view, view);
+            }
+        }
+    }
     use std::time::Duration;
 
     #[derive(Default)]

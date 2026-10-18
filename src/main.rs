@@ -101,7 +101,7 @@ fn midi_focus(app: &App) -> impl PartialEq {
     (
         app.view,
         app.mode,
-        app.help_visible,
+        (app.help_visible, app.midi_browser.is_some()),
         app.prompt.is_some(),
         matches!(app.playback_state, track_rs::state::PlaybackState::Playing),
         app.selected_pattern,

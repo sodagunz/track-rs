@@ -16,21 +16,28 @@ arming, fixed-gate Pattern recording and optional MIDI input are implemented.
 
 Start disconnected; no MIDI device opens automatically. In Normal mode:
 
-- `:midi list` lists input ports in the status line (zero-based indices).
+- `:midi list` refreshes and opens a read-only input browser (zero-based indices).
+  Left/Right or h/l selects a port; Up/Down or j/k scrolls its wrapped name.
+  PgUp/PgDn scrolls ten lines; Esc closes. Enter does not connect.
 - `:midi connect 0` connects the listed port; list again if it changes.
 - `:midi channel omni` accepts all channels (default); use `1`–`16` to filter.
 - `:midi disconnect` cancels MIDI previews, closes the take and disarms recording.
 
 These settings are session-only. Duplicate port names are rejected rather than
-silently choosing one. Long lists/names may exceed the terminal's status width.
-Connection failures appear in status and preserve an existing connection.
+silently choosing one. The browser shows the selected index/count and marks the
+connected port in that snapshot. Navigation doesn't rescan; close and run
+`:midi list` again to refresh. Snapshots above 4,096 ports are rejected without
+replacing the previous list. Control characters in names display as escapes;
+wide glyphs use Unicode escapes in a one-column viewport. Stored identities are
+unchanged. Connection failures appear in status and preserve an existing
+connection.
 Discovery/connect run synchronously on the control thread, never the audio
 callback; backend calls have no guaranteed timeout and can briefly pause the UI.
 
 In F1 Pattern Insert, stopped notes step-enter; playing notes preview unless
 Pattern recording is armed. F1 Audition previews without writes, even if armed.
-Normal/Visual, other views, help and prompts suppress new note-ons. MIDI 60 is C4;
-pitches below MIDI 12 are rejected. Capture uses callback receipt time, not the
+Normal/Visual, other views, help, the MIDI browser and prompts suppress new
+note-ons. MIDI 60 is C4; pitches below MIDI 12 are rejected. Capture uses callback receipt time, not the
 backend's microsecond clock, and the same quantizer, pinned target and grouped
 undo as terminal recording. At most 64 packets are drained per loop (128 queued).
 Overflow or observable callback-producer closure discards queued input, cancels

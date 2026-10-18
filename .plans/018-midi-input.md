@@ -56,8 +56,8 @@ Off can leave a sustained voice ringing until focus invalidation or explicit
 
 Backend discovery/connect run on the control thread; they are not isolated with
 a hard timeout. No reliable hot-unplug detection is claimed. No physical device
-or non-Linux platform was tested. The list is status-line output and can clip on
-narrow terminals. Real-device mapping, placement, mixer level and unplug/reconnect
+or non-Linux platform was tested. The read-only device browser described below
+replaces clipped status-line lists. Real-device mapping, placement, mixer level and unplug/reconnect
 checks remain manual follow-up, not completed acceptance evidence.
 
 ## User-approved held-duration recording
@@ -160,6 +160,37 @@ checkpoint is 332 passing tests (330 inherited, two new). Formatting, strict
 Clippy, docs/doc-tests, dependency policy, actionlint and the ALSA-null example
 pass; dependency policy retains duplicate-version warnings. No physical
 listening or MIDI-device validation was performed.
+
+## Read-only device browser
+
+`:midi list` refreshes a session-only snapshot and opens a bounded overlay: one
+entry, zero-based index/count and connected-port marker. h/l or Left/Right selects
+ports; j/k or Up/Down scrolls the wrapped text; PgUp/PgDn moves ten lines; Esc
+closes. Enter, help, prompt and editing keys cannot connect or edit behind it.
+Close first, then use `:midi connect N`; duplicate-name and stale-identity checks
+are unchanged. Navigation never enumerates; refresh is explicit. Above 4,096
+ports, discovery fails without replacing the previous snapshot.
+
+Names retain Unicode graphemes and whitespace, with display-only escapes for
+control characters. One-column viewports escape glyphs too wide to render;
+zero-area views don't panic. Metadata and controls scroll too, leaving names
+reachable even in a one-row terminal. Scroll offsets aren't limited to 65,535
+lines. Snapshot identities retain their original names.
+
+Opening finalizes valid held captures and closes the take, cancels MIDI-only
+monitoring and invalidates pending input, without stopping transport or disarming.
+While browsing, new MIDI note-ons are suppressed; release/closure cleanup remains
+active. Mode, view, cursor and selection survive closing. No dependencies, schema
+or production audio changes. Hardware discovery, unplug and listening remain
+unchecked.
+
+Browser checkpoint: 342 tests pass (336 inherited, six new). Device-free tests
+cover all snapshot indices, bounded discovery/name-read counts, stale identities,
+empty/error cases, display sanitization, grapheme wrapping, actual narrow-buffer
+line reachability, long scroll ranges, focus ownership, queued-input suppression
+and held-capture closure without stopping transport/disarming. Formatting, strict
+all-target/all-feature Clippy, warning-denied docs and doc-tests pass. The ALSA-null
+example wasn't rerun because production audio is unchanged.
 
 ## Observable input-source closure
 
