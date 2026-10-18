@@ -1243,6 +1243,15 @@ mod tests {
 
     #[test]
     fn fake_midi_input_reaches_offline_audio_and_overflow_clears_held_gate() {
+        input_failure_clears_held_gate(false);
+    }
+
+    #[test]
+    fn source_closure_reaches_offline_audio_and_clears_held_gate() {
+        input_failure_clears_held_gate(true);
+    }
+
+    fn input_failure_clears_held_gate(closed: bool) {
         struct Offline {
             output: Output,
             sender: Sender<OutputCommand>,
@@ -1286,21 +1295,13 @@ mod tests {
         for _ in 0..8_000 {
             audio.output.sample();
         }
-        assert!(audio.output.midi_previews[0]
-            .active
-            .as_ref()
-            .unwrap()
-            .duration
-            .is_none());
+        let held = audio.output.midi_previews[0].active.as_ref().unwrap();
+        assert!(held.duration.is_none());
         input.receive_at(&[0x80, 60, 0], now + Duration::from_secs(1));
         session.poll(&mut app, &mut audio, &mut transport, now + Duration::from_secs(1));
         audio.output.sample();
-        assert!(audio.output.midi_previews[0]
-            .active
-            .as_ref()
-            .unwrap()
-            .duration
-            .is_some());
+        let released = audio.output.midi_previews[0].active.as_ref().unwrap();
+        assert!(released.duration.is_some());
         for _ in 0..1700 {
             audio.output.sample();
         }
@@ -1309,13 +1310,43 @@ mod tests {
         session.poll(&mut app, &mut audio, &mut transport, now + Duration::from_secs(2));
         audio.output.sample();
         assert!(audio.output.midi_previews[0].active.is_some());
-        for _ in 0..256 {
-            input.receive_at(&[0x90, 67, 80], now + Duration::from_secs(3));
+        let (_, renderer) = prepare(8_000.0);
+        let (reference_sender, reference_receiver) = mpsc::channel();
+        let (retired, _rx) = mpsc::channel();
+        let mut reference = Output::new(renderer, reference_receiver, retired);
+        if closed {
+            for sender in [&audio.sender, &reference_sender] {
+                let voice = || GatedVoice::new(sine_event(0, DEFAULT_NOTE_DURATION), 8_000.0, true, 42);
+                sender
+                    .send(OutputCommand::Trigger {
+                        track: 0,
+                        voice: voice(),
+                    })
+                    .unwrap();
+                sender
+                    .send(OutputCommand::Preview {
+                        track: 0,
+                        voice: voice(),
+                    })
+                    .unwrap();
+            }
+            drop(input);
+        } else {
+            for _ in 0..256 {
+                input.receive_at(&[0x90, 67, 80], now + Duration::from_secs(3));
+            }
         }
         session.poll(&mut app, &mut audio, &mut transport, now + Duration::from_secs(3));
-        assert_eq!(audio.output.sample(), (0.0, 0.0));
+        assert_eq!(audio.output.sample(), reference.sample());
         assert!(audio.output.midi_previews[0].active.is_none());
-        assert!(app.status.contains("overflow"));
+        if closed {
+            assert!(audio.output.tracks[0].active.is_some());
+            assert!(audio.output.previews[0].active.is_some());
+            for _ in 0..8_000 {
+                assert_eq!(audio.output.sample(), reference.sample());
+            }
+        }
+        assert!(app.status.contains(if closed { "source closed" } else { "overflow" }));
         assert!(!app.recording.armed);
     }
 

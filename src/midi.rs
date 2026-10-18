@@ -6,7 +6,7 @@
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, SyncSender, TrySendError},
+        mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
         Arc,
     },
     time::Instant,
@@ -79,7 +79,21 @@ pub struct InputEvent {
 /// dropping the old consumer invalidates all old callbacks and pending packets.
 pub struct InputSender {
     sender: SyncSender<InputEvent>,
-    overflow: Arc<AtomicBool>,
+    state: Arc<InputState>,
+}
+
+#[derive(Default)]
+struct InputState {
+    overflow: AtomicBool,
+    closed: AtomicBool,
+}
+
+impl Drop for InputSender {
+    fn drop(&mut self) {
+        // Receiver disconnection is hidden behind queued/future packets. Publish
+        // producer loss independently so the bounded drain can discard them.
+        self.state.closed.store(true, Ordering::Release);
+    }
 }
 
 impl InputSender {
@@ -91,12 +105,12 @@ impl InputSender {
     /// Explicit receipt time supports deterministic adapters/tests. Keep callback
     /// arrival order; timestamps are metadata, not a sorting or scheduling clock.
     pub fn receive_at(&self, bytes: &[u8], received_at: Instant) {
-        if self.overflow.load(Ordering::Acquire) {
+        if self.state.overflow.load(Ordering::Acquire) {
             return;
         }
         if let Some(message) = decode(bytes) {
             if let Err(TrySendError::Full(_)) = self.sender.try_send(InputEvent { message, received_at }) {
-                self.overflow.store(true, Ordering::Release);
+                self.state.overflow.store(true, Ordering::Release);
             }
         }
     }
@@ -108,11 +122,13 @@ pub enum InputBatch {
     /// Discard this source's held notes/previews and close its take. Capture is
     /// suspended until `reselect`; never interpret a lost release as still held.
     ResetRequired,
+    /// The callback producer was dropped; discard all ambiguous input.
+    SourceClosed,
 }
 
 pub struct InputQueue {
     receiver: Receiver<InputEvent>,
-    overflow: Arc<AtomicBool>,
+    state: Arc<InputState>,
     channel: Option<u8>,
     since: Instant,
     pending: Option<InputEvent>,
@@ -123,15 +139,15 @@ impl InputQueue {
     #[must_use]
     pub fn new(since: Instant) -> (InputSender, Self) {
         let (sender, receiver) = mpsc::sync_channel(CAPACITY);
-        let overflow = Arc::new(AtomicBool::new(false));
+        let state = Arc::new(InputState::default());
         (
             InputSender {
                 sender,
-                overflow: Arc::clone(&overflow),
+                state: Arc::clone(&state),
             },
             Self {
                 receiver,
-                overflow,
+                state,
                 channel: None,
                 since,
                 pending: None,
@@ -169,13 +185,19 @@ impl InputQueue {
     /// Drain in arrival order up to an inclusive receipt cutoff, retaining the first future packet.
     pub fn drain_before(&mut self, cutoff: Option<Instant>) -> InputBatch {
         self.budget_exhausted = false;
-        if self.overflow.load(Ordering::Acquire) {
+        if self.state.overflow.load(Ordering::Acquire) {
             return InputBatch::ResetRequired;
+        }
+        if self.state.closed.load(Ordering::Acquire) {
+            self.pending = None;
+            return InputBatch::SourceClosed;
         }
         let mut notes = Vec::new();
         for packet in 0..MAX_DRAIN {
-            let Some(event) = self.pending.take().or_else(|| self.receiver.try_recv().ok()) else {
-                break;
+            let event = match self.pending.take().map_or_else(|| self.receiver.try_recv(), Ok) {
+                Ok(event) => event,
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => return InputBatch::SourceClosed,
             };
             if cutoff.is_some_and(|cutoff| event.received_at > cutoff) {
                 self.pending = Some(event);
@@ -186,7 +208,10 @@ impl InputQueue {
                 notes.push(event);
             }
         }
-        if self.overflow.load(Ordering::Acquire) {
+        if self.state.closed.load(Ordering::Acquire) {
+            self.pending = None;
+            InputBatch::SourceClosed
+        } else if self.state.overflow.load(Ordering::Acquire) {
             InputBatch::ResetRequired
         } else {
             InputBatch::Notes(notes)
@@ -405,10 +430,17 @@ impl Session {
     ) {
         let Some(queue) = &mut self.queue else { return };
         let batch = queue.drain_before(cutoff);
-        let InputBatch::Notes(events) = batch else {
-            self.disconnect(app, audio);
-            app.status = "MIDI queue overflow: disconnected and disarmed; reconnect explicitly".into();
-            return;
+        let events = match batch {
+            InputBatch::Notes(events) => events,
+            InputBatch::ResetRequired | InputBatch::SourceClosed => {
+                self.disconnect(app, audio);
+                app.status = match batch {
+                    InputBatch::SourceClosed => "MIDI source closed: disconnected and disarmed; reconnect explicitly",
+                    _ => "MIDI queue overflow: disconnected and disarmed; reconnect explicitly",
+                }
+                .into();
+                return;
+            }
         };
         for event in events {
             if self.since.is_some_and(|since| event.received_at < since) {
@@ -564,6 +596,84 @@ mod tests {
         fn stop_midi_preview(&mut self) {
             self.resets += 1;
         }
+    }
+
+    #[test]
+    fn source_closure_is_latched_without_draining_a_full_or_future_queue() {
+        for count in [0, 1, MAX_DRAIN, CAPACITY] {
+            let now = Instant::now();
+            let (sender, mut queue) = InputQueue::new(now);
+            assert_eq!(queue.drain(), InputBatch::Notes(vec![]));
+            for _ in 0..count {
+                sender.receive_at(&[0x90, 60, 80], now + Duration::from_secs(10));
+            }
+            drop(sender);
+            assert_eq!(queue.drain_before(Some(now)), InputBatch::SourceClosed);
+            assert_eq!(queue.drain(), InputBatch::SourceClosed);
+            assert!(!queue.budget_exhausted);
+            let replacement = queue.reselect(now);
+            replacement.receive_at(&[0x90, 64, 80], now);
+            assert_eq!(events(queue.drain()).len(), 1);
+        }
+    }
+
+    #[test]
+    fn source_closure_distinguishes_healthy_idle_and_discards_queued_onsets() {
+        let (mut session, mut app, mut transport, now) = recording_loop();
+        let (sender, queue) = InputQueue::new(now);
+        session.queue = Some(queue);
+        let mut audio = Monitor::default();
+        session.poll(&mut app, &mut audio, &mut transport, now);
+        assert!(session.queue.is_some());
+        assert!(app.recording.armed);
+        sender.receive_at(&[0x90, 60, 80], now);
+        drop(sender);
+        let before = app.project.clone();
+        session.poll(&mut app, &mut audio, &mut transport, now);
+        assert!(session.queue.is_none(), "closed producer must disconnect");
+        assert!(!app.recording.armed);
+        assert!(audio.starts.is_empty());
+        assert_eq!(app.project, before);
+        assert!(app.status.contains("source closed"));
+    }
+
+    #[test]
+    fn source_closure_cancels_held_capture_despite_retained_future() {
+        let (mut session, mut app, mut transport, now) = recording_loop();
+        let before = app.project.clone();
+        let (sender, queue) = InputQueue::new(now);
+        session.queue = Some(queue);
+        let mut audio = Monitor::default();
+        sender.receive_at(&[0x90, 60, 80], now);
+        session.poll(&mut app, &mut audio, &mut transport, now);
+        let provisional = app.project.clone();
+        sender.receive_at(&[0x80, 60, 0], now + Duration::from_secs(10));
+        session.poll(&mut app, &mut audio, &mut transport, now);
+        drop(sender);
+        assert!(session.terminal_key(
+            &mut app,
+            &mut audio,
+            &mut transport,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('z'),
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            now,
+            now,
+        ));
+        assert!(session.queue.is_none(), "future packet must not mask closure");
+        assert_eq!(session.held, [] as [(u8, u8); 0]);
+        assert!(session.current.is_none());
+        assert!(!app.recording.armed);
+        assert_eq!(audio.resets, 1);
+        assert!(matches!(app.playback_state, crate::state::PlaybackState::Playing));
+        terminal(&mut session, &mut app, &mut transport, now, 'z');
+        session.poll(&mut app, &mut audio, &mut transport, now + Duration::from_secs(11));
+        assert_eq!(app.project, provisional);
+        assert_eq!(audio.releases, [] as [u64; 0]);
+        app.mode = crate::state::Mode::Normal;
+        app.handle_command(crate::command::Command::Undo);
+        assert_eq!(app.project, before);
     }
 
     #[test]
