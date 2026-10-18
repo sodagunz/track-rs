@@ -18,6 +18,8 @@ pub mod midi;
 mod playback_tests;
 pub mod state;
 pub mod synth;
+#[cfg(test)]
+mod synth_tracker_tests;
 pub mod theme;
 #[cfg(test)]
 mod timing_integration_tests;

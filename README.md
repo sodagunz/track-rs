@@ -12,19 +12,30 @@ order: musical time and grids, metronome/count-in and arming, quantized live
 recording, then MIDI input. Musical time/grid editing, metronome/count-in,
 arming, fixed-gate Pattern recording and optional MIDI input are implemented.
 
-### Synth DSP preview
+### Three-oscillator synth
 
-Plan 020's three-oscillator synth has a standalone, device-free WAV example:
+In F4, use `[`/`]` to select **Synth**, then Enter to audition without note writes.
+Pattern/Song playback, entry previews and held MIDI monitoring use the selected
+track's patch, followed by its normal tone/gain/pan processing. Numeric patch
+editing in F4 is still pending; the default patch is playable now.
+
+Patches belong to tracks, survive switching instruments, and save in v4 projects.
+Missing patches in older files get the default without changing built-in voices.
+For programmatic edits, use `Edit::set_synth_patch`; `examples/tracker_synth.rs`
+shows the audio routing and live targets (`cargo run --example tracker_synth`).
+
+The standalone, device-free WAV example is still available:
 
 ```sh
 cargo run --example synth_render -- /tmp/track-synth.wav
 ```
 
-Use a new output filename. It renders a held note, a smoothed filter edit and
-release; edit `examples/synth_render.rs` to try other patches. The synth isn't
-wired into F4 or project files yet. See [020](.plans/020-three-oscillator-synth.md#dsp-checkpoint--2026-10-18)
-for DSP choices, headroom and remaining work. Triangle isn't band-limited;
-resonance can clip, and automated checks don't replace listening.
+Use a new output filename (no argument renders to a temporary file for CI).
+It renders a held note, a smoothed filter edit and release; edit
+`examples/synth_render.rs` to try other patches. See [020](.plans/020-three-oscillator-synth.md)
+for DSP choices and remaining work. Synth supports 8–192 kHz output rates.
+Triangle isn't band-limited; resonance can clip. Automated checks and null-device
+smokes don't replace listening.
 
 ### MIDI input
 

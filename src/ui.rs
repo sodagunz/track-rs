@@ -1262,11 +1262,11 @@ mod tests {
         assert_eq!(app.view, View::Instrument);
         assert!(!app.is_dirty());
         key(&mut app, KeyCode::Char('['), KeyModifiers::NONE);
-        assert_eq!(app.project.instrument(0), Instrument::OpenHat);
+        assert_eq!(app.project.instrument(0), Instrument::Synth);
         key(&mut app, KeyCode::Char('u'), KeyModifiers::NONE);
         assert!(!app.is_dirty());
         key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
-        assert_eq!(app.project.instrument(0), Instrument::OpenHat);
+        assert_eq!(app.project.instrument(0), Instrument::Synth);
         for voice in Instrument::ALL {
             app.handle_command(Command::SetInstrument(voice));
             for (width, height) in [(100, 20), (40, 6), (1, 1), (0, 0)] {

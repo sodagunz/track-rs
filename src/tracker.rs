@@ -17,10 +17,11 @@ pub enum Instrument {
     Drone,
     Sustain,
     OpenHat,
+    Synth,
 }
 
 impl Instrument {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Pluck,
         Self::Sine,
         Self::Square,
@@ -32,6 +33,7 @@ impl Instrument {
         Self::Drone,
         Self::Sustain,
         Self::OpenHat,
+        Self::Synth,
     ];
 
     #[must_use]
@@ -48,6 +50,7 @@ impl Instrument {
             Self::Drone => "Drone",
             Self::Sustain => "Sustain",
             Self::OpenHat => "OpenHat",
+            Self::Synth => "Synth",
         }
     }
 

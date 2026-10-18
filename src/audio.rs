@@ -2,13 +2,20 @@
 
 #[path = "audio_click.rs"]
 mod click;
+#[path = "audio_synth.rs"]
+mod synth_adapter;
+#[cfg(test)]
+#[path = "audio_synth_tests.rs"]
+mod synth_tests;
+
+use crate::synth::{SynthPatch, SynthVoice};
 
 use crate::{
     tracker::{Instrument, Note},
     transport::NoteEvent,
 };
 use std::sync::{
-    mpsc::{self, Receiver, Sender},
+    mpsc::{self, Receiver, Sender, SyncSender},
     Arc,
 };
 use std::time::Duration;
@@ -43,10 +50,21 @@ type Renderer = BlockRateAdapter;
 
 const RETRIGGER_SECONDS: f64 = 0.005;
 
-// The outer envelope gates effects too. Renderers are built on the control
+enum VoiceRenderer {
+    Legacy(Renderer),
+    Synth(Box<SynthVoice>),
+}
+
+impl From<Renderer> for VoiceRenderer {
+    fn from(renderer: Renderer) -> Self {
+        Self::Legacy(renderer)
+    }
+}
+
+// The outer envelope gates legacy effects too. Renderers are built on the control
 // thread; fixed track slots only render, move, and retire them in the callback.
 struct GatedVoice {
-    renderer: Renderer,
+    renderer: VoiceRenderer,
     elapsed: f64,
     duration: Option<f64>,
     midi_token: Option<u64>,
@@ -57,14 +75,38 @@ struct GatedVoice {
 }
 
 impl GatedVoice {
+    #[cfg(test)]
     fn new(event: NoteEvent, sample_rate: f64, dry: bool, seed: u64) -> Self {
+        Self::with_patch(event, SynthPatch::default(), sample_rate, dry, seed)
+    }
+
+    fn with_patch(event: NoteEvent, patch: SynthPatch, sample_rate: f64, dry: bool, seed: u64) -> Self {
+        if event.instrument == Instrument::Synth {
+            let mut synth = SynthVoice::new(patch, sample_rate).ok();
+            if let Some(voice) = &mut synth {
+                let _ = voice.gate_on(event.note.freq());
+            }
+            return Self {
+                renderer: synth.map_or_else(
+                    || VoiceRenderer::Legacy(BlockRateAdapter::new(Box::new(fundsp::prelude32::dc((0.0, 0.0))))),
+                    |voice| VoiceRenderer::Synth(Box::new(voice)),
+                ),
+                elapsed: 0.0,
+                duration: Some(event.duration.as_secs_f64()),
+                midi_token: None,
+                release_level: 1.0,
+                attack: 0.0,
+                release: 0.0,
+                sample_period: sample_rate.recip(),
+            };
+        }
         let mut unit = voice(event.note, event.instrument, dry, seed, sample_rate);
         unit.set_sample_rate(sample_rate);
         unit.allocate();
         let duration = event.duration.as_secs_f64();
         let (attack, release) = envelope_times(event.instrument, duration);
         Self {
-            renderer: BlockRateAdapter::new(unit),
+            renderer: BlockRateAdapter::new(unit).into(),
             elapsed: 0.0,
             duration: Some(duration),
             midi_token: None,
@@ -75,8 +117,20 @@ impl GatedVoice {
         }
     }
 
+    #[cfg(test)]
     fn held(event: NoteEvent, token: u64, sample_rate: f64, dry: bool, seed: u64) -> Self {
-        let mut voice = Self::new(event, sample_rate, dry, seed);
+        Self::held_with_patch(event, SynthPatch::default(), token, sample_rate, dry, seed)
+    }
+
+    fn held_with_patch(
+        event: NoteEvent,
+        patch: SynthPatch,
+        token: u64,
+        sample_rate: f64,
+        dry: bool,
+        seed: u64,
+    ) -> Self {
+        let mut voice = Self::with_patch(event, patch, sample_rate, dry, seed);
         voice.duration = None;
         voice.midi_token = Some(token);
         (voice.attack, voice.release) = preset_envelope_times(event.instrument);
@@ -95,7 +149,19 @@ impl GatedVoice {
         }
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     fn sample(&mut self) -> Option<(f32, f32)> {
+        if let VoiceRenderer::Synth(synth) = &mut self.renderer {
+            if self.duration.is_some_and(|duration| self.elapsed >= duration) {
+                synth.gate_off();
+            }
+            if synth.finished() {
+                return None;
+            }
+            let value = synth.sample() as f32;
+            self.elapsed += self.sample_period;
+            return Some((value, value));
+        }
         let release_gain = if let Some(duration) = self.duration {
             if duration == 0.0 || self.elapsed >= duration + self.release {
                 return None;
@@ -114,7 +180,10 @@ impl GatedVoice {
             smooth_gain(self.elapsed / self.attack)
         };
         let gain = attack_gain * release_gain * self.release_level;
-        let (l, r) = self.renderer.get_stereo();
+        let VoiceRenderer::Legacy(renderer) = &mut self.renderer else {
+            unreachable!()
+        };
+        let (l, r) = renderer.get_stereo();
         self.elapsed += self.sample_period;
         Some((l * gain, r * gain))
     }
@@ -212,7 +281,19 @@ struct TrackVoices {
 }
 
 impl TrackVoices {
-    fn clear(&mut self, retired: &Sender<Renderer>) {
+    fn apply_patch(&mut self, patch: SynthPatch) {
+        for voice in self
+            .active
+            .iter_mut()
+            .chain(self.releasing.iter_mut().map(|(voice, _)| voice))
+        {
+            if let VoiceRenderer::Synth(synth) = &mut voice.renderer {
+                let _ = synth.apply_patch(patch);
+            }
+        }
+    }
+
+    fn clear(&mut self, retired: &Sender<VoiceRenderer>) {
         if let Some(voice) = self.active.take() {
             let _ = retired.send(voice.renderer);
         }
@@ -221,7 +302,7 @@ impl TrackVoices {
         }
     }
 
-    fn trigger(&mut self, voice: GatedVoice, retired: &Sender<Renderer>) {
+    fn trigger(&mut self, voice: GatedVoice, retired: &Sender<VoiceRenderer>) {
         if let Some((old, _)) = self.releasing.take() {
             let _ = retired.send(old.renderer);
         }
@@ -229,7 +310,7 @@ impl TrackVoices {
         self.active = Some(voice);
     }
 
-    fn sample(&mut self, retired: &Sender<Renderer>) -> (f32, f32) {
+    fn sample(&mut self, retired: &Sender<VoiceRenderer>) -> (f32, f32) {
         let mut sample = (0.0, 0.0);
         if let Some(voice) = &mut self.active {
             if let Some(value) = voice.sample() {
@@ -257,7 +338,8 @@ impl TrackVoices {
 struct Output {
     renderer: Renderer,
     commands: Receiver<OutputCommand>,
-    retired: Sender<Renderer>,
+    synth_updates: Receiver<(usize, SynthPatch)>,
+    retired: Sender<VoiceRenderer>,
     tracks: Vec<TrackVoices>,
     previews: Vec<TrackVoices>,
     midi_previews: Vec<TrackVoices>,
@@ -267,10 +349,11 @@ struct Output {
 }
 
 impl Output {
-    fn new(renderer: Renderer, commands: Receiver<OutputCommand>, retired: Sender<Renderer>) -> Self {
+    fn new(renderer: Renderer, commands: Receiver<OutputCommand>, retired: Sender<VoiceRenderer>) -> Self {
         Self {
             renderer,
             commands,
+            synth_updates: mpsc::sync_channel(crate::project_file::MAX_TRACKS).1,
             retired,
             meters: Arc::default(),
             channel_samples: vec![(0.0, 0.0); crate::project_file::MAX_TRACKS],
@@ -288,6 +371,15 @@ impl Output {
     }
 
     fn sample(&mut self) -> (f32, f32) {
+        // Patch targets have their own bounded queue; prepare new notes from the
+        // current document, not from this potentially lagging update stream.
+        for (track, patch) in self.synth_updates.try_iter().take(crate::project_file::MAX_TRACKS) {
+            for slots in [&mut self.tracks, &mut self.previews, &mut self.midi_previews] {
+                if let Some(slot) = slots.get_mut(track) {
+                    slot.apply_patch(patch);
+                }
+            }
+        }
         // One FIFO orders cancellation before the next run's triggers, even when
         // the control thread sends commands while this callback is draining it.
         while let Ok(command) = self.commands.try_recv() {
@@ -319,7 +411,7 @@ impl Output {
                         track.mixer.reset();
                     }
                     let old = std::mem::replace(&mut self.renderer, renderer);
-                    let _ = self.retired.send(old);
+                    let _ = self.retired.send(old.into());
                 }
                 OutputCommand::ReleaseMidiPreview(token) => {
                     for track in &mut self.midi_previews {
@@ -397,6 +489,22 @@ fn replace_graph(sequencer: &mut Sequencer, replacements: &Sender<OutputCommand>
     let _ = replacements.send(OutputCommand::Replace(renderer));
 }
 
+fn sync_synth_targets(
+    sender: &SyncSender<(usize, SynthPatch)>,
+    cached: &mut Vec<Option<SynthPatch>>,
+    patches: &[SynthPatch],
+) {
+    if patches.len() > crate::project_file::MAX_TRACKS || patches.iter().any(|patch| patch.validate().is_err()) {
+        return;
+    }
+    cached.resize(patches.len(), None);
+    for (track, &patch) in patches.iter().enumerate() {
+        if cached[track] != Some(patch) && sender.try_send((track, patch)).is_ok() {
+            cached[track] = Some(patch);
+        }
+    }
+}
+
 fn sync_channel_targets(
     sender: &Sender<OutputCommand>,
     cached: &mut Vec<crate::project::ChannelSettings>,
@@ -433,10 +541,13 @@ fn sync_channel_targets(
 pub struct AudioEngine {
     sequencer: Sequencer,
     replacements: Sender<OutputCommand>,
-    retired: Receiver<Renderer>,
+    retired: Receiver<VoiceRenderer>,
     sample_rate: f64,
     dry: bool,
     channel_targets: Vec<crate::project::ChannelSettings>,
+    synth_targets: Vec<SynthPatch>,
+    synth_sent: Vec<Option<SynthPatch>>,
+    synth_updates: SyncSender<(usize, SynthPatch)>,
     meters: Arc<crate::meter::Meters>,
     meter_generation: u32,
     // Keep the output stream alive for as long as the engine.
@@ -476,7 +587,9 @@ impl AudioEngine {
         let (sequencer, renderer) = prepare(sample_rate);
         let (replacements, receiver) = mpsc::channel();
         let (retired_sender, retired) = mpsc::channel();
-        let output = Output::new(renderer, receiver, retired_sender);
+        let mut output = Output::new(renderer, receiver, retired_sender);
+        let (synth_updates, synth_receiver) = mpsc::sync_channel(crate::project_file::MAX_TRACKS);
+        output.synth_updates = synth_receiver;
         let meters = Arc::clone(&output.meters);
 
         let stream = match config.sample_format() {
@@ -494,6 +607,9 @@ impl AudioEngine {
             sample_rate,
             dry,
             channel_targets: Vec::new(),
+            synth_targets: Vec::new(),
+            synth_sent: Vec::new(),
+            synth_updates,
             meters,
             meter_generation: 0,
             _stream: stream,
@@ -523,6 +639,15 @@ impl AudioEngine {
         );
     }
 
+    /// Send changed track patches before scheduling project voices.
+    pub fn sync_synth_patches(&mut self, patches: &[SynthPatch]) {
+        if patches.len() <= crate::project_file::MAX_TRACKS && patches.iter().all(|patch| patch.validate().is_ok()) {
+            sync_synth_targets(&self.synth_updates, &mut self.synth_sent, patches);
+            self.synth_targets.clear();
+            self.synth_targets.extend_from_slice(patches);
+        }
+    }
+
     pub fn play_event(&mut self, event: NoteEvent) {
         self.collect_retired();
         if event.track >= crate::project_file::MAX_TRACKS {
@@ -530,7 +655,7 @@ impl AudioEngine {
         }
         let _ = self.replacements.send(OutputCommand::Trigger {
             track: event.track,
-            voice: GatedVoice::new(event, self.sample_rate, self.dry, rand::random()),
+            voice: self.prepare_voice(event, None),
         });
     }
 
@@ -559,7 +684,7 @@ impl AudioEngine {
         self.collect_retired();
         let _ = self.replacements.send(OutputCommand::MidiPreview {
             track: event.track,
-            voice: GatedVoice::held(event, token, self.sample_rate, self.dry, rand::random()),
+            voice: self.prepare_voice(event, Some(token)),
         });
     }
 
@@ -569,7 +694,7 @@ impl AudioEngine {
         if event.track < crate::project_file::MAX_TRACKS {
             let _ = self.replacements.send(OutputCommand::Preview {
                 track: event.track,
-                voice: GatedVoice::new(event, self.sample_rate, self.dry, rand::random()),
+                voice: self.prepare_voice(event, None),
             });
         }
     }
@@ -588,6 +713,14 @@ impl AudioEngine {
     /// Consume peaks since the previous UI sample; never called from the callback.
     pub fn sample_meters(&self, display: &mut crate::meter::MeterDisplay, tracks: usize, elapsed: Duration) {
         display.update(&self.meters, self.meter_generation, tracks, elapsed);
+    }
+
+    fn prepare_voice(&self, event: NoteEvent, token: Option<u64>) -> GatedVoice {
+        let patch = self.synth_targets.get(event.track).copied().unwrap_or_default();
+        token.map_or_else(
+            || GatedVoice::with_patch(event, patch, self.sample_rate, self.dry, rand::random()),
+            |token| GatedVoice::held_with_patch(event, patch, token, self.sample_rate, self.dry, rand::random()),
+        )
     }
 
     fn collect_retired(&self) {
@@ -622,7 +755,20 @@ fn schedule_voice(
 ) {
     let seconds = duration.as_secs_f64();
     let (attack, release) = envelope_times(instrument, seconds);
-    if seconds > 0.0 {
+    if seconds > 0.0 && instrument == Instrument::Synth {
+        sequencer.push_relative(
+            0.0,
+            seconds + SynthPatch::default().envelope.release,
+            Fade::Smooth,
+            0.0,
+            0.0,
+            Box::new(fundsp::prelude32::An(synth_adapter::SynthNode::new(
+                note.freq(),
+                sample_rate,
+                Some(seconds),
+            ))),
+        );
+    } else if seconds > 0.0 {
         sequencer.push_relative(
             0.0,
             seconds + release,
@@ -643,6 +789,7 @@ fn envelope_times(instrument: Instrument, duration: f64) -> (f64, f64) {
 
 const fn preset_envelope_times(instrument: Instrument) -> (f64, f64) {
     match instrument {
+        Instrument::Synth => (0.0, 0.2),
         Instrument::Pad => (0.35, 0.6),
         Instrument::Drone => (0.2, 0.45),
         Instrument::Sustain => (0.008, 0.04),
@@ -663,7 +810,15 @@ fn voice(note: Note, instrument: Instrument, dry: bool, seed: u64, sample_rate: 
     // Leave a margin below Nyquist: FunDSP filters do not clamp cutoff inputs.
     #[allow(clippy::cast_possible_truncation)]
     let max_cutoff = (sample_rate * 0.45) as f32;
+    if instrument == Instrument::Synth {
+        return Box::new(fundsp::prelude32::An(synth_adapter::SynthNode::new(
+            note.freq(),
+            sample_rate,
+            None,
+        )));
+    }
     let waveform = match instrument {
+        Instrument::Synth => unreachable!("handled by the synth adapter"),
         Instrument::Pluck => {
             let waveform = Net::wrap(Box::new(
                 zero() >> pluck(hz, DEFAULT_PLUCK_DECAY, DEFAULT_PLUCK_DAMPING) * DEFAULT_VOICE_GAIN,
@@ -795,7 +950,7 @@ mod tests {
             .send(OutputCommand::Trigger {
                 track: 0,
                 voice: GatedVoice {
-                    renderer: BlockRateAdapter::new(Box::new(fundsp::prelude32::dc((0.99, 0.99)))),
+                    renderer: BlockRateAdapter::new(Box::new(fundsp::prelude32::dc((0.99, 0.99)))).into(),
                     elapsed: 1.0,
                     duration: Some(10.0),
                     midi_token: None,
@@ -984,7 +1139,7 @@ mod tests {
         let mut output = Output::new(renderer, receiver, retired);
         let mut display = MeterDisplay::default();
         let constant = || GatedVoice {
-            renderer: BlockRateAdapter::new(Box::new(fundsp::prelude32::dc((0.6, -0.6)))),
+            renderer: BlockRateAdapter::new(Box::new(fundsp::prelude32::dc((0.6, -0.6)))).into(),
             elapsed: 1.0,
             duration: Some(10.0),
             midi_token: None,

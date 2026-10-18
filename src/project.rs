@@ -8,6 +8,7 @@ pub struct Project {
     pub order: Vec<usize>,
     pub(crate) instruments: Vec<Instrument>,
     pub(crate) channels: Vec<ChannelSettings>,
+    pub(crate) synth_patches: Vec<crate::synth::SynthPatch>,
 }
 
 impl Default for Project {
@@ -25,6 +26,7 @@ impl Project {
             order: vec![0],
             instruments: vec![Instrument::default(); tracks],
             channels: vec![ChannelSettings::default(); tracks],
+            synth_patches: vec![crate::synth::SynthPatch::default(); tracks],
         }
     }
 
@@ -54,6 +56,16 @@ impl Project {
     #[must_use]
     pub fn instrument(&self, track: usize) -> Instrument {
         self.instruments.get(track).copied().unwrap_or_default()
+    }
+
+    #[must_use]
+    pub fn synth_patches(&self) -> &[crate::synth::SynthPatch] {
+        &self.synth_patches
+    }
+
+    #[must_use]
+    pub fn synth_patch(&self, track: usize) -> crate::synth::SynthPatch {
+        self.synth_patches.get(track).copied().unwrap_or_default()
     }
 
     pub fn set_instrument(&mut self, track: usize, instrument: Instrument) {
