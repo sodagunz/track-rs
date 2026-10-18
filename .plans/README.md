@@ -60,7 +60,8 @@ gap is closed: discovery/connect and cleanup are isolated on one bounded worker,
 with a UI deadline rather than hard OS cancellation. Approved 016/017/018 scope
 is implemented; their specialized listening/physical-device checks remain pending.
 Song capture, velocity/expression, clock and auto-reconnect remain deferred.
-No 020 implementation is implied.
+020 was separately approved on 2026-10-18; its standalone DSP checkpoint is now
+implemented, with tracker integration still pending.
 
 Musical-time scope is resolved in favor of 019's proposed sparse event timeline and fixed 960 PPQ, separating meter, pattern length, grid, edit step and duration. Per-bar grid changes must not retime music. Pattern-local meter first; arbitrary tuplets and continuous song meter automation remain deferred. The user approved starting implementation in this order. Approval is not an implemented-status label.
 
@@ -68,7 +69,7 @@ Musical-time scope is resolved in favor of 019's proposed sparse event timeline 
 
 | Plan | Status and scope |
 | --- | --- |
-| [020 — Three-oscillator synth](020-three-oscillator-synth.md) | Planned, manual-friendly DSP: three oscillators, resonant LPF and amplitude ADSR. Ownership optional; do not auto-implement in a batch without an explicit request. Independent of 019/022. |
+| [020 — Three-oscillator synth](020-three-oscillator-synth.md) | Approved and in progress: standalone DSP and WAV audition example implemented. Track-owned persistence/history, audio routing and F4 controls remain pending. Independent of 019/022. |
 | [021 — VST3 hosting](021-vst3-hosting.md) | Draft only: bounded offline instrument-host experiment before dependency choice or full-host approval; effects and native editors are later scope. |
 | [022 — Engine and frontends](022-engine-and-frontends.md) | Draft only: embedded engine seam first, local headless server/TUI client later, GPUI last. No distributed rewrite or GUI implementation approved. |
 

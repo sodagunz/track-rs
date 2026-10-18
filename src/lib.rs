@@ -17,6 +17,7 @@ pub mod midi;
 #[cfg(test)]
 mod playback_tests;
 pub mod state;
+pub mod synth;
 pub mod theme;
 #[cfg(test)]
 mod timing_integration_tests;

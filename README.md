@@ -12,6 +12,20 @@ order: musical time and grids, metronome/count-in and arming, quantized live
 recording, then MIDI input. Musical time/grid editing, metronome/count-in,
 arming, fixed-gate Pattern recording and optional MIDI input are implemented.
 
+### Synth DSP preview
+
+Plan 020's three-oscillator synth has a standalone, device-free WAV example:
+
+```sh
+cargo run --example synth_render -- /tmp/track-synth.wav
+```
+
+Use a new output filename. It renders a held note, a smoothed filter edit and
+release; edit `examples/synth_render.rs` to try other patches. The synth isn't
+wired into F4 or project files yet. See [020](.plans/020-three-oscillator-synth.md#dsp-checkpoint--2026-10-18)
+for DSP choices, headroom and remaining work. Triangle isn't band-limited;
+resonance can clip, and automated checks don't replace listening.
+
 ### MIDI input
 
 Start disconnected; no MIDI device opens automatically. In Normal mode:
