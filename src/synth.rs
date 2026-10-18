@@ -10,7 +10,7 @@
 
 use std::f64::consts::{PI, TAU};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Waveform {
     Sine,
     Saw,
@@ -18,7 +18,8 @@ pub enum Waveform {
     Triangle,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Oscillator {
     pub waveform: Waveform,
     pub coarse: f64,
@@ -37,7 +38,8 @@ impl Default for Oscillator {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Envelope {
     pub attack: f64,
     pub decay: f64,
@@ -46,7 +48,8 @@ pub struct Envelope {
 }
 
 /// Parameter values only; waveform and envelope edits take effect at gate-on.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SynthPatch {
     pub oscillators: [Oscillator; 3],
     pub cutoff: f64,
@@ -115,6 +118,7 @@ enum Stage {
 ///
 /// Construction validates the rate (8–192 kHz). Gate-on resets filter and phases.
 /// Live tuning/gain/cutoff/Q targets use a 10 ms exponential time constant.
+#[derive(Clone)]
 pub struct SynthVoice {
     rate: f64,
     smoothing: f64,

@@ -186,6 +186,7 @@ pub fn load(path: &Path) -> anyhow::Result<Project> {
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
     Ok(Project {
+        synth_patches: vec![crate::synth::SynthPatch::default(); document.instruments.len()],
         channels: document.channels,
         bpm: document.bpm,
         instruments: document.instruments,
@@ -223,6 +224,8 @@ struct EventDocument {
     bpm: f64,
     instruments: Vec<Instrument>,
     channels: Vec<crate::project::ChannelSettings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    synth_patches: Option<Vec<crate::synth::SynthPatch>>,
     patterns: Vec<EventPattern>,
     order: Vec<usize>,
 }
@@ -277,6 +280,14 @@ struct StoredEvent {
 impl EventDocument {
     fn from_project(project: &Project) -> anyhow::Result<Self> {
         ensure!(
+            project.synth_patches.len() == project.instruments.len(),
+            "Inconsistent synth patch dimensions"
+        );
+        ensure!(
+            project.synth_patches.iter().all(|patch| patch.validate().is_ok()),
+            "Invalid synth patch"
+        );
+        ensure!(
             project.event_count() <= MAX_EVENTS,
             "Project exceeds {MAX_EVENTS} events"
         );
@@ -301,6 +312,12 @@ impl EventDocument {
             bpm: project.bpm,
             instruments: project.instruments.clone(),
             channels: project.channels.clone(),
+            synth_patches: (project.instruments.contains(&Instrument::Synth)
+                || project
+                    .synth_patches
+                    .iter()
+                    .any(|patch| *patch != crate::synth::SynthPatch::default()))
+            .then(|| project.synth_patches.clone()),
             order: project.order.clone(),
             patterns: project
                 .patterns
@@ -348,6 +365,16 @@ impl EventDocument {
             self.patterns.len(),
             &self.order,
         )?;
+        if let Some(patches) = &self.synth_patches {
+            ensure!(
+                patches.len() == self.instruments.len(),
+                "Inconsistent synth patch dimensions"
+            );
+            ensure!(
+                patches.iter().all(|patch| patch.validate().is_ok()),
+                "Invalid synth patch"
+            );
+        }
         let mut total = 0usize;
         for pattern in &self.patterns {
             pattern.grid_map()?;
@@ -413,6 +440,9 @@ impl EventDocument {
             patterns.push(pattern);
         }
         Ok(Project {
+            synth_patches: self
+                .synth_patches
+                .unwrap_or_else(|| vec![crate::synth::SynthPatch::default(); self.instruments.len()]),
             bpm: self.bpm,
             instruments: self.instruments,
             channels: self.channels,

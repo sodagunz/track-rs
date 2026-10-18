@@ -50,12 +50,13 @@ fn main_loop<W: std::io::Write>(
                 midi.command(&command, app_state, audio_engine);
             }
         }
+        audio_engine.sync_channels(app_state.project.channels());
+        audio_engine.sync_synth_patches(app_state.project.synth_patches());
         let now = Instant::now();
         if !midi.poll(app_state, audio_engine, &mut transport, now) {
             pending = listener.try_recv().ok();
             continue;
         }
-        audio_engine.sync_channels(app_state.project.channels());
         let focus = midi_focus(app_state);
         for event in transport.update_app(now, app_state, || audio_engine.stop()) {
             audio_engine.play_event(event);

@@ -1,6 +1,6 @@
 # 020 — Three-oscillator subtractive synth
 
-Status: in progress, 2026-10-18. The user explicitly approved starting 020. The first checkpoint is the independently renderable DSP core; tracker integration, persistence/history and F4 editing remain unfinished. Plans 021/022 remain unapproved.
+Status: in progress, 2026-10-18. The independently renderable DSP core and track-owned persistence/history/audio routing are implemented. F4 selects/auditions Synth; numeric patch editing and listening acceptance remain pending. Plans 021/022 remain unapproved.
 
 ## Outcome
 
@@ -62,7 +62,8 @@ cargo run --example synth_render -- /tmp/track-synth.wav
 ```
 
 The destination must not already exist. Edit the example's patch to experiment.
-This is not yet an instrument assignment in the tracker.
+At this first checkpoint, this was not yet an instrument assignment in the tracker;
+the integration checkpoint below adds it.
 
 Decisions for this checkpoint:
 
@@ -87,6 +88,58 @@ zero stages/gate, live release targets, invalid values, deterministic retrigger,
 block-size independence and finite high-Q/high-tuning output at 8/12/48/96 kHz.
 Physical listening and integration acceptance below remain pending.
 
+## Tracker checkpoint — 2026-10-18
+
+`Instrument::Synth` is appended after the eleven unchanged built-ins. F4's existing
+`[`/`]` selection and Enter audition work, as do Pattern/Song playback, terminal
+entry previews and held MIDI monitoring. The control thread resolves the selected
+track's patch when preparing each voice; `Instrument`/`NoteEvent` don't carry a
+patch payload. Unsynchronized callers use the default. `AudioEngine::play` stays
+the existing Pluck-only legacy helper; the legacy sequencer's Synth path uses the
+default patch through a small FunDSP adapter.
+
+`Project` owns one independent patch per track and retains it when switching
+instruments. `Edit::set_synth_patch` validates atomically, ignores no-ops and joins
+normal revision/undo/redo handling without editing notes. Track append/load/history
+keep patch, instrument and channel dimensions aligned.
+
+Persistence extends v4 with an optional `synth_patches` array of complete value-only
+patches, in track order. Missing/null settings and v1–v3 imports use the documented
+v4 default patch. Explicit arrays must match track count; invalid values or unknown
+nested fields reject the whole load. Files using Synth always store their patches;
+all-default built-in-only projects omit the extension to preserve compact neutral
+files. Older binaries can reject the new field/variant. Version, input/encoded size
+limits and atomic save behavior are unchanged; no DSP state is serialized.
+
+Synth bypasses the legacy outer envelope. Gate duration starts its release rather
+than truncating it; physical MIDI release uses the existing source token. Synth
+voices/boxes are prepared on the control thread and retired through the existing
+control-thread collection path. Existing 5 ms retrigger retirement, isolated
+song/terminal/MIDI slots, cancellation and downstream channel processing remain.
+No arbitrary release cap is added. Synth's supported output range is 8–192 kHz.
+
+Live targets reach active and retiring voices in all three routes. The new patch
+queue holds at most 128 updates, drained at most 128 per output sample. Sending is
+nonblocking; full-queue updates retry on the next sync. New notes use the current
+validated document snapshot, not that queue's lagging cache. This doesn't certify
+the pre-existing command/retirement queues as hard real-time safe. Waveform/ADSR
+remain next-note settings; gain/tuning/cutoff/Q retain DSP smoothing.
+
+Eight new tests cover routed samples against the standalone ADSR at 8/12/48/96 kHz,
+one-second release tails, MIDI token ownership/live tail targets, bounded retrigger,
+preview isolation/channel processing/stop, queue backpressure/no-ops, patch history,
+track alignment, persistence migration/invalid-load atomicity and F4 no-write
+audition. Existing built-in sound regressions remain unchanged. The
+`tracker_synth` example exercises real output setup and all three routes; a null
+output smoke isn't evidence of sound quality. F4 numeric editing/reset and physical
+listening remain the next checkpoint, not completed acceptance.
+
+Validation: 366 tests pass (358 inherited, eight new) with both cargo test and
+nextest. Formatting, strict all-target/all-feature Clippy, doc-tests and
+warning-denied documentation pass. Dependency policy passes with existing
+duplicate-version warnings; no dependency changes. All three examples pass,
+including both output-device examples with null ALSA. No physical listening.
+
 ## Delivery and acceptance
 
 1. Agree on DSP ownership, filter/Q limits, phase/curve policy and default patch. Manually implement the standalone synth if desired; no tracker refactor needed first.
@@ -95,4 +148,4 @@ Physical listening and integration acceptance below remain pending.
 
 Device-free tests cover oscillator pitch/mix, attack/decay/sustain/release timing at 44.1/48/96 kHz, zero-time stages, zero gate, early gate-off, retrigger during release, bounded retirement and completion. Assert finite/bounded output over supported extremes, smoothing across block sizes and reproducible renders. Compare elapsed envelope time and tuning across sample rates, not identical sample arrays. Test live edits on held notes/tails, preview isolation, stop cancellation, project migration/round-trip, invalid loads and undo/no-op dirty behavior. Keep existing built-in sound regressions unchanged.
 
-Separately listen for filter character, retrigger/edit clicks, tuning, short gates and clipping with all three oscillators. Automated finite-output checks don't certify sound quality or absence of aliasing. Run focused DSP tests and existing CI when implementation exists; this document changes no audio code.
+Separately listen for filter character, retrigger/edit clicks, tuning, short gates and clipping with all three oscillators. Automated finite-output checks don't certify sound quality or absence of aliasing. Run focused DSP tests and existing CI for each implementation checkpoint.

@@ -1515,7 +1515,7 @@ mod tests {
             ..App::default()
         };
         app.handle_command(Command::PreviousInstrument);
-        assert_eq!(app.project.instrument(2), Instrument::OpenHat);
+        assert_eq!(app.project.instrument(2), Instrument::Synth);
         app.handle_command(Command::NextInstrument);
         assert_eq!(app.project.instrument(2), Instrument::Pluck);
         for expected in Instrument::ALL

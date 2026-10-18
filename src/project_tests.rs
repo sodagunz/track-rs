@@ -49,7 +49,7 @@ fn path_text(path: &Path) -> &str {
 #[test]
 fn all_instrument_names_cycle_and_round_trip_in_version_four() {
     let names = [
-        "Pluck", "Sine", "Square", "Saw", "Kick", "Snare", "HiHat", "Pad", "Drone", "Sustain", "OpenHat",
+        "Pluck", "Sine", "Square", "Saw", "Kick", "Snare", "HiHat", "Pad", "Drone", "Sustain", "OpenHat", "Synth",
     ];
     let mut project = Project::new(1, names.len());
     let mut app = App::default();
@@ -75,6 +75,10 @@ fn all_instrument_names_cycle_and_round_trip_in_version_four() {
 fn version_one_fixture_and_multi_pattern_round_trip_preserve_shared_voices() {
     let project = project_file::load(&fixture()).unwrap();
     assert_eq!(project.bpm, 137.5);
+    assert!(project
+        .synth_patches()
+        .iter()
+        .all(|patch| *patch == crate::synth::SynthPatch::default()));
     assert_eq!(project.order, [0, 0, 1]);
     assert_eq!(project.patterns.len(), 2);
     assert_eq!(project.patterns[1].num_rows(), 3);

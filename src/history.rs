@@ -48,6 +48,11 @@ enum Mutation {
         before: Instrument,
         after: Instrument,
     },
+    SynthPatch {
+        track: usize,
+        before: crate::synth::SynthPatch,
+        after: crate::synth::SynthPatch,
+    },
     Channel {
         track: usize,
         before: ChannelSettings,
@@ -84,6 +89,7 @@ impl Mutation {
             } => (1, pattern, track, start.0),
             Self::Instrument { track, .. } => (2, 0, track, 0),
             Self::Channel { track, .. } => (6, 0, track, 0),
+            Self::SynthPatch { track, .. } => (8, 0, track, 0),
             Self::Tempo { .. } => (3, 0, 0, 0),
             Self::Pattern { index, .. } => (0, index, 0, 0),
             Self::Order { .. } => (4, 0, 0, 0),
@@ -107,6 +113,7 @@ impl Mutation {
             } => before != after || before_id != after_id,
             Self::Instrument { before, after, .. } => before != after,
             Self::Channel { before, after, .. } => before != after,
+            Self::SynthPatch { before, after, .. } => before != after,
             Self::Tempo { before, after } => before != after,
             Self::Pattern { .. } | Self::Track { .. } => true,
             Self::Order { ref before, ref after } => before != after,
@@ -129,6 +136,7 @@ impl Mutation {
             }
             (Self::Instrument { after, .. }, Self::Instrument { after: value, .. }) => *after = value,
             (Self::Channel { after, .. }, Self::Channel { after: value, .. }) => *after = value,
+            (Self::SynthPatch { after, .. }, Self::SynthPatch { after: value, .. }) => *after = value,
             (Self::Tempo { after, .. }, Self::Tempo { after: value, .. }) => *after = value,
             (Self::Order { after, .. }, Self::Order { after: value, .. }) => *after = value,
             _ => unreachable!("same mutation key"),
@@ -157,9 +165,11 @@ impl Mutation {
                 if forward {
                     project.instruments.push(instrument);
                     project.channels.push(ChannelSettings::default());
+                    project.synth_patches.push(crate::synth::SynthPatch::default());
                 } else {
                     project.instruments.pop();
                     project.channels.pop();
+                    project.synth_patches.pop();
                 }
             }
             Self::Event {
@@ -182,6 +192,9 @@ impl Mutation {
                 project.set_instrument(track, if forward { after } else { before });
             }
             Self::Channel { track, before, after } => project.channels[track] = if forward { after } else { before },
+            Self::SynthPatch { track, before, after } => {
+                project.synth_patches[track] = if forward { after } else { before }
+            }
             Self::Tempo { before, after } => project.bpm = if forward { after } else { before },
             Self::Pattern {
                 index,
@@ -221,6 +234,15 @@ impl Edit<'_> {
             let before = target.grid().clone();
             target.set_grid(after.clone());
             self.changes.push(Mutation::Grid { pattern, before, after });
+        }
+    }
+
+    pub fn set_synth_patch(&mut self, track: usize, after: crate::synth::SynthPatch) {
+        if let Some(&before) = self.project.synth_patches.get(track) {
+            if after.validate().is_ok() && before != after {
+                self.changes.push(Mutation::SynthPatch { track, before, after });
+                self.project.synth_patches[track] = after;
+            }
         }
     }
 
