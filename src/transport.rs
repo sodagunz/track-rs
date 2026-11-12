@@ -1,4 +1,6 @@
-//! Device-free playback clock. Deadlines, not UI redraws, own row advancement.
+//! Device-free playback clock. Anchored tick deadlines, not redraws, own advancement.
+#[path = "transport_clock.rs"]
+mod clock;
 use std::time::{Duration, Instant};
 
 use crate::tracker::{Instrument, Note, Pattern};
@@ -16,6 +18,7 @@ pub struct RowEvent {
 pub struct NoteEvent {
     pub track: usize,
     pub instrument: Instrument,
+    /// Pitch/octave and legacy entry metadata; `duration` owns the scheduled gate.
     pub note: Note,
     pub beats: f64,
     pub duration: Duration,
@@ -45,6 +48,41 @@ pub fn collect_row(pattern: &Pattern, instruments: &[Instrument], event: RowEven
         .collect()
 }
 
+/// Collect exactly one canonical start per track, never a projected row bucket.
+#[must_use]
+pub fn collect_tick(pattern: &Pattern, instruments: &[Instrument], event: PlaybackEvent) -> Vec<NoteEvent> {
+    let Some(clock) = clock::TickClock::new(event.scheduled_at, event.absolute_tick, event.bpm) else {
+        return Vec::new();
+    };
+    pattern
+        .tracks
+        .iter()
+        .enumerate()
+        .filter_map(|(track, values)| {
+            let index = values
+                .events()
+                .binary_search_by_key(&event.tick, |value| value.start_tick)
+                .ok()?;
+            let value = values.events()[index];
+            Some(NoteEvent {
+                track,
+                instrument: instruments.get(track).copied().unwrap_or_default(),
+                note: Note {
+                    pitch: value.pitch,
+                    octave: value.octave,
+                    length_ticks: u16::try_from(value.duration_ticks.ticks() / 15)
+                        .ok()
+                        .filter(|_| value.duration_ticks.ticks().is_multiple_of(15))
+                        .and_then(|ticks| crate::tracker::NoteLength::try_from(ticks).ok())
+                        .unwrap_or_default(),
+                },
+                beats: f64::from(value.duration_ticks.ticks()) / 960.0,
+                duration: clock.duration(u64::from(value.duration_ticks.ticks()))?,
+            })
+        })
+        .collect()
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum PlaybackRoute {
     Pattern(usize),
@@ -56,6 +94,36 @@ pub struct PlaybackEvent {
     pub pattern: usize,
     pub order: Option<usize>,
     pub row: RowEvent,
+    pub tick: crate::musical_time::Tick,
+    pub absolute_tick: u64,
+    pub generation: u64,
+    pub bpm: f64,
+    pub scheduled_at: Instant,
+}
+
+/// Immutable tempo segment for timestamp mapping. A restarted run has a new generation.
+#[derive(Clone, Copy, Debug)]
+pub struct ClockSnapshot {
+    generation: u64,
+    segment: clock::TickClock,
+}
+
+impl ClockSnapshot {
+    #[must_use]
+    pub const fn generation(self) -> u64 {
+        self.generation
+    }
+
+    #[must_use]
+    pub const fn anchor(self) -> (Instant, u64) {
+        (self.segment.time, self.segment.tick)
+    }
+
+    /// Map a timestamp through this segment, never the current UI tempo or cursor.
+    #[must_use]
+    pub fn tick_at(self, time: Instant) -> Option<u64> {
+        self.segment.position(time)
+    }
 }
 
 #[derive(Default)]
@@ -64,6 +132,10 @@ pub struct Transport {
     row: usize,
     route: Option<PlaybackRoute>,
     start_offset: usize,
+    tick_start: u64,
+    next_tick: u64,
+    clock: Option<clock::TickClock>,
+    generation: u64,
 }
 
 impl Transport {
@@ -85,21 +157,33 @@ impl Transport {
             PlaybackRoute::Pattern(app.playing_pattern)
         };
         self.start_at(&app.project, route, app.playing_order, app.playback_row);
-        let Some(event) = self.update_project(now, playing, &app.project, route, DEFAULT_ROWS_PER_BEAT) else {
-            return Vec::new();
-        };
-        app.playback_row = event.row.row;
-        app.playing_pattern = event.pattern;
-        app.playing_order = event.order.unwrap_or(0);
-        collect_row(
-            &app.project.patterns[event.pattern],
-            app.project.instruments(),
-            event.row,
-        )
+        let mut notes = Vec::new();
+        // Small wake jitter catches up in order. Long stalls skip stale music arithmetically.
+        for _ in 0..256 {
+            let at = self
+                .deadline
+                .filter(|deadline| now.saturating_duration_since(*deadline) <= Duration::from_millis(50))
+                .map_or(now, |deadline| deadline.min(now));
+            let Some(event) = self.update_project(at, playing, &app.project, route, DEFAULT_ROWS_PER_BEAT) else {
+                break;
+            };
+            app.playback_row = event.row.row;
+            app.playing_pattern = event.pattern;
+            app.playing_order = event.order.unwrap_or(0);
+            notes.extend(collect_tick(
+                &app.project.patterns[event.pattern],
+                app.project.instruments(),
+                event,
+            ));
+            if self.deadline.is_none_or(|deadline| deadline > now) {
+                break;
+            }
+        }
+        notes
     }
 
-    /// Flatten one cycle, skip elapsed cycles arithmetically, then locate one row.
-    /// Work is bounded by order length, never by the number of missed deadlines.
+    /// Locate the latest elapsed musical boundary; skip whole cycles arithmetically.
+    /// Tempo changes keep the next committed deadline and reanchor future ticks there.
     pub fn update_project(
         &mut self,
         now: Instant,
@@ -108,48 +192,83 @@ impl Transport {
         route: PlaybackRoute,
         rows_per_beat: u32,
     ) -> Option<PlaybackEvent> {
-        let route = if self.deadline.is_some() {
+        let Some(spacing) = crate::musical_time::PPQ
+            .checked_div(u64::from(rows_per_beat))
+            .filter(|spacing| *spacing > 0)
+        else {
+            self.stop();
+            return None;
+        };
+        if !playing {
+            self.stop();
+            return None;
+        }
+        let route = if self.clock.is_some() {
             self.route.unwrap_or(route)
         } else {
             route
         };
         self.route = Some(route);
-        match route {
-            PlaybackRoute::Pattern(pattern) => {
-                let rows = project
-                    .patterns
-                    .get(pattern)
-                    .map_or(0, crate::tracker::Pattern::num_rows);
-                let row = self.update(now, playing, rows, project.bpm, rows_per_beat)?;
-                Some(PlaybackEvent {
-                    pattern,
-                    order: None,
-                    row,
-                })
+        let absolute = if let Some(mut clock) = self.clock {
+            let boundary = self.deadline?;
+            if now < boundary {
+                return None;
             }
-            PlaybackRoute::Song => {
-                let rows = project.order.iter().try_fold(0_usize, |total, &index| {
-                    total.checked_add(project.patterns.get(index)?.num_rows())
-                });
-                let Some(rows) = rows.filter(|&rows| rows > 0) else {
+            if !clock.same_tempo(project.bpm) {
+                let Some(new) = clock::TickClock::new(boundary, self.next_tick, project.bpm) else {
                     self.stop();
                     return None;
                 };
-                let mut row = self.update(now, playing, rows, project.bpm, rows_per_beat)?;
-                for (order, &pattern) in project.order.iter().enumerate() {
-                    let length = project.patterns[pattern].num_rows();
-                    if row.row < length {
-                        return Some(PlaybackEvent {
-                            pattern,
-                            order: Some(order),
-                            row,
-                        });
-                    }
-                    row.row -= length;
-                }
-                None
+                clock = new;
+                self.clock = Some(clock);
             }
-        }
+            let Some(target) = clock.position(now) else {
+                self.stop();
+                return None;
+            };
+            let Some(position) = clock::locate(project, route, target) else {
+                self.stop();
+                return None;
+            };
+            position.previous_boundary(project, spacing).max(self.next_tick)
+        } else {
+            let Some(clock) = clock::TickClock::new(now, self.tick_start, project.bpm) else {
+                self.stop();
+                return None;
+            };
+            self.clock = Some(clock);
+            self.generation = self.generation.checked_add(1)?;
+            self.tick_start
+        };
+        let Some(position) = clock::locate(project, route, absolute) else {
+            self.stop();
+            return None;
+        };
+        let Some(next) = position.next_boundary(project, spacing) else {
+            self.stop();
+            return None;
+        };
+        let clock = self.clock?;
+        let Some(deadline) = clock.deadline(next) else {
+            self.stop();
+            return None;
+        };
+        self.next_tick = next;
+        self.deadline = Some(deadline);
+        Some(PlaybackEvent {
+            pattern: position.pattern,
+            order: position.order,
+            tick: crate::musical_time::Tick(position.local),
+            absolute_tick: absolute,
+            generation: self.generation,
+            bpm: project.bpm,
+            scheduled_at: clock.deadline(absolute)?,
+            row: RowEvent {
+                row: usize::try_from(position.local / spacing).ok()?,
+                beats: 1.0 / f64::from(rows_per_beat),
+                duration: clock.duration(spacing)?,
+            },
+        })
     }
 
     /// Set the initial flattened row only before a run; active routes stay pinned.
@@ -157,6 +276,29 @@ impl Transport {
         if self.deadline.is_some() {
             return;
         }
+        self.tick_start = match route {
+            PlaybackRoute::Pattern(index) => project.patterns.get(index).map_or(0, |pattern| {
+                row.min(pattern.num_rows().saturating_sub(1)) as u64 * crate::musical_time::LEGACY_ROW_TICKS
+            }),
+            PlaybackRoute::Song => {
+                let order = order.min(project.order.len().saturating_sub(1));
+                let prefix = project
+                    .order
+                    .iter()
+                    .take(order)
+                    .filter_map(|&index| project.patterns.get(index))
+                    .fold(0u64, |sum, pattern| sum.saturating_add(pattern.length_ticks().0));
+                prefix.saturating_add(
+                    project
+                        .order
+                        .get(order)
+                        .and_then(|&index| project.patterns.get(index))
+                        .map_or(0, |pattern| {
+                            row.min(pattern.num_rows().saturating_sub(1)) as u64 * crate::musical_time::LEGACY_ROW_TICKS
+                        }),
+                )
+            }
+        };
         self.start_offset = match route {
             PlaybackRoute::Pattern(index) => project
                 .patterns
@@ -182,16 +324,28 @@ impl Transport {
     }
 
     #[must_use]
+    pub fn clock_snapshot(&self) -> Option<ClockSnapshot> {
+        Some(ClockSnapshot {
+            generation: self.generation,
+            segment: self.clock?,
+        })
+    }
+
+    #[must_use]
     pub const fn deadline(&self) -> Option<Instant> {
         self.deadline
     }
 
     pub const fn stop(&mut self) {
+        self.clock = None;
+        self.tick_start = 0;
+        self.next_tick = 0;
         self.deadline = None;
         self.route = None;
         self.start_offset = 0;
     }
 
+    /// Legacy standalone row-clock compatibility. Project/app playback uses tick segments.
     /// Invalid rates or empty patterns stop the clock. A new start emits its chosen row.
     /// Tempo changes apply at the already scheduled boundary. Late updates emit
     /// only the current row, skipping stale rows in constant time. Unrepresentable
@@ -246,6 +400,40 @@ impl Transport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn snapshots_pin_tempo_mapping_and_restart_generation() {
+        let mut project = crate::project::Project::new(4, 1);
+        let now = Instant::now();
+        let mut transport = Transport::default();
+        let first = transport
+            .update_project(now, true, &project, PlaybackRoute::Pattern(0), 4)
+            .unwrap();
+        let old = transport.clock_snapshot().unwrap();
+        assert_eq!(old.anchor(), (now, 0));
+        assert_eq!(old.tick_at(now + Duration::from_millis(125)), Some(240));
+        project.bpm = 60.0;
+        let next = transport
+            .update_project(
+                now + Duration::from_millis(125),
+                true,
+                &project,
+                PlaybackRoute::Pattern(0),
+                4,
+            )
+            .unwrap();
+        assert_eq!(first.generation, next.generation);
+        let new = transport.clock_snapshot().unwrap();
+        assert_eq!(new.anchor(), (now + Duration::from_millis(125), 240));
+        assert_eq!(new.tick_at(now + Duration::from_millis(375)), Some(480));
+        assert_eq!(old.tick_at(now + Duration::from_millis(375)), Some(720));
+        transport.stop();
+        assert!(transport.clock_snapshot().is_none());
+        transport
+            .update_project(now, true, &project, PlaybackRoute::Pattern(0), 4)
+            .unwrap();
+        assert_ne!(old.generation(), transport.clock_snapshot().unwrap().generation());
+    }
+
     #[test]
     fn tempo_commands_keep_boundary_and_resolve_next_note_duration() {
         use crate::{

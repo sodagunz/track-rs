@@ -181,11 +181,14 @@ impl Mutation {
     }
 }
 
+type EventOrigin = (Option<PatternEvent>, Option<EventId>);
+
 /// One atomic edit. Row commands adapt to exact tick-event patches.
 /// Invalid targets and unchanged values are ignored before recording.
 pub struct Edit<'a> {
     project: &'a mut Project,
     changes: Vec<Mutation>,
+    event_origins: BTreeMap<(usize, usize, u64), EventOrigin>,
 }
 
 impl Edit<'_> {
@@ -215,6 +218,7 @@ impl Edit<'_> {
                 .sum(),
         };
         change.apply(self.project, true);
+        self.event_origins.clear();
         self.changes.push(change);
     }
 
@@ -246,6 +250,7 @@ impl Edit<'_> {
         };
         let index = self.project.patterns.len();
         self.project.patterns.push(value.clone());
+        self.event_origins.clear();
         self.changes.push(Mutation::Pattern {
             index,
             value,
@@ -287,6 +292,7 @@ impl Edit<'_> {
         let mut value = pattern.clone();
         value.resize_rows(rows);
         let before = Some(std::mem::replace(&mut self.project.patterns[index], value.clone()));
+        self.event_origins.clear();
         self.changes.push(Mutation::Pattern { index, value, before });
         Ok(())
     }
@@ -326,6 +332,16 @@ impl Edit<'_> {
             return;
         };
         if before != after {
+            // Normalize value round-trips before a later structural edit takes a snapshot.
+            let original = *self
+                .event_origins
+                .entry((pattern, track, start.0))
+                .or_insert((before, before_id));
+            if let (value, Some(id)) = original {
+                if value == after {
+                    target.tracks[track].restore_id(start, id);
+                }
+            }
             self.changes.push(Mutation::Event {
                 pattern,
                 track,
@@ -410,6 +426,7 @@ impl History {
         let mut edit = Edit {
             project,
             changes: Vec::new(),
+            event_origins: BTreeMap::new(),
         };
         operation(&mut edit);
         // Structural changes are barriers: cells and patterns may only exist on
@@ -427,33 +444,7 @@ impl History {
                 changes.push(change);
             }
         }
-        changes.retain(|change| {
-            if change.changed() {
-                return true;
-            }
-            // A value round-trip is not a document edit. Restore its original handle too.
-            if let Mutation::Event {
-                pattern,
-                track,
-                start,
-                before_id: Some(before),
-                after_id,
-                ..
-            } = *change
-            {
-                if let Some(target) = edit
-                    .project
-                    .patterns
-                    .get_mut(pattern)
-                    .and_then(|p| p.tracks.get_mut(track))
-                {
-                    if target.event_id(start) == after_id {
-                        target.restore_id(start, before);
-                    }
-                }
-            }
-            false
-        });
+        changes.retain(Mutation::changed);
         if changes.is_empty() {
             return false;
         }
