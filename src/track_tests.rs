@@ -173,7 +173,7 @@ fn limits_are_atomic_and_total_all_patterns_at_boundary() {
     project.patterns.push(Pattern::new(3392, 4));
     assert!(project.can_append_track());
     project.patterns.push(Pattern::new(1, 4));
-    assert!(!project.can_append_track());
+    assert!(project.can_append_track());
     let mut app = App {
         project,
         ..App::default()
@@ -182,26 +182,27 @@ fn limits_are_atomic_and_total_all_patterns_at_boundary() {
     app.handle_command(Command::Undo);
     let revision = app.revision();
     add(&mut app);
-    assert_eq!(app.revision(), revision);
-    assert!(!app.is_dirty());
+    assert_ne!(app.revision(), revision);
+    assert!(app.is_dirty());
     app.handle_command(Command::Redo);
-    assert_eq!(app.project.bpm.to_bits(), 121.0_f64.to_bits());
+    assert_eq!(app.project.bpm.to_bits(), 120.0_f64.to_bits());
 }
 
 #[test]
-fn column_snapshots_consume_history_budget_without_losing_dirty_revision() {
+fn empty_column_snapshots_do_not_charge_projected_cells() {
     let mut app = App {
         project: Project::new(4096, 1),
         ..App::default()
     };
     app.project.patterns = vec![Pattern::new(4096, 1); MAX_MUTATIONS / 4096];
     let revision = app.revision();
-    add(&mut app); // 65,536 cells plus the instrument exceeds the retention budget.
+    add(&mut app); // Only the sparse column metadata consumes retention budget.
     assert!(app.is_dirty());
     assert_ne!(app.revision(), revision);
     app.handle_command(Command::Undo);
-    assert_eq!(app.project.instruments().len(), 2);
-    assert!(app.is_dirty());
+    assert_eq!(app.project.instruments().len(), 1);
+    assert!(!app.is_dirty());
+    assert_eq!(app.revision(), revision);
 }
 
 #[test]

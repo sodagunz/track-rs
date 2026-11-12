@@ -364,19 +364,35 @@ fn allocation_limits_and_weighted_history_cover_structural_edits() {
     assert_eq!(app.revision(), revision);
     assert!(playing(&app));
 
-    // Valid dimensions, close enough to the total cell cap that another clone won't fit.
+    // Empty sparse patterns are not charged for hypothetical cells.
     app.project = Project::new(4096, 128);
     app.project
         .patterns
         .push(Pattern::new((MAX_CELLS - 4096 * 128) / 128, 128));
     ctrl(&mut app, KeyCode::Char('d'));
+    assert_eq!(app.project.patterns.len(), 3);
+    text(&mut app, "u");
     assert_eq!(app.project.patterns.len(), 2);
-    assert_eq!(app.revision(), revision);
 
     let mut app = App {
         project: Project::new(MAX_MUTATIONS / 32 + 1, 32),
         ..App::default()
     };
+    for row in 0..=MAX_MUTATIONS / 32 {
+        for track in 0..32 {
+            app.project.patterns[0]
+                .set_step(
+                    track,
+                    row,
+                    Some(Note {
+                        pitch: NotePitch::C,
+                        octave: 4,
+                        length_ticks: crate::tracker::NoteLength::default(),
+                    }),
+                )
+                .unwrap();
+        }
+    }
     ctrl(&mut app, KeyCode::Char('d'));
     let revision = app.revision();
     text(&mut app, "u");

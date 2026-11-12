@@ -45,7 +45,7 @@ fn event_handles_survive_edits_history_and_snapshots_but_not_copies() {
     assert_eq!(project.patterns[0].tracks[0].event_id(Tick(0)), Some(id));
 
     let clipboard = EventClipboard::capture(&project.patterns[0], 0..1, Tick(0)..Tick(240));
-    history.edit(&mut project, |edit| clipboard.paste(edit, 0, 0, Tick(240)));
+    history.edit(&mut project, |edit| clipboard.paste(edit, 0, 0, Tick(240)).unwrap());
     let pasted = project.patterns[0].tracks[0].event_id(Tick(240)).unwrap();
     assert_ne!(id, pasted);
     history.undo(&mut project);
@@ -313,25 +313,24 @@ fn bulk_seam_is_atomic_and_mutation_budget_evicts_oversized_edits() {
     );
 
     let mut app = App {
-        project: crate::project::Project::new(MAX_MUTATIONS + 1, 1),
+        project: crate::project::Project::new(4096, 2),
         ..App::default()
     };
-    let pattern = app.selected_pattern;
     app.edit(|edit| {
-        for row in 0..=MAX_MUTATIONS {
-            edit.set_cell(pattern, 0, row, note);
+        for index in 0..=MAX_MUTATIONS {
+            let tick = crate::musical_time::Tick((index / 2) as u64);
+            edit.set_event(
+                0,
+                index % 2,
+                tick,
+                note.map(|note| crate::tracker::PatternEvent::from_note(tick, note)),
+            );
         }
     });
     let oversized = app.revision();
     app.handle_command(Command::Undo);
     assert_eq!(app.revision(), oversized);
-    assert_eq!(
-        app.project.patterns[app.selected_pattern]
-            .get_step(0, MAX_MUTATIONS)
-            .unwrap()
-            .note,
-        note
-    );
+    assert_eq!(app.project.event_count(), MAX_MUTATIONS + 1);
     app.handle_command(Command::IncreaseTempo);
     app.handle_command(Command::Undo);
     assert_eq!(app.revision(), oversized);
