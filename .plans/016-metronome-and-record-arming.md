@@ -1,0 +1,35 @@
+# 016 — Metronome, count-in, and record arming
+
+Status: planned, 2026-10-17. Recommended defaults below are design proposals, not implemented controls. See the [backlog](README.md). Depends on [019](019-musical-time-and-grids.md)'s meter and clock foundation before full click/count-in integration.
+
+## Contract
+
+Record arming is session state, independent of transport and Pattern Insert/Audition. Default off; never serialize it or add it to undo. Stop retains arming; successful project load disarms, failed load changes nothing. Show `REC ARMED` while stopped, meter-aware `COUNT …` during count-in, and `REC` only when live capture is actually eligible. Show `PREVIEW` when notes cannot write. Text must work without color and at narrow widths.
+
+Proposed Normal commands: `:record on|off|toggle`, `:metronome on|off|toggle`, `:countin 0|1` (bars). Reject extra arguments and invalid values atomically. These commands should work in each view's Normal mode, subject to existing prompt/help ownership. Keep Space, Ctrl-Space and `:restart` unchanged. Do not assign a new shortcut until the binding registry's per-view/mode collision tests and actual terminal events are checked; command fallbacks are sufficient initially.
+
+Arming alone never writes notes. Deliver the control with 017's first working capture slice, or explicitly show capture as unavailable until then; never show a false active REC indicator.
+
+## Click and count-in
+
+- Use the transport's anchored monotonic deadlines, not a second UI timer. Use 019's tick positions and pattern-local meter; click denominator units (or explicit compound grouping), accent local bar starts. Four rows per quarter and sixteen rows per bar describe legacy 4/4 only, not the new scheduling contract.
+- Click is a separate bounded audio voice, not a project track, pattern note, or legacy `AudioEngine::play` call. It bypasses channel mute/solo/tone, joins the output sum before master peak/clip measurement, and has a conservative fixed gain. No limiter or clipping guarantee. Stop/restart/load cancels its tail too.
+- Metronome defaults off; when enabled it follows playing transport. First slice has no stopped/free-running click. Settings are session-only, outside project/history; retain click/count-in preferences across loads, but cancel any running count-in.
+- Count-in defaults zero; one means a full bar of the destination meter's configured clicks before an **armed Pattern-mode start**. Sound those clicks even if the ongoing metronome is off. Unarmed playback and Song playback start normally, without count-in.
+- Capture the requested start row/pattern/track at start. Count-in always accents its first beat; musical playback then starts at the requested row, not necessarily a bar boundary. Do not advance the project playhead, trigger song notes, or write count-in input. Input may preview only.
+- Space cancels count-in and stops. Restart cancels old voices and starts a fresh count-in when eligible. Disarming during count-in cancels to Stopped. Structural changes, route changes, successful load and shutdown cancel it. Tempo changes apply at the next scheduled beat; song start follows the final beat interval.
+- A late UI wake must skip stale clicks, never emit a burst or start song notes early. Expose the next count-in deadline to the main loop's existing wait calculation.
+
+## Implementation slices
+
+1. Add explicit stopped/counting/playing transport phases and deadline tests; keep existing no-count-in behavior identical.
+2. Add separate click rendering/cancellation and session settings/commands, then responsive status/help.
+3. Integrate arming and count-in eligibility with 017; demonstrate armed versus unarmed input end to end.
+
+Keep clock/count-in decisions device-free in `src/transport.rs`; runtime orchestration stays in `src/main.rs`. `src/state.rs` owns session intent, not a competing clock. Reuse `src/command.rs`, `src/bindings.rs`, `src/audio.rs` and semantic UI styles. 019 owns project-format/meter migration; this session-control layer adds no further schema change or expected dependency.
+
+## Acceptance
+
+Deterministic tests cover 20/120/300 BPM, cursor/restart starts, partial patterns, beat/bar accents in 3/4, 7/8 and grouped 6/8, partial-bar starts, delayed wakes, tempo transitions and every cancellation path. Offline audio tests cover finite output, bounded click tails, mute/solo independence, metering and stop silence. Real command/key tests cover invalid input, repeat/release filtering, overlays, unchanged history/dirty state, load semantics and narrow text cues. Manually check audible click level and count-in/start alignment; automated timing is not an output-latency measurement.
+
+Use focused tests per slice and the full existing CI checkpoint before completion. Preserve 015's fast fixtures; don't add sleeps or require audio hardware for automated tests.

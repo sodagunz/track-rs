@@ -4,11 +4,12 @@
 
 Phases 1–5 implemented. Chromatic piano ownership supersedes the original Insert bindings (plan 010); track creation, panels and themes are no longer deferred.
 
-Implementation is complete; full manual terminal/theme acceptance and listening
-remain pending. User feedback was “so far looks good”, not a full sign-off.
-Automated checkpoint results are recorded in [015](015-test-performance.md).
-The implementation notes and test counts below are historical; README and the
-binding registry describe current controls. MIDI and live recording remain deferred.
+Implementation is complete and merged. The user provisionally accepts the current
+build’s general manual UI/audio gate for now (2026-10-17); the UI still feels
+clunky. This does not certify every specialized historical check below.
+See the [canonical backlog](README.md) for acceptance scope and next priorities,
+and [015](015-test-performance.md) for the automated checkpoint. Original scope,
+pending checks and test counts below are historical, not current blockers.
 
 ## Original scope and implementation record
 

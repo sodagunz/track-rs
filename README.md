@@ -5,6 +5,12 @@
 This project is mostly intended as a fidget and a tribute to retro digital
 audio. Sorry Mario, your blazingly fast modern tracker is in another repo.
 
+### Plans
+
+The [canonical backlog](.plans/README.md) records current acceptance and delivery
+order: musical time and grids, metronome/count-in and arming, quantized live
+recording, then MIDI input. These are planned features, not current controls.
+
 ### Themes
 
 Defaults use your terminal's foreground/background and ANSI palette, not RGB.
