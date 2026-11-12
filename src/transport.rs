@@ -157,6 +157,16 @@ impl Transport {
             PlaybackRoute::Pattern(app.playing_pattern)
         };
         self.start_at(&app.project, route, app.playing_order, app.playback_row);
+        if self.deadline.is_none() {
+            if let Some(start) = app.playback_start_tick {
+                let pattern = &app.project.patterns[app.playing_pattern];
+                let projected = pattern.row_tick(app.playback_row).map_or(0, |tick| tick.0);
+                self.tick_start = self
+                    .tick_start
+                    .saturating_sub(projected)
+                    .saturating_add(start.0.min(pattern.length_ticks().0.saturating_sub(1)));
+            }
+        }
         let mut notes = Vec::new();
         // Small wake jitter catches up in order. Long stalls skip stale music arithmetically.
         for _ in 0..256 {
@@ -167,7 +177,7 @@ impl Transport {
             let Some(event) = self.update_project(at, playing, &app.project, route, DEFAULT_ROWS_PER_BEAT) else {
                 break;
             };
-            app.playback_row = event.row.row;
+            app.playback_row = app.project.patterns[event.pattern].row_at(event.tick);
             app.playing_pattern = event.pattern;
             app.playing_order = event.order.unwrap_or(0);
             notes.extend(collect_tick(
@@ -278,7 +288,9 @@ impl Transport {
         }
         self.tick_start = match route {
             PlaybackRoute::Pattern(index) => project.patterns.get(index).map_or(0, |pattern| {
-                row.min(pattern.num_rows().saturating_sub(1)) as u64 * crate::musical_time::LEGACY_ROW_TICKS
+                pattern
+                    .row_tick(row.min(pattern.view_rows().saturating_sub(1)))
+                    .map_or(0, |tick| tick.0)
             }),
             PlaybackRoute::Song => {
                 let order = order.min(project.order.len().saturating_sub(1));
@@ -294,7 +306,9 @@ impl Transport {
                         .get(order)
                         .and_then(|&index| project.patterns.get(index))
                         .map_or(0, |pattern| {
-                            row.min(pattern.num_rows().saturating_sub(1)) as u64 * crate::musical_time::LEGACY_ROW_TICKS
+                            pattern
+                                .row_tick(row.min(pattern.view_rows().saturating_sub(1)))
+                                .map_or(0, |tick| tick.0)
                         }),
                 )
             }
