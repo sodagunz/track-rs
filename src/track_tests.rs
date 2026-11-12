@@ -75,8 +75,8 @@ fn variable_columns_history_selection_clipboard_and_roundtrip() {
     assert!(app.take_stop_request());
     for (old, new) in before.patterns.iter().zip(&app.project.patterns) {
         assert_eq!(&new.tracks[..4], old.tracks);
-        assert_eq!(new.tracks[4].len(), old.num_rows);
-        assert!(new.tracks[4].iter().all(|cell| cell.note.is_none()));
+        assert_eq!(new.tracks[4].events(), []);
+        assert_eq!(new.get_step(4, old.num_rows - 1).unwrap().note, None);
     }
     assert_eq!(app.project.instrument(4), Instrument::Pluck);
     app.insert_note_under_cursor(Some(note()));
