@@ -398,7 +398,7 @@ fn successful_load_resets_editor_and_requests_a_reliable_runtime_stop() {
     command(&mut app, &format!("e! {}", path_text(&fixture())));
     assert_eq!(app.project, project_file::load(&fixture()).unwrap());
     assert!(!app.is_dirty());
-    assert_eq!(app.clipboard, Vec::<Vec<Option<Note>>>::new());
+    assert_eq!(app.clipboard, crate::clipboard::EventClipboard::default());
     assert_eq!(app.selection_anchor, None);
     assert_eq!(
         (app.cursor_row, app.cursor_track, app.selected_pattern, app.playback_row),
