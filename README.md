@@ -217,10 +217,18 @@ Esc cancels the prompt. `:wq` saves and quits.
 it. A failed load leaves your project alone; a successful load stops playback and
 clears undo history. The footer marks unsaved changes with `*`.
 
-The JSON format is experimental: saves use v3; v1/v2 files load with neutral mixer
-settings, and v1 notes receive one-row lengths. Earlier v3 saves without tone
-fields load with neutral shelves and Off filters. Unsupported versions are rejected;
-[format limits](src/project_file.rs) keep malformed files from allocating huge projects.
+The JSON format is experimental: saves upgrade v1–v3 projects to v4 tick events
+at 960 ticks per quarter. Legacy row starts become multiples of 240 and gate
+lengths scale by 15, preserving timing. v1/v2 files load with neutral mixer settings;
+v1 notes receive one-row lengths. Older v3 files without tone fields load with
+neutral shelves and Off filters. Older app versions cannot open v4 saves.
+
+The editor, clipboard and playback still use the straight sixteenth-note grid.
+v4 loads reject sub-row starts, gates not divisible by 15, non-4/4 meter and
+non-row-aligned pattern ends until their editor/scheduler support lands; nothing
+is rounded or silently dropped. New length still uses legacy 16-ticks-per-row
+units in the UI, not file ticks. Unsupported versions are rejected;
+[format limits](src/project_file.rs) bound decoded projects and encoded files.
 
 The legacy `AudioEngine::play`/sequencer example path has no project track and
 intentionally bypasses the mixer. Transport uses `play_event`; note entry and F4

@@ -183,8 +183,12 @@ fn strict_v2_lengths_and_legacy_fixture_import() {
     project_file::save(&project, &path).unwrap();
     assert_eq!(project_file::load(&path).unwrap(), project);
     let encoded: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    assert_eq!(encoded["version"], 3);
-    assert_eq!(encoded["patterns"][0]["cells"][0][0]["length_ticks"], 1);
+    assert_eq!(encoded["version"], 4);
+    assert_eq!(encoded["patterns"][0]["tracks"][0][0]["duration_ticks"], 15);
+    assert_eq!(encoded["patterns"][0]["tracks"][0][1]["duration_ticks"], 61_440);
+    // Keep exercising the legacy decoder as well as the new save format.
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/project-v2.json");
+    let encoded: Value = serde_json::from_slice(&fs::read(fixture).unwrap()).unwrap();
     for value in [json!(0), json!(4097), json!(-1), json!(1.5), json!(null), json!("16")] {
         let mut invalid = encoded.clone();
         invalid["patterns"][0]["cells"][0][0]["length_ticks"] = value;
@@ -199,12 +203,12 @@ fn strict_v2_lengths_and_legacy_fixture_import() {
     fs::write(&path, serde_json::to_vec(&missing).unwrap()).unwrap();
     assert!(project_file::load(&path).is_err());
     let mut unknown = encoded;
-    unknown["version"] = json!(4);
+    unknown["version"] = json!(5);
     fs::write(&path, serde_json::to_vec(&unknown).unwrap()).unwrap();
     assert!(project_file::load(&path)
         .unwrap_err()
         .to_string()
-        .contains("Unsupported project version 4"));
+        .contains("Unsupported project version 5"));
     let v2 = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/project-v2.json");
     assert_eq!(
         project_file::load(&v2).unwrap().patterns[0]
