@@ -290,7 +290,7 @@ fn variable_length_song_round_trip_and_note_history_preserve_future_events() {
     assert!(!app.is_dirty());
     text(&mut app, &format!(":e {}", path.display()));
     plain(&mut app, KeyCode::Enter);
-    assert_eq!(app.project.patterns[1].num_rows, 3);
+    assert_eq!(app.project.patterns[1].num_rows(), 3);
     assert_eq!(app.project.order, [0, 0, 1]);
     plain(&mut app, KeyCode::Char(' '));
     assert_eq!(tick(&mut app, &mut clock, start).unwrap().order, Some(0));
