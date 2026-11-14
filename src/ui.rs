@@ -15,7 +15,7 @@ use crate::{
     bindings::DEFAULT_BINDINGS,
     command::Command,
     state::{App, Mode, View},
-    tracker::PatternStep,
+    tracker::PatternEvent,
 };
 
 mod presentation;
@@ -692,12 +692,12 @@ fn draw_pattern_editor(f: &mut Frame, area: Rect, state: &App) {
             && row == state.playback_row;
         let mut spans = vec![pattern_gutter(row, row_width, state.cursor_row, playing, pattern)];
         for track in first_track..first_track + visible_tracks {
-            let mut step = pattern.view_step(track, row).expect("Pattern row must exist");
-            if row == state.cursor_row && track == state.cursor_track {
-                step.note = pattern
-                    .event_at(track, state.cursor_tick())
-                    .map(crate::tracker::PatternEvent::row_note);
-            }
+            let tick = if row == state.cursor_row && track == state.cursor_track {
+                state.cursor_tick()
+            } else {
+                pattern.row_tick(row).unwrap()
+            };
+            let event = pattern.event_at(track, tick);
             let hidden = pattern.hidden_in_row(track, row);
             let style = if row == state.cursor_row && track == state.cursor_track {
                 state.theme.cursor()
@@ -708,7 +708,7 @@ fn draw_pattern_editor(f: &mut Frame, area: Rect, state: &App) {
             } else {
                 Style::default()
             };
-            let text = format_step(step);
+            let text = format_event(event);
             spans.push(Span::styled(text[..3].to_owned(), style));
             spans.push(Span::styled(text[3..].to_owned(), Style::default()));
             spans.push(if hidden > 0 {
@@ -741,15 +741,51 @@ fn draw_status_bar(f: &mut Frame, area: Rect, state: &App) {
     );
 }
 
-fn format_step(step: PatternStep) -> String {
-    step.note.map_or_else(
-        || " .      ".to_string(),
-        |note| {
-            format!(
-                "{:<3}:{:>4}",
-                format!("{}{}", note.pitch, note.octave),
-                note.length_ticks.ticks()
-            )
+#[cfg(test)]
+#[test]
+fn exact_gate_cells_never_round_or_expand_the_track_width() {
+    use crate::{
+        musical_time::{DurationTicks, Tick},
+        tracker::{NotePitch, PatternEvent},
+    };
+    for ticks in [1, 320, 61439] {
+        let event = PatternEvent {
+            start_tick: Tick(0),
+            duration_ticks: DurationTicks::new(ticks).unwrap(),
+            pitch: NotePitch::Cs,
+            octave: 4,
+        };
+        let label = format_event(Some(event));
+        assert_eq!(label.len(), 8);
+        assert!(label.contains('@'));
+        assert!(label.ends_with(if ticks > 9999 {
+            "++++"
+        } else if ticks == 1 {
+            "   1"
+        } else {
+            " 320"
+        }));
+    }
+}
+
+fn format_event(event: Option<PatternEvent>) -> String {
+    event.map_or_else(
+        || " .      ".into(),
+        |event| {
+            let (unit, length) = event.row_note().map_or_else(
+                || {
+                    (
+                        '@',
+                        if event.duration_ticks.ticks() <= 9999 {
+                            event.duration_ticks.ticks().to_string()
+                        } else {
+                            "++++".into()
+                        },
+                    )
+                },
+                |note| (':', note.length_ticks.ticks().to_string()),
+            );
+            format!("{:<3}{unit}{length:>4}", format!("{}{}", event.pitch, event.octave))
         },
     )
 }

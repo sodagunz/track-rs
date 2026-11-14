@@ -33,6 +33,99 @@ fn ticks(app: &App) -> u16 {
         .ticks()
 }
 
+fn duration_command(app: &mut App, value: &str) {
+    app.handle_command(Command::EnterNormal);
+    app.handle_command(Command::OpenPrompt);
+    text(app, value);
+    handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), app);
+}
+
+#[test]
+fn exact_duration_entry_preserves_identity_pitch_edits_clipboard_and_files() {
+    use crate::musical_time::Tick;
+    let mut app = App::default();
+    let clean = app.revision();
+    duration_command(&mut app, "duration 320t");
+    assert_eq!(app.revision(), clean);
+    assert!(!app.is_dirty());
+    text(&mut app, "iz");
+    let original = app.project.patterns[0].event_at(0, Tick(0)).unwrap();
+    let id = app.project.patterns[0].tracks[0].event_id(Tick(0));
+    assert_eq!(original.duration_ticks.ticks(), 320);
+    assert!(app.project.patterns[0].get_step(0, 0).is_none());
+    text(&mut app, "x");
+    assert_eq!(
+        app.project.patterns[0].event_at(0, Tick(0)).unwrap().duration_ticks,
+        original.duration_ticks
+    );
+    app.handle_command(Command::EnterNormal);
+    app.handle_command(Command::RaiseNote);
+    assert_eq!(
+        app.project.patterns[0].event_at(0, Tick(0)).unwrap().duration_ticks,
+        original.duration_ticks
+    );
+    assert_eq!(app.project.patterns[0].tracks[0].event_id(Tick(0)), id);
+    app.handle_command(Command::Copy);
+    app.cursor_row = 1;
+    app.handle_command(Command::Paste);
+    assert_eq!(
+        app.project.patterns[0]
+            .event_at(0, Tick(240))
+            .unwrap()
+            .duration_ticks
+            .ticks(),
+        320
+    );
+    assert_ne!(app.project.patterns[0].tracks[0].event_id(Tick(240)), id);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("exact.json");
+    project_file::save(&app.project, &path).unwrap();
+    assert_eq!(project_file::load(&path).unwrap(), app.project);
+    app.handle_command(Command::Undo);
+    assert!(app.project.patterns[0].event_at(0, Tick(240)).is_none());
+    app.handle_command(Command::Redo);
+    assert_eq!(
+        app.project.patterns[0]
+            .event_at(0, Tick(240))
+            .unwrap()
+            .duration_ticks
+            .ticks(),
+        320
+    );
+    text(&mut app, "i{");
+    assert_eq!(
+        app.project.patterns[0]
+            .event_at(0, Tick(240))
+            .unwrap()
+            .duration_ticks
+            .ticks(),
+        160
+    );
+}
+
+#[test]
+fn exact_duration_validation_is_atomic_and_legacy_length_resets_it() {
+    let mut app = App::default();
+    duration_command(&mut app, "duration 1t");
+    let duration = app.entry_duration;
+    for invalid in [
+        "duration 0t",
+        "duration 61441t",
+        "duration 2",
+        "duration 1.5t",
+        "duration -1t",
+        "duration 99999999999999999t",
+    ] {
+        duration_command(&mut app, invalid);
+        assert_eq!(app.entry_duration, duration);
+        assert!(!app.is_dirty());
+    }
+    duration_command(&mut app, "length 2r");
+    assert_eq!(app.entry_duration, None);
+    text(&mut app, "iz");
+    assert_eq!(ticks(&app), 32);
+}
+
 #[test]
 fn real_insert_keys_clamp_preserve_pitch_replacement_and_do_not_move_cursor() {
     let mut app = App::default();

@@ -233,14 +233,28 @@ impl PatternEvent {
         }
     }
 
-    pub(crate) fn row_note(self) -> Note {
-        Note {
-            length_ticks: NoteLength::try_from(
-                u16::try_from(self.duration_ticks.ticks() / 15).expect("legacy gate fits"),
-            )
-            .expect("legacy-compatible stored gate"),
+    pub(crate) fn row_note(self) -> Option<Note> {
+        if !self.duration_ticks.ticks().is_multiple_of(15) {
+            return None;
+        }
+        Some(Note {
+            length_ticks: NoteLength::try_from(u16::try_from(self.duration_ticks.ticks() / 15).ok()?).ok()?,
             pitch: self.pitch,
             octave: self.octave,
+        })
+    }
+
+    pub(crate) fn transposed(self, semitones: i8) -> Self {
+        let note = Note {
+            pitch: self.pitch,
+            octave: self.octave,
+            length_ticks: NoteLength::default(),
+        }
+        .transpose(semitones);
+        Self {
+            pitch: note.pitch,
+            octave: note.octave,
+            ..self
         }
     }
 }
@@ -382,12 +396,17 @@ impl Pattern {
         track.search(tick).ok().map(|index| track.events[index])
     }
 
+    /// Legacy note-value adapter. Returns `None` for gates not representable in legacy units;
+    /// use `event_at` for exact canonical values.
     #[must_use]
     pub fn view_step(&self, track: usize, row: usize) -> Option<PatternStep> {
         let tick = self.row_tick(row).filter(|tick| *tick < self.length_ticks())?;
         self.tracks.get(track)?;
         Some(PatternStep {
-            note: self.event_at(track, tick).map(PatternEvent::row_note),
+            note: match self.event_at(track, tick) {
+                Some(event) => Some(event.row_note()?),
+                None => None,
+            },
         })
     }
 
@@ -405,6 +424,8 @@ impl Pattern {
         })
     }
 
+    /// Legacy straight-row adapter. Returns `None` for gates not representable in legacy units;
+    /// use `event_at` for exact canonical values.
     #[must_use]
     pub fn get_step(&self, track_idx: usize, row_idx: usize) -> Option<PatternStep> {
         let track = self.tracks.get(track_idx)?;
@@ -413,7 +434,10 @@ impl Pattern {
         }
         let start = crate::musical_time::Tick::from_legacy_row(row_idx as u64).ok()?;
         Some(PatternStep {
-            note: track.search(start).ok().map(|index| track.events[index].row_note()),
+            note: match track.search(start) {
+                Ok(index) => Some(track.events[index].row_note()?),
+                Err(_) => None,
+            },
         })
     }
 
@@ -479,10 +503,7 @@ impl Pattern {
                 event.start_tick == start,
                 "Event start does not match replacement position"
             );
-            anyhow::ensure!(
-                event.duration_ticks.ticks().is_multiple_of(15),
-                "Gate resolution requires the upcoming projected editor"
-            );
+
             anyhow::ensure!(event.octave <= 9, "Note octave must be 0..=9");
         }
         Ok(())

@@ -89,6 +89,14 @@ The Insert strip separates `New` length and `Step` from cursor `Cell` detail.
 that length. New notes default to one row until `:length` changes it.
 Length sets note-off; the instrument's release rings afterward.
 
+For exact musical gates, F1 Normal `:duration 320t` sets quarter-triplet length
+at 960 ticks per quarter (range 1–61440). This session-only New setting replaces
+`:length` until either command is used again; pitch replacement retains the
+existing gate. Non-legacy cell gates use `@` instead of `:` and status labels
+use `ppqt` to distinguish canonical ticks from legacy `:length` ticks. `{`/`}`
+retain legacy adjustment for representable gates; other gates halve (rounding
+odd ticks down, minimum one) or double, capped at 61440 ticks.
+
 F1 Normal Enter enters Audition: the same piano keys play **without writing**,
 including during playback. Arrows, PageUp/PageDown and `[`/`]` still work;
 brackets deliberately edit the shared instrument assignment. Notes don't move
@@ -191,7 +199,8 @@ A cell's `+N` (`+*` for ten or more) counts hidden off-grid starts, not merged n
 entry, transpose and deletion touch only that exact position. Visual ranges include
 hidden events; cut/clear report the event count. Paste refuses to replace hidden
 starts unless you confirm with `:paste!`. Clipboard positions remain exact ticks.
-Gate labels still use legacy units (16 per sixteenth), independent of grid density.
+Legacy gate labels use 16 units per sixteenth, independent of grid density;
+non-legacy gates show exact PPQ ticks.
 
 In the arrangement, `]` marks selection and `>` marks the playing Song entry.
 Repeated patterns have separate entries.
@@ -234,10 +243,9 @@ neutral shelves and Off filters. Older app versions cannot open v4 saves.
 
 v4 stores meter, a default grid and tick-anchored bar overrides; older v4 files
 without grid fields default to the original straight grid. Exact sub-row starts
-now load, edit and play. Gate values not divisible by 15 and non-row-aligned ends
-remain explicitly rejected pending general-duration/end editing. Nothing is rounded
-or silently dropped. New length still uses legacy 16-ticks-per-sixteenth units in
-the UI, not file ticks. Unsupported versions are rejected;
+now load, edit and play, including one-tick gates. Non-row-aligned ends remain
+explicitly rejected pending end editing. Nothing is rounded or silently dropped.
+`:length` retains legacy units; `:duration` uses file ticks. Unsupported versions are rejected;
 [format limits](src/project_file.rs) bound decoded projects and encoded files.
 
 The legacy `AudioEngine::play`/sequencer example path has no project track and
