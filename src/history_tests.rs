@@ -83,6 +83,16 @@ fn value_round_trip_retains_event_handle_and_redo() {
     });
     assert_eq!(history.revision(), revision);
     assert_eq!(project.patterns[0].tracks[0].event_id(Tick(0)), id);
+    history.edit(&mut project, |edit| {
+        edit.set_cell(0, 0, 0, None);
+        edit.set_cell(0, 0, 0, Some(note));
+        edit.resize_pattern(0, 2, true).unwrap();
+    });
+    assert_eq!(project.patterns[0].tracks[0].event_id(Tick(0)), id);
+    history.undo(&mut project);
+    assert_eq!(project.patterns[0].tracks[0].event_id(Tick(0)), id);
+    history.redo(&mut project);
+    assert_eq!(project.patterns[0].tracks[0].event_id(Tick(0)), id);
 }
 
 #[test]

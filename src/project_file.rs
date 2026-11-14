@@ -1,5 +1,5 @@
 //! Tick-event JSON with explicit version 1–3 migration. Decode and validate before installation.
-//! The row editor adapter rejects timing it cannot yet preserve or play.
+//! The row editor adapter rejects timing it cannot yet expose for editing.
 use std::{
     fs::File,
     io::{Read, Write},
@@ -326,7 +326,7 @@ impl EventDocument {
                     previous = Some(event.start_tick);
                     ensure!(
                         event.start_tick % LEGACY_ROW_TICKS == 0,
-                        "Sub-row events require the upcoming tick scheduler"
+                        "Sub-row events require the upcoming projected editor"
                     );
                     ensure!(
                         DurationTicks::new(event.duration_ticks).is_ok(),
@@ -334,7 +334,7 @@ impl EventDocument {
                     );
                     ensure!(
                         event.duration_ticks % 15 == 0,
-                        "Gate resolution requires the upcoming tick scheduler"
+                        "Gate resolution requires the upcoming projected editor"
                     );
                     ensure!(event.octave <= 9, "Note octave must be 0..=9");
                 }

@@ -416,7 +416,7 @@ impl Pattern {
         anyhow::ensure!(start < self.length_ticks(), "Event starts outside pattern");
         anyhow::ensure!(
             start.0.is_multiple_of(crate::musical_time::LEGACY_ROW_TICKS),
-            "Sub-row events require the upcoming tick scheduler"
+            "Sub-row events require the upcoming projected editor"
         );
         if let Some(event) = event {
             anyhow::ensure!(
@@ -425,7 +425,7 @@ impl Pattern {
             );
             anyhow::ensure!(
                 event.duration_ticks.ticks().is_multiple_of(15),
-                "Gate resolution requires the upcoming tick scheduler"
+                "Gate resolution requires the upcoming projected editor"
             );
             anyhow::ensure!(event.octave <= 9, "Note octave must be 0..=9");
         }
@@ -471,6 +471,188 @@ mod tests {
             octave: 5,
             length_ticks: NoteLength::try_from(ticks).unwrap(),
         }
+    }
+
+    // Canonical fixtures bypass admission guards deliberately: file/editor admission stays
+    // restricted until the projected UI can expose every event and exact duration.
+    fn tick_fixture(end: u64, starts: &[u64], duration: u32) -> Pattern {
+        let mut pattern = Pattern::new(1, 1);
+        pattern.resize_ticks(Tick(end));
+        for &start in starts {
+            pattern.tracks[0].events.push(PatternEvent {
+                start_tick: Tick(start),
+                duration_ticks: crate::musical_time::DurationTicks::new(duration).unwrap(),
+                pitch: NotePitch::C,
+                octave: 4,
+            });
+            pattern.tracks[0].identities.push(EventId::fresh());
+        }
+        pattern
+    }
+
+    #[test]
+    fn tick_scheduler_dispatches_subrow_starts_once_and_uses_exact_gates() {
+        use crate::{
+            project::Project,
+            transport::{collect_tick, PlaybackRoute, Transport},
+        };
+        use std::time::{Duration, Instant};
+        let mut project = Project::new(1, 1);
+        project.bpm = 121.0;
+        project.patterns[0] = tick_fixture(641, &[0, 15, 160, 320, 640], 1);
+        let now = Instant::now();
+        let mut transport = Transport::default();
+        let mut starts = Vec::new();
+        let mut at = now;
+        let mut generation = None;
+        loop {
+            let event = transport
+                .update_project(at, true, &project, PlaybackRoute::Pattern(0), 4)
+                .unwrap();
+            assert_eq!(*generation.get_or_insert(event.generation), event.generation);
+            let notes = collect_tick(&project.patterns[0], project.instruments(), event);
+            if !notes.is_empty() {
+                starts.push(event.absolute_tick);
+            }
+            assert!(notes.iter().all(|note| note.duration == Duration::from_nanos(516_529)));
+            assert!(transport
+                .update_project(at, true, &project, PlaybackRoute::Pattern(0), 4)
+                .is_none());
+            at = transport.deadline().unwrap();
+            if event.absolute_tick == 641 {
+                break;
+            }
+        }
+        assert_eq!(starts, [0, 15, 160, 320, 640, 641]);
+        transport.stop();
+        assert!(
+            transport
+                .update_project(now, true, &project, PlaybackRoute::Pattern(0), 4)
+                .unwrap()
+                .generation
+                > generation.unwrap()
+        );
+    }
+
+    #[test]
+    fn subrow_tempo_edits_keep_the_next_deadline_and_do_not_retime_held_gates() {
+        use crate::{
+            project::Project,
+            transport::{collect_tick, PlaybackRoute, Transport},
+        };
+        use std::time::{Duration, Instant};
+        let mut project = Project::new(1, 1);
+        project.patterns[0] = tick_fixture(641, &[0, 160, 320], 61_440);
+        let now = Instant::now();
+        let mut transport = Transport::default();
+        let first = transport
+            .update_project(now, true, &project, PlaybackRoute::Pattern(0), 4)
+            .unwrap();
+        let held = collect_tick(&project.patterns[0], project.instruments(), first)[0];
+        let committed = transport.deadline().unwrap();
+        assert_eq!(committed, now + Duration::from_nanos(83_333_333));
+        project.bpm = 60.0;
+        assert!(transport
+            .update_project(
+                committed.checked_sub(Duration::from_nanos(1)).unwrap(),
+                true,
+                &project,
+                PlaybackRoute::Pattern(0),
+                4
+            )
+            .is_none());
+        assert_eq!(transport.deadline(), Some(committed));
+        let next = transport
+            .update_project(committed, true, &project, PlaybackRoute::Pattern(0), 4)
+            .unwrap();
+        assert_eq!(next.tick, Tick(160));
+        assert_eq!(held.duration, Duration::from_secs(32));
+        assert_eq!(
+            collect_tick(&project.patterns[0], project.instruments(), next)[0].duration,
+            Duration::from_secs(64)
+        );
+        assert_eq!(transport.deadline(), Some(committed + Duration::from_nanos(83_333_333)));
+    }
+
+    #[test]
+    fn tick_song_traversal_never_pads_partial_patterns_and_bounds_huge_skips() {
+        use crate::{
+            project::Project,
+            transport::{PlaybackRoute, Transport},
+        };
+        use std::time::{Duration, Instant};
+        let mut project = Project::new(1, 1);
+        project.patterns = vec![tick_fixture(241, &[240], 15), tick_fixture(17, &[0, 15], 15)];
+        project.order = vec![0, 1, 0];
+        let mut transport = Transport::default();
+        let now = Instant::now();
+        let mut at = now;
+        let mut seen = Vec::new();
+        loop {
+            let event = transport
+                .update_project(at, true, &project, PlaybackRoute::Song, 4)
+                .unwrap();
+            seen.push((event.absolute_tick, event.order.unwrap(), event.tick.0));
+            at = transport.deadline().unwrap();
+            if event.absolute_tick == 499 {
+                break;
+            }
+        }
+        assert_eq!(
+            seen,
+            [
+                (0, 0, 0),
+                (240, 0, 240),
+                (241, 1, 0),
+                (256, 1, 15),
+                (258, 2, 0),
+                (498, 2, 240),
+                (499, 0, 0)
+            ]
+        );
+        let event = transport
+            .update_project(
+                now + Duration::from_secs(1_000_000),
+                true,
+                &project,
+                PlaybackRoute::Song,
+                4,
+            )
+            .unwrap();
+        assert!(event.absolute_tick > 1_000_000_000);
+        assert!(transport.deadline().unwrap() > now + Duration::from_secs(1_000_000));
+    }
+
+    #[test]
+    fn production_tick_dispatch_catches_up_dense_notes_in_deterministic_track_order() {
+        use crate::{
+            state::{App, PlaybackState},
+            transport::Transport,
+        };
+        use std::time::{Duration, Instant};
+        let mut app = App::default();
+        app.project.bpm = 300.0;
+        app.project.patterns[0] = tick_fixture(960, &(0..960).collect::<Vec<_>>(), 15);
+        let second = app.project.patterns[0].duplicate().tracks.remove(0);
+        app.project.patterns[0].tracks.push(second);
+        app.playback_state = PlaybackState::Playing;
+        let now = Instant::now();
+        let mut transport = Transport::default();
+        let initial = transport.update_app(now, &mut app, || panic!("new run"));
+        assert_eq!(initial.iter().map(|note| note.track).collect::<Vec<_>>(), [0, 1]);
+        let notes = transport.update_app(now + Duration::from_millis(40), &mut app, || panic!("active run"));
+        assert_eq!(notes.len(), 192 * 2);
+        assert!(notes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .all(|pair| pair[0].track == 0 && pair[1].track == 1));
+        assert!(transport
+            .update_app(now + Duration::from_millis(40), &mut app, || panic!("active run"))
+            .is_empty());
+        let late = transport.update_app(now + Duration::from_secs(1_000_000), &mut app, || panic!("active run"));
+        assert!(late.len() <= 2);
+        assert!(transport.deadline().unwrap() > now + Duration::from_secs(1_000_000));
     }
 
     #[test]
