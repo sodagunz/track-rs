@@ -24,6 +24,109 @@ fn prompt(app: &mut App, text: &str) {
 }
 
 #[test]
+fn exact_end_validates_noops_and_partial_projection_without_stopping() {
+    use crate::musical_time::Tick;
+    let mut app = App::default();
+    app.handle_command(Command::TogglePlayback);
+    let revision = app.revision();
+    for input in [
+        "end",
+        "end 0t",
+        "end -1t",
+        "end 1",
+        "end 1.5t",
+        "end 983041t",
+        "end 18446744073709551616t",
+    ] {
+        prompt(&mut app, input);
+        assert_eq!(app.revision(), revision, "{input}");
+        assert!(matches!(app.playback_state, PlaybackState::Playing));
+    }
+    let end = app.project.patterns[0].length_ticks();
+    prompt(&mut app, &format!("end {}t", end.0));
+    assert_eq!(app.revision(), revision);
+    assert!(matches!(app.playback_state, PlaybackState::Playing));
+    prompt(&mut app, "end 241t");
+    assert!(matches!(app.playback_state, PlaybackState::Stopped));
+    assert!(app.take_stop_request());
+    let pattern = &app.project.patterns[0];
+    assert_eq!(pattern.length_ticks(), Tick(241));
+    assert_eq!(pattern.view_rows(), 2);
+    assert_eq!(pattern.row_tick(1), Some(Tick(240)));
+    assert_eq!(pattern.row_tick(2), Some(Tick(241)));
+    assert!(app.grid_context().contains("Partial"));
+    app.handle_command(Command::LastRow);
+    assert_eq!(app.cursor_tick(), Tick(240));
+    prompt(&mut app, "end 1t");
+    assert_eq!(app.cursor_row, 0);
+    assert_eq!(app.project.patterns[0].view_rows(), 1);
+    prompt(&mut app, "resize 1");
+    assert_eq!(app.project.patterns[0].length_ticks(), Tick(240));
+}
+
+#[test]
+fn exact_end_force_restores_ids_overrides_and_gates_in_one_transaction() {
+    use crate::{
+        musical_time::{DurationTicks, Tick},
+        tracker::{NotePitch, PatternEvent},
+    };
+    let mut app = App::default();
+    prompt(&mut app, "meter 7/8");
+    app.cursor_row = 14;
+    prompt(&mut app, "grid 64 bar");
+    for (track, start) in [(0, 0), (1, 240), (2, 241), (3, 3360)] {
+        app.edit(|edit| {
+            edit.set_event(
+                0,
+                track,
+                Tick(start),
+                Some(PatternEvent {
+                    start_tick: Tick(start),
+                    duration_ticks: DurationTicks::new(61439).unwrap(),
+                    pitch: NotePitch::C,
+                    octave: 4,
+                }),
+            );
+        });
+    }
+    let before = app.project.clone();
+    let ids: Vec<_> = before.patterns[0]
+        .tracks
+        .iter()
+        .flat_map(|track| track.events().iter().map(|event| track.event_id(event.start_tick)))
+        .collect();
+    app.handle_command(Command::TogglePlayback);
+    let revision = app.revision();
+    prompt(&mut app, "end 241t");
+    assert_eq!(app.revision(), revision);
+    assert!(matches!(app.playback_state, PlaybackState::Playing));
+    assert!(app.status.contains("2 note onsets and 1 bar overrides"));
+    prompt(&mut app, "end! 241t");
+    assert_eq!(app.project.patterns[0].grid().overrides().count(), 0);
+    assert_eq!(
+        app.project.patterns[0].tracks[1].events()[0].duration_ticks.ticks(),
+        61439
+    );
+    assert_eq!(app.project.patterns[0].tracks[2].events(), []);
+    app.handle_command(Command::Undo);
+    assert_eq!(app.project, before);
+    let restored: Vec<_> = app.project.patterns[0]
+        .tracks
+        .iter()
+        .flat_map(|track| track.events().iter().map(|event| track.event_id(event.start_tick)))
+        .collect();
+    assert_eq!(restored, ids);
+    app.handle_command(Command::Redo);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("partial.json");
+    crate::project_file::save(&app.project, &path).unwrap();
+    assert_eq!(crate::project_file::load(&path).unwrap(), app.project);
+    prompt(&mut app, "end 3361t");
+    assert_eq!(app.project.patterns[0].length_ticks(), Tick(3361));
+    assert_eq!(app.project.patterns[0].grid().overrides().count(), 0);
+}
+
+#[test]
 fn resize_prompt_validates_before_editing_or_stopping() {
     let mut app = App::default();
     app.handle_command(Command::TogglePlayback);

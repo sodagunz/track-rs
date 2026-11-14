@@ -209,6 +209,11 @@ In Normal mode (in the pattern or arrangement view):
 
 - PageUp/PageDown switches patterns; Ctrl-n creates one, Ctrl-d duplicates it.
 - Ctrl-t adds a track to every pattern and selects it.
+- `:end 3360t` sets the edited pattern's exact end in 960-PPQ ticks (1–983040),
+  including partial rows/bars. Shrinking previews dropped note onsets and bar-grid
+  overrides; use `:end! 3360t` to confirm. Gates can extend past the end and are
+  never shortened. End edits stop playback and undo together, including event IDs
+  and trimmed overrides. Unchanged ends leave playback/history alone.
 - `:resize N` sets the edited pattern to 1–4096 legacy sixteenth-note rows across all tracks. New rows
   are empty; shrinking refuses to drop notes unless you use `:resize! N`.
   Repeated order entries share the new length. Resizing stops audio and clears
@@ -243,8 +248,8 @@ neutral shelves and Off filters. Older app versions cannot open v4 saves.
 
 v4 stores meter, a default grid and tick-anchored bar overrides; older v4 files
 without grid fields default to the original straight grid. Exact sub-row starts
-now load, edit and play, including one-tick gates. Non-row-aligned ends remain
-explicitly rejected pending end editing. Nothing is rounded or silently dropped.
+now load, edit and play, including one-tick gates and non-row-aligned ends.
+Nothing is rounded or silently dropped.
 `:length` retains legacy units; `:duration` uses file ticks. Unsupported versions are rejected;
 [format limits](src/project_file.rs) bound decoded projects and encoded files.
 

@@ -131,6 +131,10 @@ impl Presentation<'_> {
             if pattern.grid().meter() != crate::musical_time::Meter::new(4, 4).unwrap()
                 || pattern.grid().default_grid().divisions_per_quarter() != 4
                 || pattern.grid().overrides().next().is_some()
+                || !pattern
+                    .length_ticks()
+                    .0
+                    .is_multiple_of(pattern.grid().meter().bar_ticks())
                 || app.inspected_tick.is_some()
                 || hidden > 0
             {
@@ -346,6 +350,10 @@ impl Presentation<'_> {
                 format!("New:{} Step:{}r", self.entry_length(), app.edit_step),
                 if app.project.patterns[app.selected_pattern].grid()
                     == &crate::musical_time::GridMap::legacy(app.project.patterns[app.selected_pattern].length_ticks())
+                    && app.project.patterns[app.selected_pattern]
+                        .length_ticks()
+                        .0
+                        .is_multiple_of(3840)
                 {
                     String::new()
                 } else {

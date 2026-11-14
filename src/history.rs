@@ -291,14 +291,28 @@ impl Edit<'_> {
     /// # Errors
     /// Returns an error without editing if rows, allocation or note protection fail.
     pub fn resize_pattern(&mut self, index: usize, rows: usize, force: bool) -> anyhow::Result<()> {
-        use crate::project_file::{MAX_CELLS, MAX_ROWS};
+        use crate::project_file::MAX_ROWS;
         anyhow::ensure!((1..=MAX_ROWS).contains(&rows), "Rows must be 1..={MAX_ROWS}");
+        self.set_pattern_end(index, Tick(rows as u64 * crate::musical_time::LEGACY_ROW_TICKS), force)
+            .map_err(|error| anyhow::anyhow!("{error}; use :resize! {rows} to confirm truncation"))
+    }
+
+    /// Change the exact end, protecting onsets and bar overrides, not note gates.
+    ///
+    /// # Errors
+    /// Rejects invalid lengths, allocation limits or unconfirmed truncation without mutation.
+    pub fn set_pattern_end(&mut self, index: usize, end: Tick, force: bool) -> anyhow::Result<()> {
+        use crate::project_file::{MAX_CELLS, MAX_PATTERN_TICKS};
+        anyhow::ensure!(
+            (1..=MAX_PATTERN_TICKS).contains(&end.0),
+            "End must be 1..={MAX_PATTERN_TICKS} ticks"
+        );
         let pattern = self
             .project
             .patterns
             .get(index)
             .ok_or_else(|| anyhow::anyhow!("No edited pattern"))?;
-        if Tick::from_legacy_row(rows as u64).ok() == Some(pattern.length_ticks()) {
+        if end == pattern.length_ticks() {
             return Ok(());
         }
         let total = self
@@ -307,18 +321,32 @@ impl Edit<'_> {
             .iter()
             .enumerate()
             .try_fold(0usize, |total, (i, p)| {
-                total.checked_add(if i == index { rows } else { p.num_rows() }.checked_mul(p.tracks.len())?)
+                total.checked_add(
+                    if i == index {
+                        usize::try_from(end.0.div_ceil(crate::musical_time::LEGACY_ROW_TICKS)).ok()?
+                    } else {
+                        p.num_rows()
+                    }
+                    .checked_mul(p.tracks.len())?,
+                )
             });
         anyhow::ensure!(
             total.is_some_and(|total| total <= MAX_CELLS),
             "Project exceeds {MAX_CELLS} cells"
         );
+        let dropped = pattern
+            .tracks
+            .iter()
+            .map(|track| track.events_in(end..pattern.length_ticks()).len())
+            .sum::<usize>();
+        let overrides = pattern.grid().overrides().filter(|(start, _)| *start >= end).count();
         anyhow::ensure!(
-            force || !pattern.has_notes_from_row(rows),
-            "Trimmed rows contain notes; use :resize! {rows}"
+            force || (dropped == 0 && overrides == 0),
+            "Would drop {dropped} note onsets and {overrides} bar overrides; use :end! {}t",
+            end.0
         );
         let mut value = pattern.clone();
-        value.resize_rows(rows);
+        value.resize_ticks(end);
         let before = Some(std::mem::replace(&mut self.project.patterns[index], value.clone()));
         self.event_origins.clear();
         self.changes.push(Mutation::Pattern { index, value, before });

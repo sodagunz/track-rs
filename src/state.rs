@@ -284,30 +284,7 @@ impl App {
                 self.execute_time_command(command, remainder.trim())?;
             }
             "step" | "length" | "duration" => self.set_entry_setting(command, remainder.trim())?,
-            "resize" | "resize!" => {
-                anyhow::ensure!(
-                    self.mode == Mode::Normal && matches!(self.view, View::Pattern | View::Arrangement),
-                    "Resize requires Pattern or Arrangement Normal mode"
-                );
-                let input = remainder.trim();
-                anyhow::ensure!(
-                    !input.is_empty() && input.bytes().all(|b| b.is_ascii_digit()),
-                    "Expected :resize[!] <rows> (integer)"
-                );
-                let rows = input
-                    .parse::<usize>()
-                    .map_err(|_| anyhow::anyhow!("Rows must be 1..={}", crate::project_file::MAX_ROWS))?;
-                let index = self.selected_pattern;
-                let before = self.project.patterns[index].num_rows();
-                let mut result = Ok(());
-                self.edit(|edit| result = edit.resize_pattern(index, rows, command == "resize!"));
-                result?;
-                self.status = if before == rows {
-                    format!("Pattern {index} already has {rows} rows")
-                } else {
-                    format!("Pattern {index}: {before} → {rows} rows")
-                };
-            }
+            "end" | "end!" | "resize" | "resize!" => self.execute_end_command(command, remainder.trim())?,
             "restart" => {
                 anyhow::ensure!(remainder.is_empty(), "Expected :restart");
                 self.restart_playback();
@@ -322,8 +299,65 @@ impl App {
             }
             _ => anyhow::bail!(
                 "Unknown command; use :w [path], :e[!] <path>, :q[!], :wq, :restart, :resize[!] <rows>, :step <rows>, \
-                 :length <integer>t/r"
+                 :length <integer>t/r, :duration <ticks>t, :end[!] <ticks>t"
             ),
+        }
+        Ok(())
+    }
+
+    fn execute_end_command(&mut self, command: &str, remainder: &str) -> anyhow::Result<()> {
+        match command {
+            "end" | "end!" => {
+                anyhow::ensure!(
+                    self.mode == Mode::Normal && matches!(self.view, View::Pattern | View::Arrangement),
+                    "End requires Pattern or Arrangement Normal mode"
+                );
+                let input = remainder
+                    .trim()
+                    .strip_suffix('t')
+                    .ok_or_else(|| anyhow::anyhow!("Expected :end[!] <integer>t (960 PPQ)"))?;
+                anyhow::ensure!(
+                    !input.is_empty() && input.bytes().all(|byte| byte.is_ascii_digit()),
+                    "Expected :end[!] <integer>t"
+                );
+                let end = Tick(input.parse()?);
+                let index = self.selected_pattern;
+                let before = self.project.patterns[index].length_ticks();
+                let mut result = Ok(());
+                self.edit(|edit| result = edit.set_pattern_end(index, end, command == "end!"));
+                result?;
+                self.status = if before == end {
+                    format!("Pattern {index} already ends at {}t", end.0)
+                } else {
+                    format!("Pattern {index} end: {}t → {}t", before.0, end.0)
+                };
+            }
+            "resize" | "resize!" => {
+                anyhow::ensure!(
+                    self.mode == Mode::Normal && matches!(self.view, View::Pattern | View::Arrangement),
+                    "Resize requires Pattern or Arrangement Normal mode"
+                );
+                let input = remainder.trim();
+                anyhow::ensure!(
+                    !input.is_empty() && input.bytes().all(|b| b.is_ascii_digit()),
+                    "Expected :resize[!] <rows> (integer)"
+                );
+                let rows = input
+                    .parse::<usize>()
+                    .map_err(|_| anyhow::anyhow!("Rows must be 1..={}", crate::project_file::MAX_ROWS))?;
+                let index = self.selected_pattern;
+                let before_tick = self.project.patterns[index].length_ticks();
+                let before = self.project.patterns[index].num_rows();
+                let mut result = Ok(());
+                self.edit(|edit| result = edit.resize_pattern(index, rows, command == "resize!"));
+                result?;
+                self.status = if Some(before_tick) == Tick::from_legacy_row(rows as u64).ok() {
+                    format!("Pattern {index} already has {rows} rows")
+                } else {
+                    format!("Pattern {index}: {before} → {rows} rows")
+                };
+            }
+            _ => unreachable!(),
         }
         Ok(())
     }
