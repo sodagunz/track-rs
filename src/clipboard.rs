@@ -41,13 +41,19 @@ impl EventClipboard {
         }
     }
 
-    pub(crate) fn paste(&self, edit: &mut Edit<'_>, pattern: usize, first_track: usize, start: Tick) {
+    pub(crate) fn paste(
+        &self,
+        edit: &mut Edit<'_>,
+        pattern: usize,
+        first_track: usize,
+        start: Tick,
+    ) -> anyhow::Result<()> {
         let Some(target) = edit.pattern(pattern) else {
-            return;
+            return Ok(());
         };
         let end = target.length_ticks();
         if self.span_ticks == 0 || first_track >= target.tracks.len() || target.validate_event(start, None).is_err() {
-            return;
+            return Ok(());
         }
         let span = self.span_ticks.min(end.0 - start.0);
         // Preflight every translated value before clearing anything, including empty space.
@@ -56,27 +62,32 @@ impl EventClipboard {
             let mut track = Vec::new();
             for event in events.iter().filter(|event| event.start_tick.0 < span) {
                 let Ok(position) = start.checked_add(event.start_tick.0) else {
-                    return;
+                    return Ok(());
                 };
                 let event = PatternEvent {
                     start_tick: position,
                     ..*event
                 };
                 if target.validate_event(position, Some(event)).is_err() {
-                    return;
+                    return Ok(());
                 }
                 track.push(event);
             }
             translated.push(track);
         }
         let range = start..Tick(start.0 + span);
+        let counts: Vec<_> = translated.iter().map(Vec::len).collect();
+        edit.check_range_replacement(pattern, first_track, range.clone(), &counts)?;
+        for offset in 0..translated.len() {
+            edit.clear_range(pattern, first_track + offset, range.clone());
+        }
         for (offset, events) in translated.into_iter().enumerate() {
             let track = first_track + offset;
-            edit.clear_range(pattern, track, range.clone());
             for event in events {
                 edit.set_event(pattern, track, event.start_tick, Some(event));
             }
         }
+        Ok(())
     }
 }
 
@@ -124,7 +135,7 @@ mod tests {
         }
         let before = project.clone();
         let mut history = History::default();
-        history.edit(&mut project, |edit| clipboard.paste(edit, 0, 0, Tick(240)));
+        history.edit(&mut project, |edit| clipboard.paste(edit, 0, 0, Tick(240)).unwrap());
         for row in 0..8 {
             assert_eq!(
                 project.patterns[0].get_step(0, row).unwrap().note,
@@ -148,20 +159,22 @@ mod tests {
         let clipboard = EventClipboard::capture(&source, 0..2, Tick(0)..Tick(480));
         let mut project = Project::new(4, 2);
         let mut history = History::default();
-        history.edit(&mut project, |edit| clipboard.paste(edit, 0, 1, Tick(720)));
+        history.edit(&mut project, |edit| clipboard.paste(edit, 0, 1, Tick(720)).unwrap());
         assert_eq!(project.patterns[0].tracks[0].events(), []);
         assert_eq!(project.patterns[0].tracks[1].events().len(), 1);
         assert_eq!(project.patterns[0].tracks[1].events()[0].duration_ticks.ticks(), 61_440);
         let before = project.clone();
         let revision = history.revision();
         let shifted = EventClipboard::capture(&source, 0..2, Tick(1)..Tick(480));
-        history.edit(&mut project, |edit| shifted.paste(edit, 0, 0, Tick(720)));
+        history.edit(&mut project, |edit| shifted.paste(edit, 0, 0, Tick(720)).unwrap());
         assert_eq!(project.patterns[0].tracks[0].events()[0].start_tick, Tick(959));
         assert_eq!(project.patterns[0].tracks[1].events()[0].start_tick, Tick(959));
         history.undo(&mut project);
         assert_eq!(project, before);
         assert_eq!(history.revision(), revision);
-        history.edit(&mut project, |edit| clipboard.paste(edit, 0, 0, Tick(u64::MAX)));
+        history.edit(&mut project, |edit| {
+            clipboard.paste(edit, 0, 0, Tick(u64::MAX)).unwrap();
+        });
         assert_eq!(project, before);
         assert_eq!(history.revision(), revision);
     }

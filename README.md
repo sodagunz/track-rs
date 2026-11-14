@@ -252,6 +252,13 @@ now load, edit and play, including one-tick gates and non-row-aligned ends.
 Nothing is rounded or silently dropped.
 `:length` retains legacy units; `:duration` uses file ticks. Unsupported versions are rejected;
 [format limits](src/project_file.rs) bound decoded projects and encoded files.
+v4/runtime budgets count actual events: 65,536 per pattern track and 1,000,000
+per project, not hypothetical cells on the finest grid. Empty long patterns and
+tracks remain cheap. Timeline extent is separately capped at 983,040 ticks per
+pattern, with 128 tracks, 256 patterns and a 16 MiB encoded-file limit. Dense
+v1–v3 imports retain their one-million-cell input limit. Paste preflights the
+whole replacement before clearing anything; history charges retained events,
+track metadata and grid overrides rather than empty projected cells.
 
 The legacy `AudioEngine::play`/sequencer example path has no project track and
 intentionally bypasses the mixer. Transport uses `play_event`; note entry and F4

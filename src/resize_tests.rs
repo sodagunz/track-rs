@@ -294,9 +294,14 @@ fn resize_history_barriers_noops_and_snapshot_budget() {
     assert_eq!(history.revision(), revision);
     history.redo(&mut project);
     assert_eq!(project.patterns, edited);
-    // Both retained snapshots count: 4096*8 + 4095*8 fits, another
-    // small edit followed by regrowth pushes the first resize out.
+    // Actual events in both snapshots count; empty grid cells do not.
+    // A later populated snapshot pushes the first resize out.
     let mut project = Project::new(MAX_ROWS, 8);
+    for row in 0..MAX_ROWS - 2 {
+        for track in 0..8 {
+            project.patterns[0].set_step(track, row, note).unwrap();
+        }
+    }
     let mut history = History::default();
     history.edit(&mut project, |edit| {
         edit.resize_pattern(0, MAX_ROWS - 1, false).unwrap();
@@ -304,7 +309,7 @@ fn resize_history_barriers_noops_and_snapshot_budget() {
     history.undo(&mut project);
     assert_eq!(project.patterns[0].num_rows(), MAX_ROWS);
     history.redo(&mut project);
-    history.edit(&mut project, |edit| edit.set_cell(0, 0, 0, note));
+    history.edit(&mut project, |edit| edit.set_cell(0, 0, MAX_ROWS - 2, note));
     history.edit(&mut project, |edit| edit.resize_pattern(0, MAX_ROWS, false).unwrap());
     history.undo(&mut project);
     history.undo(&mut project);
@@ -333,8 +338,9 @@ fn resize_limits_are_inclusive_and_rejections_preserve_revision() {
     );
     let revision = app.revision();
     prompt(&mut app, "resize! 4001");
-    assert_eq!(app.revision(), revision);
-    assert!(app.status.contains("cells"));
+    assert_ne!(app.revision(), revision);
+    assert_eq!(app.project.patterns[1].num_rows(), 4001);
+    assert_eq!(app.project.event_count(), 0);
     let mut app = App::default();
     prompt(&mut app, &format!("resize {MAX_ROWS}"));
     assert_eq!(app.project.patterns[0].num_rows(), MAX_ROWS);

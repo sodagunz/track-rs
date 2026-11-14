@@ -1,5 +1,5 @@
 //! Tick-event JSON with explicit version 1–3 migration. Decode and validate before installation.
-//! The row editor adapter rejects timing it cannot yet expose for editing.
+//! Sparse events and dense legacy input have separate resource budgets.
 use std::{
     fs::File,
     io::{Read, Write},
@@ -20,7 +20,10 @@ pub const MAX_PATTERNS: usize = 256;
 pub const MAX_ROWS: usize = 4096;
 /// Timeline extent, independent of projected grid density (256 legacy bars).
 pub const MAX_PATTERN_TICKS: u64 = MAX_ROWS as u64 * crate::musical_time::LEGACY_ROW_TICKS;
+/// Dense v1–v3 input only; v4 never budgets hypothetical grid cells.
 pub const MAX_CELLS: usize = 1_000_000;
+pub const MAX_TRACK_EVENTS: usize = 65_536;
+pub const MAX_EVENTS: usize = 1_000_000;
 pub const MAX_ORDER: usize = 65_536;
 
 #[derive(Serialize, Deserialize)]
@@ -274,6 +277,18 @@ struct StoredEvent {
 impl EventDocument {
     fn from_project(project: &Project) -> anyhow::Result<Self> {
         ensure!(
+            project.event_count() <= MAX_EVENTS,
+            "Project exceeds {MAX_EVENTS} events"
+        );
+        ensure!(
+            project
+                .patterns
+                .iter()
+                .flat_map(|pattern| &pattern.tracks)
+                .all(|track| track.events().len() <= MAX_TRACK_EVENTS),
+            "Track exceeds {MAX_TRACK_EVENTS} events"
+        );
+        ensure!(
             project
                 .patterns
                 .iter()
@@ -321,7 +336,7 @@ impl EventDocument {
     }
 
     fn validate(&self) -> anyhow::Result<()> {
-        use crate::musical_time::{DurationTicks, LEGACY_ROW_TICKS, PPQ};
+        use crate::musical_time::{DurationTicks, PPQ};
         ensure!(
             self.version == 4 && self.ppq == PPQ,
             "Unsupported project tick resolution"
@@ -340,15 +355,17 @@ impl EventDocument {
                 pattern.end_tick > 0 && pattern.end_tick <= MAX_PATTERN_TICKS,
                 "Pattern end must be 1..=983040 ticks"
             );
-            let rows = usize::try_from(pattern.end_tick.div_ceil(LEGACY_ROW_TICKS))?;
+
             let tracks = pattern.tracks.len();
             ensure!(tracks == self.instruments.len(), "Inconsistent track dimensions");
-            total = total
-                .checked_add(rows.checked_mul(tracks).context("Cell count overflow")?)
-                .context("Cell count overflow")?;
-            ensure!(total <= MAX_CELLS, "Project exceeds {MAX_CELLS} compatibility cells");
+
             for events in &pattern.tracks {
-                ensure!(events.len() <= MAX_CELLS, "Too many events");
+                ensure!(
+                    events.len() <= MAX_TRACK_EVENTS,
+                    "Track exceeds {MAX_TRACK_EVENTS} events"
+                );
+                total = total.checked_add(events.len()).context("Event count overflow")?;
+                ensure!(total <= MAX_EVENTS, "Project exceeds {MAX_EVENTS} events");
                 let mut previous = None;
                 for event in events {
                     ensure!(event.start_tick < pattern.end_tick, "Event starts outside pattern");

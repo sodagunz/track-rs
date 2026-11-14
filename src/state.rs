@@ -842,7 +842,7 @@ impl App {
             });
             self.cursor_track = self.project.instruments().len() - 1;
         } else {
-            self.status = "Track/cell limit reached (128 tracks, 1,000,000 cells)".into();
+            self.status = "Track limit reached (128 tracks)".into();
         }
     }
 
@@ -1104,7 +1104,12 @@ impl App {
                 .map(|previous| previous.duration_ticks)
                 .or(self.entry_duration)
                 .unwrap_or(event.duration_ticks);
-            self.edit(|edit| edit.set_event(pattern, track, tick, Some(event)));
+            let mut result = Ok(());
+            self.edit(|edit| result = edit.try_set_event(pattern, track, tick, Some(event)));
+            if let Err(error) = result {
+                self.status = error.to_string();
+                return;
+            }
             if self.mode == Mode::Insert && self.view == View::Pattern {
                 self.preview_note(note);
             }
@@ -1258,7 +1263,11 @@ impl App {
         }
         let clipboard = self.clipboard.clone();
         let pattern = self.selected_pattern;
-        self.edit(|edit| clipboard.paste(edit, pattern, track, start));
+        let mut result = Ok(());
+        self.edit(|edit| result = clipboard.paste(edit, pattern, track, start));
+        if let Err(error) = result {
+            self.status = error.to_string();
+        }
     }
 
     pub fn offset_cursor(&mut self, dr: &CursorOffset, dt: &CursorOffset) {

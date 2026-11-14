@@ -150,6 +150,14 @@ Expose immutable run generation, absolute unwrapped tick/cycle, tempo segments a
 - Full locked all-target nextest: 227 passed; strict Clippy, formatting, doctests (zero cases), warning-free API docs and whitespace checks passed. No DSP/transport integration or manual listening check changed.
 - Remaining: event-based budgets and explicit collision-aware quantization. 016/020 remain untouched.
 
+### Sparse event-budget checkpoint
+
+- Runtime/v4 limits now count actual events: 65536 per pattern track and 1000000 per project. Empty timeline extent is independently limited to 983040 ticks, alongside existing track/pattern/order/encoded-byte limits. Dense v1–v3 imports retain their cell budget; v4 no longer rejects sparse projects for hypothetical cells.
+- Insertion and duplication enforce event growth limits; replacement/deletion and empty track/pattern creation remain possible at capacity. Edit transactions cache the total event count rather than scanning all events per write. Paste preflights all per-track and aggregate replacement counts, clears all affected ranges before insertion, and rejects atomically. Entry reports failures without preview/cursor advance.
+- Structural history weights count retained events, tracks and grid overrides. Populated snapshots still evict at the bounded retention limit; empty long grids do not. File byte limits bound JSON input before decoding, and event limits are validated before constructing/installing runtime patterns (not a streaming JSON allocation claim).
+- Added capacity, atomic paste/import, sparse high-density viewport, save/load, history-retention and real-entry failure regressions. Full locked all-target nextest: 231 passed; strict Clippy, formatting, doctests (zero cases), warning-free docs and whitespace checks passed. No DSP/transport changes or manual listening check.
+- Remaining: explicit collision-aware quantization; 016/020 untouched.
+
 ## Acceptance
 
 Deterministic tests, no sleeps or required audio hardware:
