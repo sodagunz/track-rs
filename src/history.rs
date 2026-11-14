@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, VecDeque};
 use crate::{
     musical_time::Tick,
     project::{ChannelSettings, Project},
-    tracker::{Instrument, Note, Pattern, PatternEvent, Track},
+    tracker::{EventId, Instrument, Note, Pattern, PatternEvent, Track},
 };
 
 pub const MAX_TRANSACTIONS: usize = 256;
@@ -36,6 +36,8 @@ enum Mutation {
         start: Tick,
         before: Option<PatternEvent>,
         after: Option<PatternEvent>,
+        before_id: Option<EventId>,
+        after_id: Option<EventId>,
     },
     Instrument {
         track: usize,
@@ -99,7 +101,17 @@ impl Mutation {
 
     fn merge(&mut self, next: Self) {
         match (self, next) {
-            (Self::Event { after, .. }, Self::Event { after: value, .. }) => *after = value,
+            (
+                Self::Event { after, after_id, .. },
+                Self::Event {
+                    after: value,
+                    after_id: id,
+                    ..
+                },
+            ) => {
+                *after = value;
+                *after_id = id;
+            }
             (Self::Instrument { after, .. }, Self::Instrument { after: value, .. }) => *after = value,
             (Self::Channel { after, .. }, Self::Channel { after: value, .. }) => *after = value,
             (Self::Tempo { after, .. }, Self::Tempo { after: value, .. }) => *after = value,
@@ -136,10 +148,15 @@ impl Mutation {
                 start,
                 before,
                 after,
+                before_id,
+                after_id,
             } => {
                 project.patterns[pattern]
                     .replace_event(track, start, if forward { after } else { before })
                     .expect("history event target exists");
+                if let Some(id) = if forward { after_id } else { before_id } {
+                    project.patterns[pattern].tracks[track].restore_id(start, id);
+                }
             }
             Self::Instrument { track, before, after } => {
                 project.set_instrument(track, if forward { after } else { before });
@@ -213,7 +230,7 @@ impl Edit<'_> {
             return;
         }
         let value = if duplicate {
-            pattern.clone()
+            pattern.duplicate()
         } else {
             Pattern::new(rows, tracks)
         };
@@ -294,6 +311,7 @@ impl Edit<'_> {
         let Some(target) = self.project.patterns.get_mut(pattern) else {
             return;
         };
+        let before_id = target.tracks.get(track).and_then(|track| track.event_id(start));
         let Ok(before) = target.replace_event(track, start, after) else {
             return;
         };
@@ -304,6 +322,8 @@ impl Edit<'_> {
                 start,
                 before,
                 after,
+                before_id,
+                after_id: target.tracks[track].event_id(start),
             });
         }
     }
@@ -397,7 +417,33 @@ impl History {
                 changes.push(change);
             }
         }
-        changes.retain(Mutation::changed);
+        changes.retain(|change| {
+            if change.changed() {
+                return true;
+            }
+            // A value round-trip is not a document edit. Restore its original handle too.
+            if let Mutation::Event {
+                pattern,
+                track,
+                start,
+                before_id: Some(before),
+                after_id,
+                ..
+            } = *change
+            {
+                if let Some(target) = edit
+                    .project
+                    .patterns
+                    .get_mut(pattern)
+                    .and_then(|p| p.tracks.get_mut(track))
+                {
+                    if target.event_id(start) == after_id {
+                        target.restore_id(start, before);
+                    }
+                }
+            }
+            false
+        });
         if changes.is_empty() {
             return false;
         }

@@ -104,6 +104,13 @@ Expose immutable run generation, absolute unwrapped tick/cycle, tempo segments a
 - Added exact-event history/no-op/redo checks, half-open deletion and sparse clipboard extent/translation/clipping/atomicity tests. Full locked all-target nextest: 206 passed, zero skipped; strict all-target/all-feature Clippy, formatting, doctests and whitespace checks passed. No hardware/listening check ran.
 - Still outstanding: stable event IDs, explicit tick-based runtime pattern length, event budgets, general duration entry, tick scheduler, local meter/grid persistence and projected editing. Clipboard/history no longer store projected row addresses, but this is not completion of slice 2 or 019.
 
+### Runtime identity checkpoint
+
+- Tracks now expose process-local `EventId` handles separately from event values. Exact-position value edits retain identity; deletion retires it. History restores the original handles on undo/redo, including structural snapshots. Clipboard paste and intentional pattern duplication allocate fresh handles; ordinary snapshot clones preserve them.
+- IDs are not serialized: no saved references currently require persistent identity. Loading creates a new runtime identity space; document equality continues to compare music, not handles. This avoids making session metadata part of dirty/no-op semantics or changing the v4 schema.
+- Added handle-level regressions for editing, deletion, paste, duplication, truncation, undo/redo and value round-trips. Full locked all-target nextest: 208 passed, zero skipped; strict Clippy, formatting, doctests (zero cases), API docs and whitespace checks passed. No hardware/listening check ran.
+- Still outstanding: explicit tick-based runtime length, event budgets, general-duration entry, tick scheduling and projected meter/grid editing. Existing timing guards remain.
+
 ## Acceptance
 
 Deterministic tests, no sleeps or required audio hardware:
