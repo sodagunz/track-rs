@@ -31,8 +31,8 @@ pub fn collect_row(pattern: &Pattern, instruments: &[Instrument], event: RowEven
         .tracks
         .iter()
         .enumerate()
-        .filter_map(|(track, steps)| {
-            let note = steps.get(event.row)?.note?;
+        .filter_map(|(track, _)| {
+            let note = pattern.get_step(track, event.row)?.note?;
             let rows = f64::from(note.length_ticks.ticks()) / f64::from(crate::tracker::NoteLength::TICKS_PER_ROW);
             Some(NoteEvent {
                 track,

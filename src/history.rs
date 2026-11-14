@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, VecDeque};
 
 use crate::{
     project::{ChannelSettings, Project},
-    tracker::{Instrument, Note, Pattern, PatternStep, Track},
+    tracker::{Instrument, Note, Pattern, Track},
 };
 
 pub const MAX_TRANSACTIONS: usize = 256;
@@ -18,6 +18,7 @@ enum Mutation {
     Track {
         columns: Vec<Track>,
         instrument: Instrument,
+        compatibility_cells: usize,
     },
     Pattern {
         index: usize,
@@ -57,7 +58,9 @@ impl Mutation {
             Self::Pattern { value, before, .. } => {
                 value.num_rows * value.tracks.len() + before.as_ref().map_or(0, |p| p.num_rows * p.tracks.len())
             }
-            Self::Track { columns, .. } => 1 + columns.iter().map(Vec::len).sum::<usize>(),
+            Self::Track {
+                compatibility_cells, ..
+            } => 1 + compatibility_cells,
             Self::Order { before, after } => before.len() + after.len(),
             _ => 1,
         }
@@ -109,6 +112,7 @@ impl Mutation {
             Self::Track {
                 ref columns,
                 instrument,
+                ..
             } => {
                 for (pattern, column) in project.patterns.iter_mut().zip(columns) {
                     if forward {
@@ -181,15 +185,11 @@ impl Edit<'_> {
         if !self.project.can_append_track() {
             return;
         }
-        let columns: Vec<Track> = self
-            .project
-            .patterns
-            .iter()
-            .map(|pattern| vec![PatternStep::default(); pattern.num_rows])
-            .collect();
+        let columns: Vec<Track> = self.project.patterns.iter().map(|_| Track::default()).collect();
         let change = Mutation::Track {
             columns,
             instrument: Instrument::Pluck,
+            compatibility_cells: self.project.patterns.iter().map(|pattern| pattern.num_rows).sum(),
         };
         change.apply(self.project, true);
         self.changes.push(change);
@@ -253,18 +253,11 @@ impl Edit<'_> {
             "Project exceeds {MAX_CELLS} cells"
         );
         anyhow::ensure!(
-            force
-                || !pattern
-                    .tracks
-                    .iter()
-                    .any(|track| track.iter().skip(rows).any(|cell| cell.note.is_some())),
+            force || !pattern.has_notes_from_row(rows),
             "Trimmed rows contain notes; use :resize! {rows}"
         );
         let mut value = pattern.clone();
-        value.num_rows = rows;
-        for track in &mut value.tracks {
-            track.resize(rows, PatternStep::default());
-        }
+        value.resize_rows(rows);
         let before = Some(std::mem::replace(&mut self.project.patterns[index], value.clone()));
         self.changes.push(Mutation::Pattern { index, value, before });
         Ok(())

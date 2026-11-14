@@ -588,17 +588,16 @@ fn legacy_versions_upgrade_to_exact_tick_events() {
             assert_eq!(encoded["end_tick"], pattern.num_rows * 240);
             assert_eq!(encoded["meter"], json!([4, 4]));
             for (track, events) in pattern.tracks.iter().zip(encoded["tracks"].as_array().unwrap()) {
-                let expected: Vec<Value> =
-                    track
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(row, step)| {
-                            step.note.map(|note| json!({
-                    "start_tick": row * 240, "duration_ticks": u32::from(note.length_ticks.ticks()) * 15,
-                    "pitch": note.pitch, "octave": note.octave,
-                }))
+                let expected: Vec<Value> = track
+                    .events()
+                    .iter()
+                    .map(|event| {
+                        json!({
+                            "start_tick": event.start_tick.0, "duration_ticks": event.duration_ticks.ticks(),
+                            "pitch": event.pitch, "octave": event.octave,
                         })
-                        .collect();
+                    })
+                    .collect();
                 assert_eq!(events, &json!(expected));
             }
         }

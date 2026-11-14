@@ -53,30 +53,13 @@ struct StoredPattern<N = Note> {
 impl Document {
     fn validate(&self) -> anyhow::Result<()> {
         ensure!(self.version == 3, "Unsupported project version {}", self.version);
-        ensure!(
-            self.bpm.is_finite() && (20.0..=300.0).contains(&self.bpm),
-            "BPM must be finite and between 20 and 300"
-        );
-        ensure!(
-            (1..=MAX_TRACKS).contains(&self.instruments.len()),
-            "Track count must be 1..={MAX_TRACKS}"
-        );
-        ensure!(
-            (1..=MAX_PATTERNS).contains(&self.patterns.len()),
-            "Pattern count must be 1..={MAX_PATTERNS}"
-        );
-        ensure!(
-            (1..=MAX_ORDER).contains(&self.order.len()),
-            "Order length must be 1..={MAX_ORDER}"
-        );
-        ensure!(
-            self.order.iter().all(|&index| index < self.patterns.len()),
-            "Invalid order reference"
-        );
-        ensure!(
-            self.channels.len() == self.instruments.len() && self.channels.iter().all(|c| c.is_valid()),
-            "Invalid channel settings or dimensions"
-        );
+        validate_metadata(
+            self.bpm,
+            &self.instruments,
+            &self.channels,
+            self.patterns.len(),
+            &self.order,
+        )?;
         let mut total = 0_usize;
         for pattern in &self.patterns {
             ensure!((1..=MAX_ROWS).contains(&pattern.rows), "Rows must be 1..={MAX_ROWS}");
@@ -125,10 +108,11 @@ pub fn load(path: &Path) -> anyhow::Result<Project> {
     if !matches!(header.version, 1..=4) {
         bail!("Unsupported project version {}", header.version);
     }
-    let document = if header.version == 4 {
+    if header.version == 4 {
         let stored: EventDocument = serde_json::from_slice(&bytes)?;
-        stored.into_legacy()?
-    } else if header.version == 1 {
+        return stored.into_project();
+    }
+    let document = if header.version == 1 {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct LegacyNote {
@@ -186,14 +170,16 @@ pub fn load(path: &Path) -> anyhow::Result<Project> {
         .into_iter()
         .map(|stored| {
             let mut pattern = Pattern::new(stored.rows, stored.tracks);
-            for (target, source) in pattern.tracks.iter_mut().zip(stored.cells) {
-                for (step, note) in target.iter_mut().zip(source) {
-                    step.note = note;
+            for (track, source) in stored.cells.into_iter().enumerate() {
+                for (row, note) in source.into_iter().enumerate() {
+                    if note.is_some() {
+                        pattern.set_step(track, row, note)?;
+                    }
                 }
             }
-            pattern
+            Ok(pattern)
         })
-        .collect();
+        .collect::<anyhow::Result<Vec<_>>>()?;
     Ok(Project {
         channels: document.channels,
         bpm: document.bpm,
@@ -208,28 +194,9 @@ pub fn load(path: &Path) -> anyhow::Result<Project> {
 /// # Errors
 /// Returns validation, serialization, or filesystem errors. The target is not truncated.
 pub fn save(project: &Project, path: &Path) -> anyhow::Result<()> {
-    let document = Document {
-        version: 3,
-        channels: project.channels.clone(),
-        bpm: project.bpm,
-        instruments: project.instruments.clone(),
-        patterns: project
-            .patterns
-            .iter()
-            .map(|pattern| StoredPattern {
-                rows: pattern.num_rows,
-                tracks: pattern.tracks.len(),
-                cells: pattern
-                    .tracks
-                    .iter()
-                    .map(|track| track.iter().map(|step| step.note).collect())
-                    .collect(),
-            })
-            .collect(),
-        order: project.order.clone(),
-    };
+    let document = EventDocument::from_project(project)?;
     document.validate()?;
-    let bytes = serde_json::to_vec_pretty(&EventDocument::from_legacy(document))?;
+    let bytes = serde_json::to_vec_pretty(&document)?;
     ensure!(bytes.len() as u64 <= MAX_FILE_BYTES, "Project exceeds 16 MiB encoded");
     let parent = path
         .parent()
@@ -273,62 +240,63 @@ struct StoredEvent {
 }
 
 impl EventDocument {
-    fn from_legacy(document: Document) -> Self {
-        Self {
+    fn from_project(project: &Project) -> anyhow::Result<Self> {
+        ensure!(
+            project
+                .patterns
+                .iter()
+                .all(|pattern| (1..=MAX_ROWS).contains(&pattern.num_rows)),
+            "Rows must be 1..={MAX_ROWS}"
+        );
+        Ok(Self {
             version: 4,
             ppq: crate::musical_time::PPQ,
-            bpm: document.bpm,
-            instruments: document.instruments,
-            channels: document.channels,
-            order: document.order,
-            patterns: document
+            bpm: project.bpm,
+            instruments: project.instruments.clone(),
+            channels: project.channels.clone(),
+            order: project.order.clone(),
+            patterns: project
                 .patterns
-                .into_iter()
+                .iter()
                 .map(|pattern| EventPattern {
-                    end_tick: pattern.rows as u64 * crate::musical_time::LEGACY_ROW_TICKS,
+                    end_tick: pattern.num_rows as u64 * crate::musical_time::LEGACY_ROW_TICKS,
                     meter: [4, 4],
                     tracks: pattern
-                        .cells
-                        .into_iter()
+                        .tracks
+                        .iter()
                         .map(|track| {
                             track
-                                .into_iter()
-                                .enumerate()
-                                .filter_map(|(row, note)| {
-                                    note.map(|note| StoredEvent {
-                                        start_tick: row as u64 * crate::musical_time::LEGACY_ROW_TICKS,
-                                        duration_ticks: u32::from(note.length_ticks.ticks()) * 15,
-                                        pitch: note.pitch,
-                                        octave: note.octave,
-                                    })
+                                .events()
+                                .iter()
+                                .map(|event| StoredEvent {
+                                    start_tick: event.start_tick.0,
+                                    duration_ticks: event.duration_ticks.ticks(),
+                                    pitch: event.pitch,
+                                    octave: event.octave,
                                 })
                                 .collect()
                         })
                         .collect(),
                 })
                 .collect(),
-        }
+        })
     }
 
-    // One writable timeline: this temporary adapter materializes rows only after checking
-    // every event is exactly representable. Never round or drop unsupported positions.
-    fn into_legacy(self) -> anyhow::Result<Document> {
+    fn validate(&self) -> anyhow::Result<()> {
         use crate::musical_time::{DurationTicks, LEGACY_ROW_TICKS, PPQ};
         ensure!(
             self.version == 4 && self.ppq == PPQ,
             "Unsupported project tick resolution"
         );
-        ensure!(
-            (1..=MAX_TRACKS).contains(&self.instruments.len()),
-            "Invalid track count"
-        );
-        ensure!(
-            (1..=MAX_PATTERNS).contains(&self.patterns.len()),
-            "Invalid pattern count"
-        );
+        validate_metadata(
+            self.bpm,
+            &self.instruments,
+            &self.channels,
+            self.patterns.len(),
+            &self.order,
+        )?;
         let mut total = 0usize;
-        let mut patterns = Vec::with_capacity(self.patterns.len());
-        for pattern in self.patterns {
+        for pattern in &self.patterns {
             ensure!(
                 pattern.meter == [4, 4],
                 "Pattern meter requires the upcoming grid editor"
@@ -346,11 +314,10 @@ impl EventDocument {
                 .checked_add(rows.checked_mul(tracks).context("Cell count overflow")?)
                 .context("Cell count overflow")?;
             ensure!(total <= MAX_CELLS, "Project exceeds {MAX_CELLS} compatibility cells");
-            let mut cells = Vec::with_capacity(tracks);
-            for events in pattern.tracks {
+            for events in &pattern.tracks {
                 ensure!(events.len() <= rows, "Too many events for the row editor");
                 let mut previous = None;
-                for event in &events {
+                for event in events {
                     ensure!(event.start_tick < pattern.end_tick, "Event starts outside pattern");
                     ensure!(
                         previous.is_none_or(|start| start < event.start_tick),
@@ -371,21 +338,36 @@ impl EventDocument {
                     );
                     ensure!(event.octave <= 9, "Note octave must be 0..=9");
                 }
-                let mut track = vec![None; rows];
-                for event in events {
-                    track[usize::try_from(event.start_tick / LEGACY_ROW_TICKS)?] = Some(Note {
-                        length_ticks: crate::tracker::NoteLength::try_from(u16::try_from(event.duration_ticks / 15)?)
-                            .map_err(anyhow::Error::msg)?,
-                        pitch: event.pitch,
-                        octave: event.octave,
-                    });
-                }
-                cells.push(track);
             }
-            patterns.push(StoredPattern { rows, tracks, cells });
         }
-        Ok(Document {
-            version: 3,
+        Ok(())
+    }
+
+    fn into_project(self) -> anyhow::Result<Project> {
+        self.validate()?;
+        let mut patterns = Vec::with_capacity(self.patterns.len());
+        for stored in self.patterns {
+            let rows = usize::try_from(stored.end_tick / crate::musical_time::LEGACY_ROW_TICKS)?;
+            let mut pattern = Pattern::new(rows, stored.tracks.len());
+            for (track, events) in stored.tracks.into_iter().enumerate() {
+                for event in events {
+                    pattern.set_step(
+                        track,
+                        usize::try_from(event.start_tick / crate::musical_time::LEGACY_ROW_TICKS)?,
+                        Some(Note {
+                            length_ticks: crate::tracker::NoteLength::try_from(u16::try_from(
+                                event.duration_ticks / 15,
+                            )?)
+                            .map_err(anyhow::Error::msg)?,
+                            pitch: event.pitch,
+                            octave: event.octave,
+                        }),
+                    )?;
+                }
+            }
+            patterns.push(pattern);
+        }
+        Ok(Project {
             bpm: self.bpm,
             instruments: self.instruments,
             channels: self.channels,
@@ -393,4 +375,35 @@ impl EventDocument {
             order: self.order,
         })
     }
+}
+
+fn validate_metadata(
+    bpm: f64,
+    instruments: &[Instrument],
+    channels: &[crate::project::ChannelSettings],
+    patterns: usize,
+    order: &[usize],
+) -> anyhow::Result<()> {
+    ensure!(
+        bpm.is_finite() && (20.0..=300.0).contains(&bpm),
+        "BPM must be finite and between 20 and 300"
+    );
+    ensure!(
+        (1..=MAX_TRACKS).contains(&instruments.len()),
+        "Track count must be 1..={MAX_TRACKS}"
+    );
+    ensure!(
+        (1..=MAX_PATTERNS).contains(&patterns),
+        "Pattern count must be 1..={MAX_PATTERNS}"
+    );
+    ensure!(
+        (1..=MAX_ORDER).contains(&order.len()),
+        "Order length must be 1..={MAX_ORDER}"
+    );
+    ensure!(order.iter().all(|&index| index < patterns), "Invalid order reference");
+    ensure!(
+        channels.len() == instruments.len() && channels.iter().all(|c| c.is_valid()),
+        "Invalid channel settings or dimensions"
+    );
+    Ok(())
 }

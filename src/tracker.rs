@@ -213,7 +213,54 @@ pub struct PatternStep {
     pub note: Option<Note>,
 }
 
-pub type Track = Vec<PatternStep>;
+/// Canonical stored note. Row cells are temporary projections of these values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PatternEvent {
+    pub start_tick: crate::musical_time::Tick,
+    pub duration_ticks: crate::musical_time::DurationTicks,
+    pub pitch: NotePitch,
+    pub octave: u8,
+}
+
+impl PatternEvent {
+    fn from_note(start_tick: crate::musical_time::Tick, note: Note) -> Self {
+        Self {
+            start_tick,
+            duration_ticks: crate::musical_time::DurationTicks::from_legacy(note.length_ticks.ticks())
+                .expect("validated legacy gate"),
+            pitch: note.pitch,
+            octave: note.octave,
+        }
+    }
+
+    fn row_note(self) -> Note {
+        Note {
+            length_ticks: NoteLength::try_from(
+                u16::try_from(self.duration_ticks.ticks() / 15).expect("legacy gate fits"),
+            )
+            .expect("legacy-compatible stored gate"),
+            pitch: self.pitch,
+            octave: self.octave,
+        }
+    }
+}
+
+/// Sorted unique starts; no empty cells and no mutable dense mirror.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Track {
+    events: Vec<PatternEvent>,
+}
+
+impl Track {
+    #[must_use]
+    pub fn events(&self) -> &[PatternEvent] {
+        &self.events
+    }
+
+    fn search(&self, start: crate::musical_time::Tick) -> Result<usize, usize> {
+        self.events.binary_search_by_key(&start, |event| event.start_tick)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pattern {
@@ -226,13 +273,36 @@ impl Pattern {
     pub fn new(num_rows: usize, num_tracks: usize) -> Self {
         Self {
             num_rows,
-            tracks: vec![vec![PatternStep::default(); num_rows]; num_tracks],
+            tracks: vec![Track::default(); num_tracks],
         }
     }
 
     #[must_use]
-    pub fn get_step(&self, track_idx: usize, row_idx: usize) -> Option<&PatternStep> {
-        self.tracks.get(track_idx)?.get(row_idx)
+    pub fn get_step(&self, track_idx: usize, row_idx: usize) -> Option<PatternStep> {
+        let track = self.tracks.get(track_idx)?;
+        if row_idx >= self.num_rows {
+            return None;
+        }
+        let start = crate::musical_time::Tick::from_legacy_row(row_idx as u64).ok()?;
+        Some(PatternStep {
+            note: track.search(start).ok().map(|index| track.events[index].row_note()),
+        })
+    }
+
+    pub(crate) fn has_notes_from_row(&self, row: usize) -> bool {
+        let start = crate::musical_time::Tick::from_legacy_row(row as u64).expect("pattern row fits ticks");
+        self.tracks
+            .iter()
+            .any(|track| track.events.last().is_some_and(|event| event.start_tick >= start))
+    }
+
+    pub(crate) fn resize_rows(&mut self, rows: usize) {
+        let end = crate::musical_time::Tick::from_legacy_row(rows as u64).expect("pattern row fits ticks");
+        for track in &mut self.tracks {
+            let keep = track.events.partition_point(|event| event.start_tick < end);
+            track.events.truncate(keep);
+        }
+        self.num_rows = rows;
     }
 
     /// Replace the note at the specified track and row.
@@ -240,12 +310,103 @@ impl Pattern {
     /// # Errors
     /// Returns an error if the track or row index is outside the pattern.
     pub fn set_step(&mut self, track_idx: usize, row_idx: usize, new_note: Option<Note>) -> anyhow::Result<()> {
-        self.tracks
+        if row_idx >= self.num_rows {
+            return Err(anyhow!("Accessing inexistant row"));
+        }
+        let track = self
+            .tracks
             .get_mut(track_idx)
-            .ok_or_else(|| anyhow!("Accessing inexistant track"))?
-            .get_mut(row_idx)
-            .ok_or_else(|| anyhow!("Accessing inexistant row"))?
-            .note = new_note;
+            .ok_or_else(|| anyhow!("Accessing inexistant track"))?;
+        let start = crate::musical_time::Tick::from_legacy_row(row_idx as u64)
+            .map_err(|_| anyhow!("Pattern row exceeds tick range"))?;
+        match (track.search(start), new_note) {
+            (Ok(index), Some(note)) => track.events[index] = PatternEvent::from_note(start, note),
+            (Ok(index), None) => {
+                track.events.remove(index);
+            }
+            (Err(index), Some(note)) => track.events.insert(index, PatternEvent::from_note(start, note)),
+            (Err(_), None) => {}
+        }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::musical_time::Tick;
+
+    fn note(ticks: u16) -> Note {
+        Note {
+            pitch: NotePitch::Fs,
+            octave: 5,
+            length_ticks: NoteLength::try_from(ticks).unwrap(),
+        }
+    }
+
+    #[test]
+    fn sparse_storage_projects_empty_rows_without_allocating_cells() {
+        let mut pattern = Pattern::new(4096, 128);
+        assert!(pattern.tracks.iter().all(|track| track.events().is_empty()));
+        assert_eq!(pattern.get_step(127, 4095), Some(PatternStep::default()));
+        assert_eq!(pattern.get_step(128, 0), None);
+        assert_eq!(pattern.get_step(0, 4096), None);
+        pattern.set_step(127, 4095, Some(note(4096))).unwrap();
+        let events = pattern.tracks[127].events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].start_tick, Tick(4095 * 240));
+        assert_eq!(events[0].duration_ticks.ticks(), 61_440);
+        let mut projected = pattern.get_step(127, 4095).unwrap();
+        projected.note.as_mut().unwrap().octave = 1;
+        assert_eq!(pattern.get_step(127, 4095).unwrap().note, Some(note(4096)));
+        pattern.set_step(127, 4095, None).unwrap();
+        assert_eq!(pattern.tracks[127].events(), []);
+    }
+
+    #[test]
+    fn sparse_replacements_and_deletions_match_dense_reference() {
+        let mut pattern = Pattern::new(64, 3);
+        let mut reference = vec![vec![None; 64]; 3];
+        let mut random = 17u32;
+        for operation in 0..2048 {
+            random = random.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let track = (random as usize / 64) % 3;
+            let row = random as usize % 64;
+            let value = if operation % 3 == 0 {
+                None
+            } else {
+                Some(note(if operation % 2 == 0 { 1 } else { 4096 }))
+            };
+            pattern.set_step(track, row, value).unwrap();
+            reference[track][row] = value;
+            for (track, cells) in reference.iter().enumerate() {
+                for (row, value) in cells.iter().enumerate() {
+                    assert_eq!(pattern.get_step(track, row).unwrap().note, *value);
+                }
+                let events = pattern.tracks[track].events();
+                assert_eq!(events.len(), cells.iter().flatten().count());
+                assert!(events.windows(2).all(|pair| pair[0].start_tick < pair[1].start_tick));
+            }
+        }
+        let before = pattern.clone();
+        assert!(pattern.set_step(3, 0, Some(note(16))).is_err());
+        assert!(pattern.set_step(0, 64, Some(note(16))).is_err());
+        assert_eq!(pattern, before);
+    }
+
+    #[test]
+    fn sparse_resize_preserves_gates_and_only_truncates_starts() {
+        let mut pattern = Pattern::new(64, 2);
+        for (row, ticks) in [(3, 4096), (4, 1), (63, 16)] {
+            pattern.set_step(0, row, Some(note(ticks))).unwrap();
+        }
+        assert!(pattern.has_notes_from_row(4));
+        assert!(!pattern.has_notes_from_row(64));
+        pattern.resize_rows(4);
+        assert_eq!(pattern.tracks[0].events().len(), 1);
+        assert_eq!(pattern.get_step(0, 3).unwrap().note, Some(note(4096)));
+        pattern.resize_rows(128);
+        assert_eq!(pattern.get_step(0, 4).unwrap().note, None);
+        assert_eq!(pattern.tracks[1].events(), []);
     }
 }
