@@ -411,7 +411,7 @@ fn v3_roundtrip_strict_channels_and_explicit_v2_migration() {
     project_file::save(&project, &path).unwrap();
     assert_eq!(project_file::load(&path).unwrap(), project);
     let original: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    assert_eq!(original["version"], 3);
+    assert_eq!(original["version"], 4);
     for invalid in [
         serde_json::json!([]),
         serde_json::json!([{"volume_db":7,"pan":0},{"volume_db":0,"pan":0}]),
@@ -423,9 +423,13 @@ fn v3_roundtrip_strict_channels_and_explicit_v2_migration() {
         std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
         assert!(project_file::load(&path).is_err());
     }
-    let mut legacy = original;
-    legacy["version"] = 2.into();
-    legacy.as_object_mut().unwrap().remove("channels");
+    let mut legacy = serde_json::json!({
+        "version": 2,
+        "bpm": project.bpm,
+        "instruments": project.instruments(),
+        "patterns": [{"rows": 2, "tracks": 2, "cells": [[null, null], [null, null]]}],
+        "order": [0],
+    });
     std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
     let migrated = project_file::load(&path).unwrap();
     assert_eq!(migrated.channels(), &[ChannelSettings::default(); 2]);

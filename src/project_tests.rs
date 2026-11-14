@@ -47,7 +47,7 @@ fn path_text(path: &Path) -> &str {
 }
 
 #[test]
-fn all_instrument_names_cycle_and_round_trip_in_version_three() {
+fn all_instrument_names_cycle_and_round_trip_in_version_four() {
     let names = [
         "Pluck", "Sine", "Square", "Saw", "Kick", "Snare", "HiHat", "Pad", "Drone", "Sustain", "OpenHat",
     ];
@@ -66,7 +66,7 @@ fn all_instrument_names_cycle_and_round_trip_in_version_three() {
     let path = directory.path().join("all-presets.json");
     project_file::save(&project, &path).unwrap();
     let value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    assert_eq!(value["version"], 3);
+    assert_eq!(value["version"], 4);
     assert_eq!(value["instruments"], json!(names));
     assert_eq!(project_file::load(&path).unwrap(), project);
 }
@@ -85,8 +85,8 @@ fn version_one_fixture_and_multi_pattern_round_trip_preserve_shared_voices() {
     project_file::save(&project, &path).unwrap();
     assert_eq!(project_file::load(&path).unwrap(), project);
     let encoded = fs::read_to_string(path).unwrap();
-    assert!(encoded.contains("\"version\": 3"));
-    assert!(encoded.contains("\"length_ticks\": 16"));
+    assert!(encoded.contains("\"version\": 4"));
+    assert!(encoded.contains("\"duration_ticks\": 240"));
     assert!(encoded.contains("\"F#\""));
     assert!(encoded.contains("\"HiHat\""));
     assert!(!encoded.contains("playback"));
@@ -553,4 +553,126 @@ fn saving_remembered_non_unicode_path_does_not_round_trip_through_display() {
     assert!(app.shutdown);
     assert!(!app.is_dirty());
     assert_eq!(project_file::load(&path).unwrap(), app.project);
+}
+
+#[test]
+fn legacy_versions_upgrade_to_exact_tick_events() {
+    let directory = tempfile::tempdir().unwrap();
+    let input = directory.path().join("legacy.json");
+    let output = directory.path().join("ticks.json");
+    for version in 1..=3 {
+        let mut value: Value = serde_json::from_slice(&fs::read(fixture()).unwrap()).unwrap();
+        value["version"] = json!(version);
+        if version >= 2 {
+            for pattern in value["patterns"].as_array_mut().unwrap() {
+                for track in pattern["cells"].as_array_mut().unwrap() {
+                    for (row, note) in track.as_array_mut().unwrap().iter_mut().enumerate() {
+                        if !note.is_null() {
+                            note["length_ticks"] = json!(if row % 2 == 0 { 1 } else { 4096 });
+                        }
+                    }
+                }
+            }
+        }
+        if version == 3 {
+            value["channels"] = serde_json::to_value(vec![crate::project::ChannelSettings::default(); 3]).unwrap();
+        }
+        fs::write(&input, value.to_string()).unwrap();
+        let project = project_file::load(&input).unwrap();
+        project_file::save(&project, &output).unwrap();
+        assert_eq!(project_file::load(&output).unwrap(), project);
+        let stored: Value = serde_json::from_slice(&fs::read(&output).unwrap()).unwrap();
+        assert_eq!(stored["version"], 4);
+        assert_eq!(stored["ppq"], 960);
+        for (pattern, encoded) in project.patterns.iter().zip(stored["patterns"].as_array().unwrap()) {
+            assert_eq!(encoded["end_tick"], pattern.num_rows * 240);
+            assert_eq!(encoded["meter"], json!([4, 4]));
+            for (track, events) in pattern.tracks.iter().zip(encoded["tracks"].as_array().unwrap()) {
+                let expected: Vec<Value> =
+                    track
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(row, step)| {
+                            step.note.map(|note| json!({
+                    "start_tick": row * 240, "duration_ticks": u32::from(note.length_ticks.ticks()) * 15,
+                    "pitch": note.pitch, "octave": note.octave,
+                }))
+                        })
+                        .collect();
+                assert_eq!(events, &json!(expected));
+            }
+        }
+    }
+}
+
+#[test]
+fn tick_files_reject_unplayable_or_ambiguous_events() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("ticks.json");
+    let mut project = Project::new(4, 1);
+    for row in [0, 1] {
+        project.patterns[0]
+            .set_step(
+                0,
+                row,
+                Some(Note {
+                    pitch: NotePitch::C,
+                    octave: 4,
+                    length_ticks: crate::tracker::NoteLength::default(),
+                }),
+            )
+            .unwrap();
+    }
+    project_file::save(&project, &path).unwrap();
+    let original: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    for (pointer, replacement) in [
+        ("/ppq", json!(64)),
+        ("/patterns/0/end_tick", json!(0)),
+        ("/patterns/0/end_tick", json!(961)),
+        ("/patterns/0/end_tick", json!(u64::MAX)),
+        ("/patterns/0/meter", json!([3, 4])),
+        ("/patterns/0/tracks/0/0/start_tick", json!(15)),
+        ("/patterns/0/tracks/0/1/start_tick", json!(0)),
+        ("/patterns/0/tracks/0/0/start_tick", json!(480)),
+        ("/patterns/0/tracks/0/1/start_tick", json!(960)),
+        ("/patterns/0/tracks/0/0/duration_ticks", json!(1)),
+        ("/patterns/0/tracks/0/0/duration_ticks", json!(0)),
+        ("/patterns/0/tracks/0/0/duration_ticks", json!(61441)),
+        ("/patterns/0/tracks/0/0/octave", json!(10)),
+    ] {
+        let mut value = original.clone();
+        *value.pointer_mut(pointer).unwrap() = replacement;
+        fs::write(&path, value.to_string()).unwrap();
+        assert!(project_file::load(&path).is_err(), "{pointer}: {value}");
+    }
+}
+
+#[test]
+fn unsupported_tick_load_is_atomic_even_when_forced() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("unsupported.json");
+    let project = project_file::load(&fixture()).unwrap();
+    project_file::save(&project, &path).unwrap();
+    let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    value["patterns"][0]["tracks"][0][0]["start_tick"] = json!(15);
+    fs::write(&path, value.to_string()).unwrap();
+    let mut app = App::default();
+    app.handle_command(Command::IncreaseTempo);
+    app.handle_command(Command::Copy);
+    app.cursor_row = 3;
+    app.selection_anchor = Some((1, 0));
+    app.handle_command(Command::TogglePlayback);
+    let before = app.clone();
+    command(&mut app, &format!("e! {}", path_text(&path)));
+    assert!(app.status.contains("Sub-row events"));
+    assert_eq!(app.project, before.project);
+    assert_eq!(app.revision(), before.revision());
+    assert_eq!(app.clipboard, before.clipboard);
+    assert_eq!(app.path, before.path);
+    assert_eq!(app.cursor_row, before.cursor_row);
+    assert_eq!(app.selection_anchor, before.selection_anchor);
+    assert!(matches!(app.playback_state, PlaybackState::Playing));
+    assert!(!app.take_stop_request());
+    app.handle_command(Command::Undo);
+    assert_eq!(app.project.bpm, 120.0);
 }
