@@ -111,6 +111,13 @@ Expose immutable run generation, absolute unwrapped tick/cycle, tempo segments a
 - Added handle-level regressions for editing, deletion, paste, duplication, truncation, undo/redo and value round-trips. Full locked all-target nextest: 208 passed, zero skipped; strict Clippy, formatting, doctests (zero cases), API docs and whitespace checks passed. No hardware/listening check ran.
 - Still outstanding: explicit tick-based runtime length, event budgets, general-duration entry, tick scheduling and projected meter/grid editing. Existing timing guards remain.
 
+### Canonical pattern-end checkpoint
+
+- Runtime pattern length is now a private explicit end tick. `num_rows()` is a rounded-up compatibility projection, not writable storage; all editor, history, limit and transport callers use that projection until their own tick integration. Persistence reads the canonical end directly.
+- Tick truncation preserves gates and surviving event handles; tests cover one-tick partial rows and exact-start exclusion at the end. Clipboard no longer needs a fallible row-to-end conversion.
+- Full locked all-target nextest: 209 passed, zero skipped; strict Clippy, formatting, doctests (zero cases), API docs and whitespace checks passed. No hardware/listening check ran.
+- File loading/saving still rejects partial-row ends, and playback still advances rows. General tick-length admission waits for the tick scheduler; this checkpoint does not remove that guard or claim mixed-grid editing.
+
 ## Acceptance
 
 Deterministic tests, no sleeps or required audio hardware:

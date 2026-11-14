@@ -289,7 +289,7 @@ impl App {
                     .parse::<usize>()
                     .map_err(|_| anyhow::anyhow!("Rows must be 1..={}", crate::project_file::MAX_ROWS))?;
                 let index = self.selected_pattern;
-                let before = self.project.patterns[index].num_rows;
+                let before = self.project.patterns[index].num_rows();
                 let mut result = Ok(());
                 self.edit(|edit| result = edit.resize_pattern(index, rows, command == "resize!"));
                 result?;
@@ -404,7 +404,7 @@ impl App {
         self.cursor_row = saved.row.min(if self.view == View::Mixer {
             crate::project::CHANNEL_ROWS - 1
         } else {
-            self.project.patterns[self.selected_pattern].num_rows - 1
+            self.project.patterns[self.selected_pattern].num_rows() - 1
         });
         self.cursor_track = saved.track.min(self.project.instruments().len() - 1);
         self.selection_anchor = saved.anchor;
@@ -647,7 +647,7 @@ impl App {
                 self.cursor_row = if self.view == View::Mixer {
                     crate::project::CHANNEL_ROWS - 1
                 } else {
-                    pattern.num_rows.saturating_sub(1)
+                    pattern.num_rows().saturating_sub(1)
                 }
             }
             Command::LastTrack => self.cursor_track = pattern.tracks.len().saturating_sub(1),
@@ -913,7 +913,9 @@ impl App {
             row.max(self.cursor_row).min(if self.view == View::Mixer {
                 crate::project::CHANNEL_ROWS - 1
             } else {
-                self.project.patterns[self.selected_pattern].num_rows.saturating_sub(1)
+                self.project.patterns[self.selected_pattern]
+                    .num_rows()
+                    .saturating_sub(1)
             }),
             track.min(self.cursor_track),
             track.max(self.cursor_track).min(
@@ -959,7 +961,7 @@ impl App {
             saved.row = saved.row.min(if index == View::Mixer as usize {
                 crate::project::CHANNEL_ROWS - 1
             } else {
-                pattern.num_rows - 1
+                pattern.num_rows() - 1
             });
             saved.track = saved.track.min(pattern.tracks.len() - 1);
             saved.anchor = None;
@@ -990,7 +992,7 @@ impl App {
         let max_rows = if self.view == View::Mixer {
             crate::project::CHANNEL_ROWS
         } else {
-            self.project.patterns[self.selected_pattern].num_rows
+            self.project.patterns[self.selected_pattern].num_rows()
         };
         let max_tracks = self.project.patterns[self.selected_pattern].tracks.len();
 
@@ -1047,7 +1049,7 @@ impl App {
         } else {
             self.view_states[View::Pattern as usize].row
         };
-        self.playback_row = if beginning { 0 } else { row }.min(pattern.num_rows.saturating_sub(1));
+        self.playback_row = if beginning { 0 } else { row }.min(pattern.num_rows().saturating_sub(1));
         self.playback_state = PlaybackState::Playing;
     }
 
@@ -1079,9 +1081,9 @@ impl App {
     /// Legacy standalone editor helper; the runtime uses `Transport` instead.
     pub fn advance_playback_row(&mut self) {
         if matches!(self.playback_state, PlaybackState::Playing)
-            && self.project.patterns[self.playing_pattern].num_rows > 0
+            && self.project.patterns[self.playing_pattern].num_rows() > 0
         {
-            self.playback_row = (self.playback_row + 1) % self.project.patterns[self.playing_pattern].num_rows;
+            self.playback_row = (self.playback_row + 1) % self.project.patterns[self.playing_pattern].num_rows();
         }
     }
 }

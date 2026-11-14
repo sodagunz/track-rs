@@ -317,23 +317,39 @@ impl Track {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pattern {
-    pub num_rows: usize,
+    end: crate::musical_time::Tick,
     pub tracks: Vec<Track>,
 }
 
 impl Pattern {
+    /// # Panics
+    /// Panics if the row count cannot be represented as ticks.
     #[must_use]
     pub fn new(num_rows: usize, num_tracks: usize) -> Self {
         Self {
-            num_rows,
+            end: crate::musical_time::Tick::from_legacy_row(num_rows as u64).expect("pattern rows fit ticks"),
             tracks: vec![Track::default(); num_tracks],
         }
+    }
+
+    /// Straight sixteenth-note view, rounded up for a partial final row.
+    ///
+    /// # Panics
+    /// Panics if the projected count cannot fit `usize` on this platform.
+    #[must_use]
+    pub fn num_rows(&self) -> usize {
+        usize::try_from(self.end.0.div_ceil(crate::musical_time::LEGACY_ROW_TICKS)).expect("pattern end fits rows")
+    }
+
+    #[must_use]
+    pub const fn length_ticks(&self) -> crate::musical_time::Tick {
+        self.end
     }
 
     #[must_use]
     pub fn get_step(&self, track_idx: usize, row_idx: usize) -> Option<PatternStep> {
         let track = self.tracks.get(track_idx)?;
-        if row_idx >= self.num_rows {
+        if row_idx >= self.num_rows() {
             return None;
         }
         let start = crate::musical_time::Tick::from_legacy_row(row_idx as u64).ok()?;
@@ -351,12 +367,16 @@ impl Pattern {
 
     pub(crate) fn resize_rows(&mut self, rows: usize) {
         let end = crate::musical_time::Tick::from_legacy_row(rows as u64).expect("pattern row fits ticks");
+        self.resize_ticks(end);
+    }
+
+    pub(crate) fn resize_ticks(&mut self, end: crate::musical_time::Tick) {
         for track in &mut self.tracks {
             let keep = track.events.partition_point(|event| event.start_tick < end);
             track.events.truncate(keep);
             track.identities.truncate(keep);
         }
-        self.num_rows = rows;
+        self.end = end;
     }
 
     pub(crate) fn duplicate(&self) -> Self {
@@ -374,7 +394,7 @@ impl Pattern {
     /// # Errors
     /// Returns an error if the track/row is outside the pattern or the note octave is invalid.
     pub fn set_step(&mut self, track_idx: usize, row_idx: usize, new_note: Option<Note>) -> anyhow::Result<()> {
-        if row_idx >= self.num_rows {
+        if row_idx >= self.num_rows() {
             return Err(anyhow!("Accessing inexistant row"));
         }
         let start = crate::musical_time::Tick::from_legacy_row(row_idx as u64)
@@ -387,18 +407,13 @@ impl Pattern {
         Ok(())
     }
 
-    pub(crate) fn end_tick(&self) -> anyhow::Result<crate::musical_time::Tick> {
-        crate::musical_time::Tick::from_legacy_row(self.num_rows as u64)
-            .map_err(|_| anyhow!("Pattern end exceeds tick range"))
-    }
-
     // Keep the player/editor contract centralized until they support arbitrary ticks.
     pub(crate) fn validate_event(
         &self,
         start: crate::musical_time::Tick,
         event: Option<PatternEvent>,
     ) -> anyhow::Result<()> {
-        anyhow::ensure!(start < self.end_tick()?, "Event starts outside pattern");
+        anyhow::ensure!(start < self.length_ticks(), "Event starts outside pattern");
         anyhow::ensure!(
             start.0.is_multiple_of(crate::musical_time::LEGACY_ROW_TICKS),
             "Sub-row events require the upcoming tick scheduler"
@@ -456,6 +471,30 @@ mod tests {
             octave: 5,
             length_ticks: NoteLength::try_from(ticks).unwrap(),
         }
+    }
+
+    #[test]
+    fn explicit_end_projects_partial_rows_without_stretching_gates() {
+        let mut pattern = Pattern::new(4, 1);
+        pattern.set_step(0, 0, Some(note(4096))).unwrap();
+        pattern.set_step(0, 1, Some(note(1))).unwrap();
+        let id = pattern.tracks[0].event_id(Tick(240));
+        pattern.resize_ticks(Tick(241));
+        assert_eq!(pattern.length_ticks(), Tick(241));
+        assert_eq!(pattern.num_rows(), 2);
+        assert_eq!(pattern.get_step(0, 1).unwrap().note, Some(note(1)));
+        assert!(pattern.get_step(0, 2).is_none());
+        assert_eq!(pattern.tracks[0].event_id(Tick(240)), id);
+        pattern.resize_ticks(Tick(240));
+        assert_eq!(pattern.num_rows(), 1);
+        assert!(pattern.tracks[0].event_by_id(id.unwrap()).is_none());
+        assert_eq!(pattern.tracks[0].events()[0].duration_ticks.ticks(), 61_440);
+        pattern.resize_ticks(Tick(1));
+        assert_eq!(pattern.num_rows(), 1);
+        assert_eq!(pattern.length_ticks(), Tick(1));
+        pattern.resize_rows(4);
+        assert_eq!(pattern.length_ticks(), Tick(960));
+        assert_eq!(pattern.tracks[0].events().len(), 1);
     }
 
     #[test]

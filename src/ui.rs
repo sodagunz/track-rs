@@ -536,7 +536,7 @@ fn draw_arrangement(f: &mut Frame, area: Rect, state: &App) {
                     "{}{} O{index} P{pattern}  {} rows",
                     if selected { "]" } else { " " },
                     if playing { ">" } else { " " },
-                    state.project.patterns[pattern].num_rows
+                    state.project.patterns[pattern].num_rows()
                 ),
                 if selected {
                     state.theme.cursor()
@@ -621,7 +621,7 @@ fn pattern_gutter(row: usize, row_width: usize, cursor_row: usize, playing: bool
 fn draw_pattern_editor(f: &mut Frame, area: Rect, state: &App) {
     const TRACK_WIDTH: u16 = 10;
     let row_width = state.project.patterns[state.selected_pattern]
-        .num_rows
+        .num_rows()
         .saturating_sub(1)
         .to_string()
         .len()
@@ -645,7 +645,7 @@ fn draw_pattern_editor(f: &mut Frame, area: Rect, state: &App) {
         .cursor_row
         .saturating_add(1)
         .saturating_sub(visible_rows)
-        .min(pattern.num_rows.saturating_sub(visible_rows));
+        .min(pattern.num_rows().saturating_sub(visible_rows));
     if header_rows > 0 {
         let mut header = vec![Span::raw(format!("{:width$}", "r/tick", width = usize::from(gutter)))];
         for track in first_track..first_track + visible_tracks {
@@ -665,7 +665,7 @@ fn draw_pattern_editor(f: &mut Frame, area: Rect, state: &App) {
             Rect::new(area.x, area.y, area.width, 1),
         );
     }
-    for (offset, row) in (first_row..pattern.num_rows).take(visible_rows).enumerate() {
+    for (offset, row) in (first_row..pattern.num_rows()).take(visible_rows).enumerate() {
         let playing = matches!(state.playback_state, crate::state::PlaybackState::Playing)
             && state.selected_pattern == state.playing_pattern
             && row == state.playback_row;

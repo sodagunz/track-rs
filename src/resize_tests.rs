@@ -45,18 +45,18 @@ fn resize_prompt_validates_before_editing_or_stopping() {
         assert!(matches!(app.playback_state, PlaybackState::Playing));
         assert_ne!(app.status, "");
     }
-    let rows = app.project.patterns[0].num_rows;
+    let rows = app.project.patterns[0].num_rows();
     prompt(&mut app, &format!("resize! {rows}"));
     assert_eq!(app.revision(), revision);
     assert!(!app.is_dirty());
     assert!(matches!(app.playback_state, PlaybackState::Playing));
     prompt(&mut app, "  resize   001 \t");
-    assert_eq!(app.project.patterns[0].num_rows, 1);
+    assert_eq!(app.project.patterns[0].num_rows(), 1);
     assert!(app.is_dirty());
     assert!(matches!(app.playback_state, PlaybackState::Stopped));
     assert!(app.take_stop_request());
     app.handle_command(Command::Undo);
-    assert_eq!(app.project.patterns[0].num_rows, rows);
+    assert_eq!(app.project.patterns[0].num_rows(), rows);
     assert!(!app.is_dirty());
 }
 
@@ -81,7 +81,7 @@ fn resize_force_restores_all_tracks_notes_and_saved_cursor_atomically() {
     assert!(matches!(app.playback_state, PlaybackState::Playing));
     prompt(&mut app, "resize! 4");
     assert!(app.take_stop_request());
-    assert_eq!(app.project.patterns[0].num_rows, 4);
+    assert_eq!(app.project.patterns[0].num_rows(), 4);
     assert!(app.project.patterns[0]
         .tracks
         .iter()
@@ -93,7 +93,7 @@ fn resize_force_restores_all_tracks_notes_and_saved_cursor_atomically() {
     app.handle_command(Command::Undo);
     assert_eq!(app.project.patterns, before.patterns);
     app.handle_command(Command::Redo);
-    assert_eq!(app.project.patterns[0].num_rows, 4);
+    assert_eq!(app.project.patterns[0].num_rows(), 4);
 }
 
 #[test]
@@ -103,8 +103,8 @@ fn resize_selected_pattern_roundtrips_repeated_order_and_neutral_channels() {
     app.project.order = vec![0, 1, 1, 0];
     let channels = app.project.channels.clone();
     prompt(&mut app, "resize 128");
-    assert_eq!(app.project.patterns[0].num_rows, 64);
-    assert_eq!(app.project.patterns[1].num_rows, 128);
+    assert_eq!(app.project.patterns[0].num_rows(), 64);
+    assert_eq!(app.project.patterns[1].num_rows(), 128);
     assert_eq!(app.project.order, [0, 1, 1, 0]);
     assert_eq!(app.project.channels, channels);
     assert!(app.project.patterns[1]
@@ -118,7 +118,7 @@ fn resize_selected_pattern_roundtrips_repeated_order_and_neutral_channels() {
     prompt(&mut app, "resize 1");
     prompt(&mut app, &format!("e! {}", path.display()));
     assert!(!app.is_dirty());
-    assert_eq!(app.project.patterns[1].num_rows, 128);
+    assert_eq!(app.project.patterns[1].num_rows(), 128);
     assert_eq!(app.project.order, [0, 1, 1, 0]);
     assert_eq!(app.project.channels, channels);
 }
@@ -199,7 +199,7 @@ fn resize_history_barriers_noops_and_snapshot_budget() {
         edit.resize_pattern(0, MAX_ROWS - 1, false).unwrap();
     });
     history.undo(&mut project);
-    assert_eq!(project.patterns[0].num_rows, MAX_ROWS);
+    assert_eq!(project.patterns[0].num_rows(), MAX_ROWS);
     history.redo(&mut project);
     history.edit(&mut project, |edit| edit.set_cell(0, 0, 0, note));
     history.edit(&mut project, |edit| edit.resize_pattern(0, MAX_ROWS, false).unwrap());
@@ -208,7 +208,7 @@ fn resize_history_barriers_noops_and_snapshot_budget() {
     let retained = history.revision();
     history.undo(&mut project);
     assert_eq!(history.revision(), retained);
-    assert_eq!(project.patterns[0].num_rows, MAX_ROWS - 1);
+    assert_eq!(project.patterns[0].num_rows(), MAX_ROWS - 1);
 }
 
 #[test]
@@ -224,7 +224,7 @@ fn resize_limits_are_inclusive_and_rejections_preserve_revision() {
         app.project
             .patterns
             .iter()
-            .map(|p| p.num_rows * p.tracks.len())
+            .map(|p| p.num_rows() * p.tracks.len())
             .sum::<usize>(),
         MAX_CELLS
     );
@@ -234,7 +234,7 @@ fn resize_limits_are_inclusive_and_rejections_preserve_revision() {
     assert!(app.status.contains("cells"));
     let mut app = App::default();
     prompt(&mut app, &format!("resize {MAX_ROWS}"));
-    assert_eq!(app.project.patterns[0].num_rows, MAX_ROWS);
+    assert_eq!(app.project.patterns[0].num_rows(), MAX_ROWS);
     for view in [Command::ShowMixer, Command::ShowInstrument] {
         app.handle_command(view);
         let revision = app.revision();

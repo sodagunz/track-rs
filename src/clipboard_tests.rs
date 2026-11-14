@@ -65,7 +65,7 @@ fn reversed_snapshot_overlaps_overwrites_empties_and_undoes_atomically() {
     handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL), &mut app);
     keys(&mut app, "u6j2lp"); // bottom right: clip both axes
     assert_eq!(note(&app, 3, 7).unwrap().pitch, NotePitch::C);
-    assert_eq!(app.project.patterns[app.selected_pattern].num_rows, 8);
+    assert_eq!(app.project.patterns[app.selected_pattern].num_rows(), 8);
     assert_eq!(app.project.patterns[app.selected_pattern].tracks.len(), 4);
     keys(&mut app, "u");
     assert_eq!(note(&app, 3, 7), None);

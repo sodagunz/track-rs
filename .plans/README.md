@@ -27,7 +27,7 @@ planning update.
 | 3 | [017 — Quantized live recording](017-quantized-live-recording.md) | One pinned Pattern track, musical-grid quantization, fixed gate, undo per pass |
 | 4 | [018 — MIDI input](018-midi-input.md) | Optional device preview, then step/live input through the same recording decisions |
 
-019 has device-free timing/projection, sparse tick-event runtime storage and direct v4 persistence with strict legacy-row timing guards. History patches and sparse clipboard ranges now use ticks too; process-local event handles survive edits/history and renew on intentional copies. Explicit tick-based runtime length, tick playback and projected UI integration remain. These are proposed contracts, not implemented commands. Implement in small
+019 has device-free timing/projection, sparse tick-event runtime storage and direct v4 persistence with strict legacy-row timing guards. History patches and sparse clipboard ranges now use ticks too; process-local event handles survive edits/history and renew on intentional copies. Pattern end ticks are canonical; row count is now a compatibility projection. Tick playback and projected UI integration remain, and partial ends are still rejected by persistence until playback supports them. These are proposed contracts, not implemented commands. Implement in small
 reviewable slices; 019's timing/storage foundation precedes full metronome and recording integration. Preview-only MIDI work can proceed independently. 016/017 share the first armed-recording integration checkpoint.
 Audition always means no note writes. Stopped Insert still step-edits; playing
 Insert previews when unarmed and live-records only when armed and eligible.
