@@ -349,3 +349,118 @@ fn playback_keeps_deadline_and_reads_restored_future_events() {
     assert_eq!(notes[0].instrument, Instrument::Kick);
     assert_eq!(app.project.bpm, 150.0);
 }
+
+#[test]
+fn exact_event_history_coalesces_row_adapter_writes_and_preserves_redo_on_invalid_timing() {
+    use crate::{
+        history::History,
+        musical_time::{DurationTicks, Tick},
+        project::Project,
+        tracker::PatternEvent,
+    };
+    let mut project = Project::new(4, 1);
+    let mut history = History::default();
+    let event = PatternEvent {
+        start_tick: Tick(240),
+        duration_ticks: DurationTicks::new(61_440).unwrap(),
+        pitch: NotePitch::Fs,
+        octave: 5,
+    };
+    history.edit(&mut project, |edit| {
+        edit.set_event(0, 0, event.start_tick, Some(event));
+        edit.set_event(
+            0,
+            0,
+            Tick(480),
+            Some(PatternEvent {
+                start_tick: Tick(480),
+                ..event
+            }),
+        );
+    });
+    let after = project.clone();
+    let revision = history.revision();
+    history.undo(&mut project);
+    assert_eq!(project.patterns[0].tracks[0].events(), []);
+    let original = history.revision();
+    history.edit(&mut project, |edit| {
+        edit.set_event(0, 0, Tick(240), Some(event));
+        edit.set_cell(0, 0, 1, None);
+        for (start, value) in [
+            (
+                Tick(15),
+                PatternEvent {
+                    start_tick: Tick(15),
+                    ..event
+                },
+            ),
+            (
+                Tick(240),
+                PatternEvent {
+                    duration_ticks: DurationTicks::new(1).unwrap(),
+                    ..event
+                },
+            ),
+            (
+                Tick(240),
+                PatternEvent {
+                    start_tick: Tick(480),
+                    ..event
+                },
+            ),
+            (
+                Tick(960),
+                PatternEvent {
+                    start_tick: Tick(960),
+                    ..event
+                },
+            ),
+        ] {
+            edit.set_event(0, 0, start, Some(value));
+        }
+        edit.set_event(0, 1, Tick(240), Some(event));
+    });
+    assert_eq!(history.revision(), original);
+    assert_eq!(project.patterns[0].tracks[0].events(), []);
+    history.redo(&mut project);
+    assert_eq!(history.revision(), revision);
+    assert_eq!(project, after);
+}
+
+#[test]
+fn tick_range_clear_uses_half_open_starts_without_shortening_gates() {
+    use crate::{
+        history::History,
+        musical_time::{DurationTicks, Tick},
+        project::Project,
+        tracker::PatternEvent,
+    };
+    let mut project = Project::new(4, 1);
+    let mut history = History::default();
+    history.edit(&mut project, |edit| {
+        for start in [0, 240, 480, 720] {
+            let event = PatternEvent {
+                start_tick: Tick(start),
+                duration_ticks: DurationTicks::new(61_440).unwrap(),
+                pitch: NotePitch::C,
+                octave: 4,
+            };
+            edit.set_event(0, 0, event.start_tick, Some(event));
+        }
+    });
+    let before = project.clone();
+    history.edit(&mut project, |edit| edit.clear_range(0, 0, Tick(1)..Tick(480)));
+    let events = project.patterns[0].tracks[0].events();
+    assert_eq!(
+        events.iter().map(|event| event.start_tick).collect::<Vec<_>>(),
+        [Tick(0), Tick(480), Tick(720)]
+    );
+    assert!(events.iter().all(|event| event.duration_ticks.ticks() == 61_440));
+    history.undo(&mut project);
+    assert_eq!(project, before);
+    let revision = history.revision();
+    history.edit(&mut project, |edit| edit.clear_range(0, 0, Tick(480)..Tick(480)));
+    assert_eq!(history.revision(), revision);
+    history.redo(&mut project);
+    assert_eq!(project.patterns[0].tracks[0].events().len(), 3);
+}

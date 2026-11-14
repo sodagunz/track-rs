@@ -223,7 +223,7 @@ pub struct PatternEvent {
 }
 
 impl PatternEvent {
-    fn from_note(start_tick: crate::musical_time::Tick, note: Note) -> Self {
+    pub(crate) fn from_note(start_tick: crate::musical_time::Tick, note: Note) -> Self {
         Self {
             start_tick,
             duration_ticks: crate::musical_time::DurationTicks::from_legacy(note.length_ticks.ticks())
@@ -255,6 +255,13 @@ impl Track {
     #[must_use]
     pub fn events(&self) -> &[PatternEvent] {
         &self.events
+    }
+
+    #[must_use]
+    pub fn events_in(&self, range: std::ops::Range<crate::musical_time::Tick>) -> &[PatternEvent] {
+        let first = self.events.partition_point(|event| event.start_tick < range.start);
+        let last = self.events.partition_point(|event| event.start_tick < range.end);
+        &self.events[first..last.max(first)]
     }
 
     fn search(&self, start: crate::musical_time::Tick) -> Result<usize, usize> {
@@ -308,26 +315,72 @@ impl Pattern {
     /// Replace the note at the specified track and row.
     ///
     /// # Errors
-    /// Returns an error if the track or row index is outside the pattern.
+    /// Returns an error if the track/row is outside the pattern or the note octave is invalid.
     pub fn set_step(&mut self, track_idx: usize, row_idx: usize, new_note: Option<Note>) -> anyhow::Result<()> {
         if row_idx >= self.num_rows {
             return Err(anyhow!("Accessing inexistant row"));
         }
+        let start = crate::musical_time::Tick::from_legacy_row(row_idx as u64)
+            .map_err(|_| anyhow!("Pattern row exceeds tick range"))?;
+        self.replace_event(
+            track_idx,
+            start,
+            new_note.map(|note| PatternEvent::from_note(start, note)),
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn end_tick(&self) -> anyhow::Result<crate::musical_time::Tick> {
+        crate::musical_time::Tick::from_legacy_row(self.num_rows as u64)
+            .map_err(|_| anyhow!("Pattern end exceeds tick range"))
+    }
+
+    // Keep the player/editor contract centralized until they support arbitrary ticks.
+    pub(crate) fn validate_event(
+        &self,
+        start: crate::musical_time::Tick,
+        event: Option<PatternEvent>,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(start < self.end_tick()?, "Event starts outside pattern");
+        anyhow::ensure!(
+            start.0.is_multiple_of(crate::musical_time::LEGACY_ROW_TICKS),
+            "Sub-row events require the upcoming tick scheduler"
+        );
+        if let Some(event) = event {
+            anyhow::ensure!(
+                event.start_tick == start,
+                "Event start does not match replacement position"
+            );
+            anyhow::ensure!(
+                event.duration_ticks.ticks().is_multiple_of(15),
+                "Gate resolution requires the upcoming tick scheduler"
+            );
+            anyhow::ensure!(event.octave <= 9, "Note octave must be 0..=9");
+        }
+        Ok(())
+    }
+
+    pub(crate) fn replace_event(
+        &mut self,
+        track_idx: usize,
+        start: crate::musical_time::Tick,
+        event: Option<PatternEvent>,
+    ) -> anyhow::Result<Option<PatternEvent>> {
+        self.validate_event(start, event)?;
         let track = self
             .tracks
             .get_mut(track_idx)
             .ok_or_else(|| anyhow!("Accessing inexistant track"))?;
-        let start = crate::musical_time::Tick::from_legacy_row(row_idx as u64)
-            .map_err(|_| anyhow!("Pattern row exceeds tick range"))?;
-        match (track.search(start), new_note) {
-            (Ok(index), Some(note)) => track.events[index] = PatternEvent::from_note(start, note),
-            (Ok(index), None) => {
-                track.events.remove(index);
+        let before = match (track.search(start), event) {
+            (Ok(index), Some(event)) => Some(std::mem::replace(&mut track.events[index], event)),
+            (Ok(index), None) => Some(track.events.remove(index)),
+            (Err(index), Some(event)) => {
+                track.events.insert(index, event);
+                None
             }
-            (Err(index), Some(note)) => track.events.insert(index, PatternEvent::from_note(start, note)),
-            (Err(_), None) => {}
-        }
-        Ok(())
+            (Err(_), None) => None,
+        };
+        Ok(before)
     }
 }
 

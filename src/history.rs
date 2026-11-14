@@ -1,9 +1,10 @@
-//! Value-diff transactions; editor and transport state never enter the journal.
+//! Exact-event/value transactions; editor and transport state never enter the journal.
 use std::collections::{BTreeMap, VecDeque};
 
 use crate::{
+    musical_time::Tick,
     project::{ChannelSettings, Project},
-    tracker::{Instrument, Note, Pattern, Track},
+    tracker::{Instrument, Note, Pattern, PatternEvent, Track},
 };
 
 pub const MAX_TRANSACTIONS: usize = 256;
@@ -29,12 +30,12 @@ enum Mutation {
         before: Vec<usize>,
         after: Vec<usize>,
     },
-    Cell {
+    Event {
         pattern: usize,
         track: usize,
-        row: usize,
-        before: Option<Note>,
-        after: Option<Note>,
+        start: Tick,
+        before: Option<PatternEvent>,
+        after: Option<PatternEvent>,
     },
     Instrument {
         track: usize,
@@ -70,11 +71,11 @@ impl Mutation {
         matches!(self, Self::Pattern { .. } | Self::Order { .. } | Self::Track { .. })
     }
 
-    const fn key(&self) -> (u8, usize, usize, usize) {
+    const fn key(&self) -> (u8, usize, usize, u64) {
         match *self {
-            Self::Cell {
-                pattern, track, row, ..
-            } => (1, pattern, track, row),
+            Self::Event {
+                pattern, track, start, ..
+            } => (1, pattern, track, start.0),
             Self::Instrument { track, .. } => (2, 0, track, 0),
             Self::Channel { track, .. } => (6, 0, track, 0),
             Self::Tempo { .. } => (3, 0, 0, 0),
@@ -87,7 +88,7 @@ impl Mutation {
     #[allow(clippy::float_cmp)] // Exact document values determine no-ops.
     fn changed(&self) -> bool {
         match *self {
-            Self::Cell { before, after, .. } => before != after,
+            Self::Event { before, after, .. } => before != after,
             Self::Instrument { before, after, .. } => before != after,
             Self::Channel { before, after, .. } => before != after,
             Self::Tempo { before, after } => before != after,
@@ -98,7 +99,7 @@ impl Mutation {
 
     fn merge(&mut self, next: Self) {
         match (self, next) {
-            (Self::Cell { after, .. }, Self::Cell { after: value, .. }) => *after = value,
+            (Self::Event { after, .. }, Self::Event { after: value, .. }) => *after = value,
             (Self::Instrument { after, .. }, Self::Instrument { after: value, .. }) => *after = value,
             (Self::Channel { after, .. }, Self::Channel { after: value, .. }) => *after = value,
             (Self::Tempo { after, .. }, Self::Tempo { after: value, .. }) => *after = value,
@@ -129,16 +130,16 @@ impl Mutation {
                     project.channels.pop();
                 }
             }
-            Self::Cell {
+            Self::Event {
                 pattern,
                 track,
-                row,
+                start,
                 before,
                 after,
             } => {
                 project.patterns[pattern]
-                    .set_step(track, row, if forward { after } else { before })
-                    .expect("history cell exists");
+                    .replace_event(track, start, if forward { after } else { before })
+                    .expect("history event target exists");
             }
             Self::Instrument { track, before, after } => {
                 project.set_instrument(track, if forward { after } else { before });
@@ -163,7 +164,7 @@ impl Mutation {
     }
 }
 
-/// One atomic edit. Add any number of cells for a future rectangle operation.
+/// One atomic edit. Row commands adapt to exact tick-event patches.
 /// Invalid targets and unchanged values are ignored before recording.
 pub struct Edit<'a> {
     project: &'a mut Project,
@@ -277,19 +278,47 @@ impl Edit<'_> {
     }
 
     pub fn set_cell(&mut self, pattern: usize, track: usize, row: usize, after: Option<Note>) {
-        let Some(step) = self.project.patterns.get(pattern).and_then(|p| p.get_step(track, row)) else {
+        let Ok(start) = Tick::from_legacy_row(row as u64) else {
             return;
         };
-        if step.note != after {
-            self.changes.push(Mutation::Cell {
+        self.set_event(
+            pattern,
+            track,
+            start,
+            after.map(|note| PatternEvent::from_note(start, note)),
+        );
+    }
+
+    /// Replace one exact position; invalid targets and unsupported timing are no-ops.
+    pub fn set_event(&mut self, pattern: usize, track: usize, start: Tick, after: Option<PatternEvent>) {
+        let Some(target) = self.project.patterns.get_mut(pattern) else {
+            return;
+        };
+        let Ok(before) = target.replace_event(track, start, after) else {
+            return;
+        };
+        if before != after {
+            self.changes.push(Mutation::Event {
                 pattern,
                 track,
-                row,
-                before: step.note,
+                start,
+                before,
                 after,
             });
-            // The immutable lookup above validated the same target.
-            let _ = self.project.patterns[pattern].set_step(track, row, after);
+        }
+    }
+
+    pub(crate) fn pattern(&self, pattern: usize) -> Option<&Pattern> {
+        self.project.patterns.get(pattern)
+    }
+
+    pub(crate) fn clear_range(&mut self, pattern: usize, track: usize, range: std::ops::Range<Tick>) {
+        let Some(events) = self.project.patterns.get(pattern).and_then(|p| p.tracks.get(track)) else {
+            return;
+        };
+        let starts: Vec<Tick> = events.events_in(range).iter().map(|event| event.start_tick).collect();
+        for start in starts {
+            self.set_event(pattern, track, start, None);
         }
     }
 

@@ -1,6 +1,8 @@
 use crate::{
+    clipboard::EventClipboard,
     command::Command,
     history::{Edit, History, Revision},
+    musical_time::Tick,
     project::Project,
     tracker::Note,
 };
@@ -69,8 +71,7 @@ pub struct App {
     pub(crate) audition: Option<crate::transport::NoteEvent>,
     pub(crate) audition_active: bool,
     pub(crate) history: History,
-    // Track-major owned snapshot; None cells are part of the rectangle.
-    pub(crate) clipboard: Vec<Vec<Option<Note>>>,
+    pub(crate) clipboard: EventClipboard,
     pub edit_step: usize,
     pub entry_length: crate::tracker::NoteLength,
     pub mode: Mode,
@@ -139,7 +140,7 @@ impl Default for App {
             audition: None,
             audition_active: false,
             history: History::default(),
-            clipboard: Vec::new(),
+            clipboard: EventClipboard::default(),
             edit_step: 0,
             entry_length: crate::tracker::NoteLength::default(),
             mode: Mode::Normal,
@@ -261,7 +262,7 @@ impl App {
                 self.playing_order = 0;
                 self.history = History::default();
                 self.saved_revision = self.revision();
-                self.clipboard.clear();
+                self.clipboard = EventClipboard::default();
                 self.view_states = [ViewState::default(); 4];
                 self.selection_anchor = None;
                 self.cursor_row = 0;
@@ -926,27 +927,23 @@ impl App {
 
     fn copy_rectangle(&mut self) {
         let (first_row, last_row, first_track, last_track) = self.rectangle();
-        self.clipboard = (first_track..=last_track)
-            .map(|track| {
-                (first_row..=last_row)
-                    .map(|row| {
-                        self.project.patterns[self.selected_pattern]
-                            .get_step(track, row)
-                            .and_then(|step| step.note)
-                    })
-                    .collect()
-            })
-            .collect();
+        let start = Tick::from_legacy_row(first_row as u64).expect("bounded selection row");
+        let end = Tick::from_legacy_row(last_row as u64 + 1).expect("bounded selection row");
+        self.clipboard = EventClipboard::capture(
+            &self.project.patterns[self.selected_pattern],
+            first_track..last_track + 1,
+            start..end,
+        );
     }
 
     fn clear_rectangle(&mut self) {
         let (first_row, last_row, first_track, last_track) = self.rectangle();
         let pattern = self.selected_pattern;
+        let start = Tick::from_legacy_row(first_row as u64).expect("bounded selection row");
+        let end = Tick::from_legacy_row(last_row as u64 + 1).expect("bounded selection row");
         self.edit(|edit| {
             for track in first_track..=last_track {
-                for row in first_row..=last_row {
-                    edit.set_cell(pattern, track, row, None);
-                }
+                edit.clear_range(pattern, track, start..end);
             }
         });
     }
@@ -981,22 +978,12 @@ impl App {
 
     fn paste(&mut self) {
         let (track, row) = (self.cursor_track, self.cursor_row);
-        let tracks = self.project.patterns[self.selected_pattern]
-            .tracks
-            .len()
-            .saturating_sub(track);
-        let rows = self.project.patterns[self.selected_pattern]
-            .num_rows
-            .saturating_sub(row);
+        let Ok(start) = Tick::from_legacy_row(row as u64) else {
+            return;
+        };
         let clipboard = self.clipboard.clone();
         let pattern = self.selected_pattern;
-        self.edit(|edit| {
-            for (dt, cells) in clipboard.iter().take(tracks).enumerate() {
-                for (dr, note) in cells.iter().take(rows).enumerate() {
-                    edit.set_cell(pattern, track + dt, row + dr, *note);
-                }
-            }
-        });
+        self.edit(|edit| clipboard.paste(edit, pattern, track, start));
     }
 
     pub fn offset_cursor(&mut self, dr: &CursorOffset, dt: &CursorOffset) {

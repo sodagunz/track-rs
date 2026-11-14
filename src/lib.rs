@@ -4,6 +4,7 @@ pub mod audio;
 #[cfg(test)]
 mod audition_tests;
 pub mod bindings;
+mod clipboard;
 #[cfg(test)]
 mod clipboard_tests;
 pub mod command;
