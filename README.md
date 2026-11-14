@@ -77,7 +77,7 @@ Reported Repeat/Release events are ignored for notes; legacy terminals may repor
 held keys as repeated Press events and retrigger. Previews use the track's mixer settings and
 separate bounded voices, so entry during playback doesn't cut off song notes or
 move the playhead. Tab cycles entry steps of 0/1/2/4 rows (an arbitrary step
-returns to zero). In F1 Normal, `:step 3` sets an exact advance in rows, from
+returns to zero). Rows here mean grid moves, not note-gate units. In F1 Normal, `:step 3` sets an exact advance in rows, from
 0–4096; zero stays on the same cell. `:length 4r` or `:length 64t` sets the
 length for new notes in empty cells (16 ticks per row, 1–4096 ticks). Length
 requires an integer with a lowercase `r` or `t` suffix; bare numbers are rejected.
@@ -179,10 +179,19 @@ F4 supports counted `h`/`l` and `gh`/`gl` track navigation.
 
 ### Patterns and order
 
-Pattern cells show pitch and gate length in ticks at fixed positions (16 ticks
-per row). The gutter marks the edit row `>`, playing row `*`, beats `.`, and bars
-`|` (four rows per beat, four beats per bar). Selection has a text edge as well
-as emphasis; playback never scrolls the edit cursor out of view.
+Pattern rows project a musical grid; changing the grid never retimes notes or
+changes the pattern end. In F1 Normal, `:meter 3/4` sets pattern-local meter,
+`:grid 3` sets quarter-note triplets, and `:grid 64 bar` puts 256ths in the cursor's
+bar. Grid numbers are divisions per quarter; BPM always means quarter notes/minute.
+The gutter marks the edit row `>`, playing row `*`, denominator units `.`, and bars
+`|`. Status shows bar/unit/tick coordinates and partial final bars on custom grids.
+
+A cell's `+N` (`+*` for ten or more) counts hidden off-grid starts, not merged notes.
+`:next-event` / `:prev-event` inspect exact starts on the cursor track. Single-cell
+entry, transpose and deletion touch only that exact position. Visual ranges include
+hidden events; cut/clear report the event count. Paste refuses to replace hidden
+starts unless you confirm with `:paste!`. Clipboard positions remain exact ticks.
+Gate labels still use legacy units (16 per sixteenth), independent of grid density.
 
 In the arrangement, `]` marks selection and `>` marks the playing Song entry.
 Repeated patterns have separate entries.
@@ -191,7 +200,7 @@ In Normal mode (in the pattern or arrangement view):
 
 - PageUp/PageDown switches patterns; Ctrl-n creates one, Ctrl-d duplicates it.
 - Ctrl-t adds a track to every pattern and selects it.
-- `:resize N` sets the edited pattern to 1–4096 rows across all tracks. New rows
+- `:resize N` sets the edited pattern to 1–4096 legacy sixteenth-note rows across all tracks. New rows
   are empty; shrinking refuses to drop notes unless you use `:resize! N`.
   Repeated order entries share the new length. Resizing stops audio and clears
   selections; undo restores dropped notes together. Existing note gates stay unchanged.
@@ -223,11 +232,12 @@ lengths scale by 15, preserving timing. v1/v2 files load with neutral mixer sett
 v1 notes receive one-row lengths. Older v3 files without tone fields load with
 neutral shelves and Off filters. Older app versions cannot open v4 saves.
 
-The editor, clipboard and playback still use the straight sixteenth-note grid.
-v4 loads reject sub-row starts, gates not divisible by 15, non-4/4 meter and
-non-row-aligned pattern ends until their editor/scheduler support lands; nothing
-is rounded or silently dropped. New length still uses legacy 16-ticks-per-row
-units in the UI, not file ticks. Unsupported versions are rejected;
+v4 stores meter, a default grid and tick-anchored bar overrides; older v4 files
+without grid fields default to the original straight grid. Exact sub-row starts
+now load, edit and play. Gate values not divisible by 15 and non-row-aligned ends
+remain explicitly rejected pending general-duration/end editing. Nothing is rounded
+or silently dropped. New length still uses legacy 16-ticks-per-sixteenth units in
+the UI, not file ticks. Unsupported versions are rejected;
 [format limits](src/project_file.rs) bound decoded projects and encoded files.
 
 The legacy `AudioEngine::play`/sequencer example path has no project track and

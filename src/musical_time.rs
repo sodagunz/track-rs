@@ -140,6 +140,119 @@ pub struct GridMap {
 }
 
 impl GridMap {
+    pub(crate) const fn legacy(end: Tick) -> Self {
+        Self {
+            meter: Meter {
+                numerator: 4,
+                denominator: 4,
+            },
+            end,
+            default: Grid(4),
+            overrides: BTreeMap::new(),
+        }
+    }
+
+    #[must_use]
+    pub const fn meter(&self) -> Meter {
+        self.meter
+    }
+    #[must_use]
+    pub const fn end(&self) -> Tick {
+        self.end
+    }
+    #[must_use]
+    pub const fn default_grid(&self) -> Grid {
+        self.default
+    }
+    pub fn overrides(&self) -> impl Iterator<Item = (Tick, Grid)> + '_ {
+        self.overrides.iter().map(|(&tick, &grid)| (tick, grid))
+    }
+
+    pub(crate) fn resize(&mut self, end: Tick) {
+        self.end = end;
+        self.overrides.retain(|start, _| *start < end);
+    }
+
+    pub(crate) const fn set_default(&mut self, grid: Grid) {
+        self.default = grid;
+    }
+
+    /// # Errors
+    /// Rejects a meter change that would invalidate overrides unless explicitly confirmed.
+    pub fn set_meter(&mut self, meter: Meter, clear: bool) -> Result<(), TimeError> {
+        if self.overrides.keys().any(|tick| meter.bar_start(*tick) != *tick) {
+            if !clear {
+                return Err(TimeError::InvalidOverride);
+            }
+            self.overrides.retain(|tick, _| meter.bar_start(*tick) == *tick);
+        }
+        self.meter = meter;
+        Ok(())
+    }
+
+    fn rows_before_bar(&self, bar: u64) -> u64 {
+        let length = self.meter.bar_ticks();
+        let base = length.div_ceil(self.default.spacing());
+        let mut count = bar * base;
+        for &grid in self.overrides.range(..Tick(bar * length)).map(|(_, grid)| grid) {
+            count = count - base + length.div_ceil(grid.spacing());
+        }
+        count
+    }
+
+    #[must_use]
+    pub fn row_count(&self) -> u64 {
+        let bar = self.end.0 / self.meter.bar_ticks();
+        let tail = self.end.0 % self.meter.bar_ticks();
+        let spacing = self
+            .overrides
+            .get(&Tick(bar * self.meter.bar_ticks()))
+            .copied()
+            .unwrap_or(self.default)
+            .spacing();
+        self.rows_before_bar(bar) + tail.div_ceil(spacing)
+    }
+
+    /// Locate a visible row without allocating or walking the preceding grid points.
+    #[must_use]
+    pub fn row_tick(&self, row: u64) -> Option<Tick> {
+        let count = self.row_count();
+        if row == count {
+            return Some(self.end);
+        }
+        if row > count {
+            return None;
+        }
+        let mut lower = 0;
+        let mut upper = self.end.0.div_ceil(self.meter.bar_ticks());
+        while lower + 1 < upper {
+            let middle = lower + (upper - lower) / 2;
+            if self.rows_before_bar(middle) <= row {
+                lower = middle;
+            } else {
+                upper = middle;
+            }
+        }
+        let start = Tick(lower * self.meter.bar_ticks());
+        let grid = self.grid_at(start).ok()?;
+        start
+            .checked_add((row - self.rows_before_bar(lower)) * grid.spacing())
+            .ok()
+    }
+
+    /// Floor projection. The end maps to the row count, not an admissible start.
+    #[must_use]
+    pub fn row_at(&self, tick: Tick) -> Option<u64> {
+        if tick > self.end {
+            return None;
+        }
+        if tick == self.end {
+            return Some(self.row_count());
+        }
+        let bar = tick.0 / self.meter.bar_ticks();
+        Some(self.rows_before_bar(bar) + (tick.0 % self.meter.bar_ticks()) / self.grid_at(tick).ok()?.spacing())
+    }
+
     /// # Errors
     /// Rejects an empty pattern.
     pub const fn new(meter: Meter, end: Tick, default: Grid) -> Result<Self, TimeError> {
@@ -160,11 +273,7 @@ impl GridMap {
         if start >= self.end || self.meter.bar_start(start) != start {
             return Err(TimeError::InvalidOverride);
         }
-        if grid == self.default {
-            self.overrides.remove(&start);
-        } else {
-            self.overrides.insert(start, grid);
-        }
+        self.overrides.insert(start, grid);
         Ok(())
     }
 

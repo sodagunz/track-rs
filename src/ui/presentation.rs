@@ -116,6 +116,24 @@ impl Presentation<'_> {
     }
 
     pub(super) fn context(&self) -> String {
+        let mut text = self.base_context();
+        let app = self.0;
+        if app.view == crate::state::View::Pattern {
+            let pattern = &app.project.patterns[app.selected_pattern];
+            let hidden = pattern.hidden_in_row(app.cursor_track, app.cursor_row);
+            if pattern.grid().meter() != crate::musical_time::Meter::new(4, 4).unwrap()
+                || pattern.grid().default_grid().divisions_per_quarter() != 4
+                || pattern.grid().overrides().next().is_some()
+                || app.inspected_tick.is_some()
+                || hidden > 0
+            {
+                let _ = write!(text, " | {} Hidden:{hidden}", app.grid_context());
+            }
+        }
+        text
+    }
+
+    fn base_context(&self) -> String {
         let app = self.0;
         if app.view != crate::state::View::Pattern {
             return match app.view {
@@ -135,8 +153,8 @@ impl Presentation<'_> {
             return self.selection();
         }
         let note = app.project.patterns[app.selected_pattern]
-            .get_step(app.cursor_track, app.cursor_row)
-            .and_then(|step| step.note);
+            .event_at(app.cursor_track, app.cursor_tick())
+            .map(crate::tracker::PatternEvent::row_note);
         let cell = note.map_or_else(
             || "Empty".to_owned(),
             |note| format!("{} Len:{}", pitch_label(note), length_label(note.length_ticks)),
@@ -164,19 +182,16 @@ impl Presentation<'_> {
         let mut first: Option<Note> = None;
         let mut mixed_pitch = false;
         let mut mixed_length = false;
+        let start = pattern.row_tick(*rows.start()).unwrap();
+        let end = pattern.row_tick(rows.end().saturating_add(1)).unwrap();
         for track in tracks {
-            for row in rows.clone() {
-                let Some(note) = pattern.get_step(track, row).and_then(|step| step.note) else {
-                    continue;
-                };
+            for event in pattern.tracks[track].events_in(start..end) {
+                let note = event.row_note();
                 if let Some(initial) = first {
                     mixed_pitch |= (initial.pitch, initial.octave) != (note.pitch, note.octave);
                     mixed_length |= initial.length_ticks != note.length_ticks;
                 } else {
                     first = Some(note);
-                }
-                if mixed_pitch && mixed_length {
-                    return format!("Sel:{dimensions} Pitch:mixed Len:mixed");
                 }
             }
         }
@@ -321,7 +336,17 @@ impl Presentation<'_> {
                 app.project.instrument(app.cursor_track).label().to_owned(),
                 format!("Oct:{}", app.octave),
                 format!("New:{} Step:{}r", self.entry_length(), app.edit_step),
+                if app.project.patterns[app.selected_pattern].grid()
+                    == &crate::musical_time::GridMap::legacy(app.project.patterns[app.selected_pattern].length_ticks())
+                {
+                    String::new()
+                } else {
+                    app.grid_context()
+                },
             ]
+            .into_iter()
+            .filter(|text| !text.is_empty())
+            .collect()
         } else {
             vec![self.context()]
         }

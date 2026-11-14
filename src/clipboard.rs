@@ -138,7 +138,7 @@ mod tests {
     }
 
     #[test]
-    fn paste_clips_starts_not_gates_and_rejects_unsupported_translation_atomically() {
+    fn paste_clips_starts_not_gates_and_translates_subrow_positions_exactly() {
         let mut source = Pattern::new(2, 2);
         for track in 0..2 {
             for row in 0..2 {
@@ -154,8 +154,11 @@ mod tests {
         assert_eq!(project.patterns[0].tracks[1].events()[0].duration_ticks.ticks(), 61_440);
         let before = project.clone();
         let revision = history.revision();
-        let unsupported = EventClipboard::capture(&source, 0..2, Tick(1)..Tick(480));
-        history.edit(&mut project, |edit| unsupported.paste(edit, 0, 0, Tick(720)));
+        let shifted = EventClipboard::capture(&source, 0..2, Tick(1)..Tick(480));
+        history.edit(&mut project, |edit| shifted.paste(edit, 0, 0, Tick(720)));
+        assert_eq!(project.patterns[0].tracks[0].events()[0].start_tick, Tick(959));
+        assert_eq!(project.patterns[0].tracks[1].events()[0].start_tick, Tick(959));
+        history.undo(&mut project);
         assert_eq!(project, before);
         assert_eq!(history.revision(), revision);
         history.edit(&mut project, |edit| clipboard.paste(edit, 0, 0, Tick(u64::MAX)));
